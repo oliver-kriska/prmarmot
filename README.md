@@ -111,6 +111,11 @@ Use the visible **My PRs / Review queue** control in the titlebar, or press `1`/
 directly (`v` still toggles between them). Other keys: `↑`/`↓` select · `⏎`/`o` open PR in
 browser · `y` copy PR URL · `r` refresh now ·
 `t` cycle theme (system → light → dark) · `q` quit.
+Press `/` to filter loaded PRs by number, title, author, label, issue, or note.
+Words narrow the results together; Clear restores the loaded queue.
+Press `Space` or Details to inspect the selected PR (or the first visible PR
+when nothing is selected); `Esc` closes the panel. Filtering out the selection
+closes details automatically. Single-click a non-link cell to select another PR.
 Double-click a row to open it; drag column edges to resize; hover the Note,
 Title, Labels, or Reviewed-by cell for the full text.
 
@@ -127,7 +132,15 @@ keeps candidates with no pending reviewer request. Requests to a team or another
 person are not considered unassigned. Your own PRs are excluded; already-reviewed
 PRs and drafts retain their sections. This refers to **review requests**, not the
 separate issue-assignee field. A **partial results** notice means more results
-exist on GitHub; the available section may be incomplete in busy repositories.
+exist on GitHub; use **Load more** to fetch the next page of each active search.
+Each search is bounded to five pages: at most 300 authored or 600 review rows
+before filtering and deduplication. Available candidates may be filtered out,
+so a page can advance without adding visible PRs. Refresh, including automatic
+refresh, starts again at page one. Failed page requests preserve loaded rows.
+
+Filtering searches only loaded PRs, not all of GitHub. Details uses the loaded
+snapshot without additional requests; reviewer, label, and thread lists remain
+subject to the GraphQL query's per-PR limits.
 
 Stack grouping uses GitHub's native stack metadata, not labels or guessed branch
 relationships. Layers are ordered bottom-to-top inside each queue section;

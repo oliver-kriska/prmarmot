@@ -119,7 +119,7 @@ pub fn refine_theme(cx: &mut App) {
         t.table_head = c(0x141517);
         t.table_head_foreground = c(0x909296);
         t.table_hover = c(0x25262B);
-        t.table_active = ca(0x228BE6, 0.18);
+        t.table_active = ca(0x228BE6, 0.26);
         t.table_active_border = ca(0x228BE6, 0.60);
         t.table_row_border = ca(0xFFFFFF, 0.04);
         t.list = c(0x1A1B1E);
@@ -190,7 +190,7 @@ pub fn refine_theme(cx: &mut App) {
         t.table_head = c(0xF8F9FA);
         t.table_head_foreground = c(0x6C757D);
         t.table_hover = c(0xF1F3F5);
-        t.table_active = ca(0x228BE6, 0.10);
+        t.table_active = ca(0x228BE6, 0.16);
         t.table_active_border = ca(0x228BE6, 0.50);
         t.table_row_border = ca(0x000000, 0.05);
         t.list = c(0xFFFFFF);

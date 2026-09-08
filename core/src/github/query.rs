@@ -32,7 +32,25 @@ pub fn available_search_string(repo: &str, who: &str) -> String {
 /// pagination visibility, and the live rate-limit budget.
 pub const PR_SEARCH_QUERY: &str = r#"query($q:String!){
   search(query:$q, type:ISSUE, first:60){
-    pageInfo{ hasNextPage }
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ... on PullRequest {
+      number title isDraft reviewDecision mergeable createdAt
+      stack { number size baseRefName }
+      stackEntry { position }
+      author{ login }
+      labels(first:20){ nodes{ name } }
+      reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+      reviews(first:60){ nodes{ author{login} state submittedAt } }
+      reviewThreads(first:100){ nodes{ isResolved } }
+      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+    } }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#;
+
+pub const PR_SEARCH_PAGE_QUERY: &str = r#"query($q:String!,$after:String!){
+  search(query:$q, type:ISSUE, first:60, after:$after){
+    pageInfo{ hasNextPage endCursor }
     nodes{ ... on PullRequest {
       number title isDraft reviewDecision mergeable createdAt
       stack { number size baseRefName }
@@ -52,11 +70,11 @@ pub const PR_SEARCH_QUERY: &str = r#"query($q:String!){
 /// starved by broad available candidates. Both aliases are bounded at 60.
 pub const REVIEW_SEARCH_QUERY: &str = r#"query($requested:String!,$available:String!){
   requested: search(query:$requested, type:ISSUE, first:60){
-    pageInfo{ hasNextPage }
+    pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
   }
   available: search(query:$available, type:ISSUE, first:60){
-    pageInfo{ hasNextPage }
+    pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
   }
   rateLimit { limit cost remaining resetAt }
@@ -66,6 +84,55 @@ fragment ReviewQueuePr on PullRequest {
   stack { number size baseRefName }
   stackEntry { position }
   author{ login }
+  labels(first:20){ nodes{ name } }
+  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+  reviews(first:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(first:100){ nodes{ isResolved } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+}"#;
+
+pub const REVIEW_REQUESTED_PAGE_QUERY: &str = r#"query($requested:String!,$after:String!){
+  requested: search(query:$requested, type:ISSUE, first:60, after:$after){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}
+fragment ReviewQueuePr on PullRequest {
+  number title isDraft reviewDecision mergeable createdAt
+  stack { number size baseRefName } stackEntry { position } author{ login }
+  labels(first:20){ nodes{ name } }
+  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+  reviews(first:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(first:100){ nodes{ isResolved } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+}"#;
+
+pub const REVIEW_AVAILABLE_PAGE_QUERY: &str = r#"query($available:String!,$after:String!){
+  available: search(query:$available, type:ISSUE, first:60, after:$after){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}
+fragment ReviewQueuePr on PullRequest {
+  number title isDraft reviewDecision mergeable createdAt
+  stack { number size baseRefName } stackEntry { position } author{ login }
+  labels(first:20){ nodes{ name } }
+  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+  reviews(first:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(first:100){ nodes{ isResolved } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+}"#;
+
+pub const REVIEW_BOTH_PAGE_QUERY: &str = r#"query($requested:String!,$requestedAfter:String!,$available:String!,$availableAfter:String!){
+  requested: search(query:$requested, type:ISSUE, first:60, after:$requestedAfter){ pageInfo{ hasNextPage endCursor } nodes{ ...ReviewQueuePr } }
+  available: search(query:$available, type:ISSUE, first:60, after:$availableAfter){ pageInfo{ hasNextPage endCursor } nodes{ ...ReviewQueuePr } }
+  rateLimit { limit cost remaining resetAt }
+}
+fragment ReviewQueuePr on PullRequest {
+  number title isDraft reviewDecision mergeable createdAt
+  stack { number size baseRefName } stackEntry { position } author{ login }
   labels(first:20){ nodes{ name } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
   reviews(first:60){ nodes{ author{login} state submittedAt } }
@@ -201,25 +268,44 @@ pub struct ReviewSearchResult {
     pub available: Vec<RawPr>,
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
+    pub requested_page: PageInfo,
+    pub available_page: PageInfo,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageInfo {
+    pub has_next_page: bool,
+    pub end_cursor: Option<String>,
+}
+
+pub fn page_info(body: &Value, path: &str) -> PageInfo {
+    let base = format!("/data/{path}/pageInfo");
+    PageInfo {
+        has_next_page: body
+            .pointer(&format!("{base}/hasNextPage"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        end_cursor: body
+            .pointer(&format!("{base}/endCursor"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
 }
 
 pub fn parse_review_response(body: &Value) -> Result<ReviewSearchResult, GhError> {
     check_graphql_errors(body)?;
     let requested = parse_pr_nodes(body, "/data/requested/nodes")?;
     let available = parse_pr_nodes(body, "/data/available/nodes")?;
-    let truncated = body
-        .pointer("/data/requested/pageInfo/hasNextPage")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || body
-            .pointer("/data/available/pageInfo/hasNextPage")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+    let requested_page = page_info(body, "requested");
+    let available_page = page_info(body, "available");
+    let truncated = requested_page.has_next_page || available_page.has_next_page;
     Ok(ReviewSearchResult {
         requested,
         available,
         rate: parse_rate(body),
         truncated,
+        requested_page,
+        available_page,
     })
 }
 
@@ -231,6 +317,18 @@ pub fn parse_search_response(body: &Value) -> Result<(Vec<RawPr>, Option<RateLim
     check_graphql_errors(body)?;
     Ok((
         parse_pr_nodes(body, "/data/search/nodes")?,
+        parse_rate(body),
+    ))
+}
+
+pub fn parse_alias_response(
+    body: &Value,
+    alias: &str,
+) -> Result<(Vec<RawPr>, PageInfo, Option<RateLimitInfo>), GhError> {
+    check_graphql_errors(body)?;
+    Ok((
+        parse_pr_nodes(body, &format!("/data/{alias}/nodes"))?,
+        page_info(body, alias),
         parse_rate(body),
     ))
 }

@@ -209,6 +209,86 @@ pub fn columns_for(mode: Mode, class: TableWidthClass, viewport_width: f32) -> V
     }
 }
 
+/// Case-insensitive AND search across the fields users scan in the board.
+/// Filtering is local; it must not trigger GitHub requests on each keystroke.
+pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
+    let text = format!(
+        "#{} {} {} {} {} {}",
+        row.number,
+        row.title,
+        row.author.as_deref().unwrap_or_default(),
+        row.labels.join(" "),
+        row.issue.as_deref().unwrap_or_default(),
+        row.note
+    )
+    .to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| text.contains(&word.to_lowercase()))
+}
+
+/// Full, unelided snapshot details; no secondary network request or hidden cache.
+pub fn detail_text(row: &BoardRow) -> String {
+    let mut lines = vec![
+        strip_note_glyphs(&row.note),
+        format!(
+            "Author: {} · CI: {} · Unresolved threads: {}",
+            row.author.as_deref().unwrap_or("unknown"),
+            row.ci.as_str(),
+            row.unresolved
+        ),
+        format!(
+            "Requested reviewers: {}",
+            if row.requested.is_empty() {
+                "none".into()
+            } else {
+                row.requested.join(", ")
+            }
+        ),
+        format!(
+            "Reviews: {}",
+            if row.reviews.is_empty() {
+                "none".into()
+            } else {
+                row.reviews
+                    .iter()
+                    .map(|review| {
+                        format!(
+                            "{} — {}",
+                            review.login.as_deref().unwrap_or("deleted user"),
+                            review.state
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
+    ];
+    if let Some(review) = &row.my_review {
+        lines.push(format!("Your review: {review}"));
+    }
+    if !row.labels.is_empty() {
+        lines.push(format!("Labels: {}", row.labels.join(", ")));
+    }
+    if let Some(issue) = &row.issue {
+        lines.push(format!("Issue: {issue}"));
+    }
+    if let Some(stack) = &row.stack {
+        lines.push(format!(
+            "Stack #{} · Layer {} of {} · Base: {}",
+            stack.number,
+            stack
+                .position
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".into()),
+            stack.size,
+            stack.base_ref_name
+        ));
+    }
+    lines.push("Details reflect the loaded snapshot; refresh restarts pagination.".into());
+    lines.join("\n")
+}
+
 pub struct BoardTableDelegate {
     rows: Vec<BoardRow>,
     display: Vec<DisplayRow>,
@@ -924,8 +1004,7 @@ impl TableDelegate for BoardTableDelegate {
                         .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                         .into_any_element();
                 } else {
-                    // Blank — no review information.
-                    div()
+                    div().text_color(muted).child("Not requested")
                 }
             }
             "title" => {
@@ -1388,6 +1467,38 @@ mod tests {
         let mut r = row(1, Category::Available);
         r.note = "available for review".into();
         assert_eq!(note_presentation(&r).tone, NoteTone::Warning);
+    }
+
+    #[test]
+    fn filter_matches_all_words_across_loaded_fields() {
+        let mut r = row(42, Category::Action);
+        r.title = "Improve mobile settings".into();
+        r.author = Some("Alice".into());
+        r.labels = vec!["mobile-dev".into()];
+        r.issue = Some("APP-123".into());
+        assert!(matches_filter(&r, "  ALICE mobile-dev app-123 #42 "));
+        assert!(matches_filter(&r, ""));
+        assert!(!matches_filter(&r, "alice desktop"));
+    }
+
+    #[test]
+    fn details_include_unelided_notes_and_deleted_reviewers() {
+        let mut r = row(42, Category::Action);
+        r.note = "merge conflict — rebase · CI failing · 3 unresolved".into();
+        r.reviews = vec![prboard_core::board::ReviewSummary {
+            login: None,
+            state: "APPROVED".into(),
+        }];
+        r.stack = Some(prboard_core::board::StackInfo {
+            number: 50,
+            size: 3,
+            position: Some(2),
+            base_ref_name: "main".into(),
+        });
+        let detail = detail_text(&r);
+        assert!(detail.contains(&r.note));
+        assert!(detail.contains("deleted user — APPROVED"));
+        assert!(detail.contains("Stack #50 · Layer 2 of 3 · Base: main"));
     }
 
     #[test]

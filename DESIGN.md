@@ -91,9 +91,16 @@ keycaps 3 px. Small radii are the native-Mac tell.
   at the last visible layer, and a bottom rule separates the stack from ordinary PRs.
 - Prioritize these functional affordances over decorative icons or illustrations. The
   existing calm palette, row density, and status dots remain the visual hierarchy.
-- Next UX priorities, not implemented here: a user-invoked next page for busy queues,
-  PR text filtering, and a detail surface that preserves context without opening a browser.
-  Validate idle resource use on the new runtime before expanding those features.
+- A compact toolbar exposes local text filtering and the visible/loaded count. Explicit
+  Load more fetches bounded pages, never infinite-scroll background requests. Refresh
+  returns to page one; filtering does not imply a server-wide search.
+- Details opens below the table rather than narrowing its columns. It follows selection,
+  shows unelided snapshot metadata, and closes with Escape. Space toggles it; `/` focuses
+  filtering. Dashboard shortcuts must not consume typing inside an input.
+- Details selects the first visible PR if necessary and collapses when selection is
+  lost, rather than reserving space for an empty inspector. Blue selection is distinct
+  from neutral hover. Review cells explicitly say "Not requested" when empty, and the
+  toolbar's filtered count only appears while filtering to avoid duplicate totals.
 
 The [0.6.0 release](https://github.com/longbridge/gpui-kit/releases/tag/v0.6.0)
 adds accessible control labels (used by our repository picker), revised nested

@@ -8,18 +8,23 @@ use chrono::{DateTime, Local};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Styled, Window,
+    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
+    StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::button::Button;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{Column, DataTable, TableEvent, TableState};
-use gpui_component::{h_flex, v_flex, ActiveTheme, IndexPath, Sizable, TitleBar};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar};
 use prboard_core::board::Mode;
 
 use crate::state::{relative, AppState};
-use crate::table::{columns_for, BoardTableDelegate, TableWidthClass};
+use crate::table::{columns_for, detail_text, matches_filter, BoardTableDelegate, TableWidthClass};
 use crate::theme::ThemePref;
+
+gpui::actions!(prboard, [CloseDetails]);
 
 /// Startup decisions resolved in `main` (CLI + env + config file).
 pub struct Launch {
@@ -46,6 +51,10 @@ pub struct RootView {
     configured_repos: Vec<String>,
     discovering_repos: bool,
     repo_status: String,
+    search: Entity<InputState>,
+    filter_text: String,
+    visible_count: usize,
+    details_open: bool,
     focus_handle: FocusHandle,
     seen_generation: u64,
     theme_pref: ThemePref,
@@ -79,6 +88,12 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Override the table's Escape-to-clear-selection only while details is open.
+        cx.bind_keys([KeyBinding::new(
+            "escape",
+            CloseDetails,
+            Some("PrboardDetails > DataTable"),
+        )]);
         let mode = state.read(cx).mode;
         // Size the columns to the window the moment we open, so the first frame
         // is already responsive (no default-width flash).
@@ -131,6 +146,15 @@ impl RootView {
             select
         };
 
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter loaded PRs…  /"));
+        cx.subscribe(&search, |this: &mut Self, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.filter_text = input.read(cx).value().to_string();
+                this.sync_table(cx);
+            }
+        })
+        .detach();
+
         // Theme: apply the configured preference, and while in System mode
         // follow macOS appearance changes live.
         let theme_pref = launch.theme;
@@ -155,39 +179,7 @@ impl RootView {
             let generation = state.read(cx).generation;
             if generation != this.seen_generation {
                 this.seen_generation = generation;
-                let rows = state.read(cx).rows.clone();
-
-                // Resolve selection by PR identity (URL), never by raw index:
-                // on a switch, the queue's remembered PR; on a plain refresh,
-                // the PR currently selected (so a reorder/insert/remove keeps
-                // the same PR highlighted, or clears if it's gone).
-                let switching = this.pending_restore.take();
-                let current_url = this.table.read(cx).selected_row().and_then(|ix| {
-                    this.table
-                        .read(cx)
-                        .delegate()
-                        .row(ix)
-                        .map(|r| r.url.clone())
-                });
-                let target_url = match &switching {
-                    Some(mode) => this.selections.get(mode).cloned(),
-                    None => current_url,
-                };
-                let scroll = switching.is_some();
-
-                this.table.update(cx, |table, cx| {
-                    table.delegate_mut().set_rows(rows);
-                    table.refresh(cx);
-                    match target_url.and_then(|u| table.delegate().display_index_of_url(&u)) {
-                        Some(ix) => {
-                            table.set_selected_row(ix, cx);
-                            if scroll {
-                                table.scroll_to_row(ix, cx);
-                            }
-                        }
-                        None => table.clear_selection(cx),
-                    }
-                });
+                this.sync_table(cx);
             }
             cx.notify();
         })
@@ -239,6 +231,10 @@ impl RootView {
             configured_repos: launch.repos,
             discovering_repos: false,
             repo_status: String::new(),
+            search,
+            filter_text: String::new(),
+            visible_count: 0,
+            details_open: false,
             focus_handle: cx.focus_handle(),
             seen_generation: 0,
             theme_pref,
@@ -253,6 +249,39 @@ impl RootView {
         this.start_refresh_loop(cx);
         this.discover_repos(window, cx);
         this
+    }
+
+    fn sync_table(&mut self, cx: &mut Context<Self>) {
+        let rows: Vec<_> = self
+            .state
+            .read(cx)
+            .rows
+            .iter()
+            .filter(|row| matches_filter(row, &self.filter_text))
+            .cloned()
+            .collect();
+        self.visible_count = rows.len();
+        let switching = self.pending_restore.take();
+        let target_url = match switching {
+            Some(mode) => self.selections.get(&mode).cloned(),
+            None => self.selected_row_url(cx),
+        };
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_rows(rows);
+            table.refresh(cx);
+            if let Some(ix) = target_url.and_then(|u| table.delegate().display_index_of_url(&u)) {
+                table.set_selected_row(ix, cx);
+                if switching.is_some() {
+                    table.scroll_to_row(ix, cx);
+                }
+            } else {
+                table.clear_selection(cx);
+            }
+        });
+        if self.selected_row_url(cx).is_none() {
+            self.details_open = false;
+        }
+        cx.notify();
     }
 
     fn discover_repos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -439,6 +468,7 @@ impl RootView {
             |i: usize, this: &Self, cx: &Context<Self>| this.table.read(cx).delegate().is_header(i);
         if !delegate_is_header(row_ix, self, cx) {
             self.last_selected = row_ix;
+            cx.notify();
             return;
         }
         let len = self.table.read(cx).delegate().display_len();
@@ -461,6 +491,12 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "escape" {
+            self.details_open = false;
+            self.table.focus_handle(cx).focus(window, cx);
+            cx.notify();
+            return;
+        }
         // Search input owns text keys. Typing a repository containing q/r/t
         // must not quit, refresh, or change the app's theme.
         if !self.table.focus_handle(cx).contains_focused(window, cx) {
@@ -469,6 +505,11 @@ impl RootView {
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
         match key {
+            "/" if !platform => {
+                self.search.focus_handle(cx).focus(window, cx);
+                cx.stop_propagation();
+            }
+            "space" if !platform => self.toggle_details(window, cx),
             "q" => {
                 save_window_size(window);
                 cx.quit();
@@ -501,6 +542,168 @@ impl RootView {
             }
             _ => {}
         }
+    }
+
+    fn toggle_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.details_open {
+            self.details_open = false;
+        } else {
+            if self.selected_row_url(cx).is_none() {
+                self.table.update(cx, |table, cx| {
+                    let first = (0..table.delegate().display_len())
+                        .find(|&ix| table.delegate().row(ix).is_some());
+                    if let Some(ix) = first {
+                        table.set_selected_row(ix, cx);
+                        table.scroll_to_row(ix, cx);
+                    }
+                });
+            }
+            self.details_open = self.selected_row_url(cx).is_some();
+        }
+        self.table.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
+        let state = self.state.read(cx);
+        h_flex()
+            .px(px(16.))
+            .py(px(6.))
+            .gap_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div().w(px(280.)).child(
+                    Input::new(&self.search)
+                        .small()
+                        .aria_label("Filter loaded PRs"),
+                ),
+            )
+            .when(!self.filter_text.is_empty(), |bar| {
+                bar.child(
+                    Button::new("clear-filter")
+                        .small()
+                        .label("Clear")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.search
+                                .update(cx, |input, cx| input.set_value("", window, cx));
+                            this.filter_text.clear();
+                            this.sync_table(cx);
+                            this.table.focus_handle(cx).focus(window, cx);
+                        })),
+                )
+            })
+            .when(!self.filter_text.trim().is_empty(), |bar| {
+                bar.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "{} of {} loaded",
+                            self.visible_count,
+                            state.rows.len()
+                        )),
+                )
+            })
+            .child(div().flex_1())
+            .when(state.truncated, |bar| {
+                bar.child(
+                    Button::new("load-more")
+                        .small()
+                        .label(if state.syncing {
+                            "Loading…"
+                        } else if state.backoff_remaining().is_some() {
+                            "Paused"
+                        } else if state.can_load_more() {
+                            "Load more"
+                        } else if state.page_limit_reached() {
+                            "Page limit reached"
+                        } else {
+                            "Refresh to retry"
+                        })
+                        .disabled(!state.can_load_more())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.load_more(cx))
+                        })),
+                )
+            })
+            .child(
+                Button::new("show-details")
+                    .small()
+                    .label(if self.details_open {
+                        "Hide details"
+                    } else {
+                        "Details · Space"
+                    })
+                    .disabled(self.visible_count == 0)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_details(window, cx);
+                    })),
+            )
+    }
+
+    fn render_details(&self, cx: &Context<Self>) -> impl IntoElement {
+        let table = self.table.read(cx);
+        let selected = table
+            .selected_row()
+            .and_then(|ix| table.delegate().row(ix))
+            .cloned();
+        let theme = cx.theme();
+        v_flex()
+            .h(px(210.))
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .px(px(16.))
+            .py(px(10.))
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("PR details"),
+                    )
+                    .when_some(selected.clone(), |bar, row| {
+                        bar.child(
+                            Button::new("open-detail")
+                                .small()
+                                .label("Open on GitHub")
+                                .on_click(move |_, _, cx| cx.open_url(&row.url)),
+                        )
+                    })
+                    .child(
+                        Button::new("close-details")
+                            .small()
+                            .label("Close · Esc")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.details_open = false;
+                                this.table.focus_handle(cx).focus(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("pr-details-content")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .gap_2()
+                    .map(|content| match selected {
+                        Some(row) => content
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("#{}  {}", row.number, row.title)),
+                            )
+                            .child(div().text_size(px(13.)).child(detail_text(&row))),
+                        None => content.child("Select a PR to inspect its details."),
+                    }),
+            )
     }
 
     fn render_header(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -579,6 +782,12 @@ impl RootView {
         // An error replaces the sync text — it IS the sync status then.
         h_flex()
             .flex_1()
+            .min_w_0()
+            // TitleBar's inner container does not shrink to its viewport in 0.6.
+            // Reserve its platform chrome and bound our flexible content explicitly.
+            .max_w(px(
+                self.viewport_width - if cfg!(target_os = "macos") { 80. } else { 114. }
+            ))
             .pr(px(crate::design::HEADER_PAD_X))
             .gap_3()
             .items_center()
@@ -608,11 +817,22 @@ impl RootView {
             .child(
                 h_flex()
                     .flex_shrink_0()
+                    .max_w(px(self.viewport_width * 0.28))
                     .gap_3()
                     .text_size(px(12.))
                     .text_color(theme.muted_foreground)
-                    .child(div().text_color(status_color).child(status_text))
-                    .when_some(budget, |this, b| this.child(b)),
+                    .child(
+                        div()
+                            .id("sync-status")
+                            .min_w_0()
+                            .truncate()
+                            .text_color(status_color)
+                            .child(status_text.clone())
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(status_text.clone()).build(window, cx)
+                            }),
+                    )
+                    .when_some(budget, |this, b| this.child(div().flex_shrink_0().child(b))),
             )
     }
 
@@ -738,6 +958,9 @@ impl Focusable for RootView {
 
 impl Render for RootView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.selected_row_url(cx).is_none() {
+            self.details_open = false;
+        }
         let theme = cx.theme();
         // Body state from truth, not `generation` (which also bumps on a switch
         // to an unseen queue and on a repo change): a queue has loaded ONLY
@@ -763,8 +986,15 @@ impl Render for RootView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .track_focus(&self.focus_handle)
+            .when(self.details_open, |view| view.key_context("PrboardDetails"))
+            .on_action(cx.listener(|this, _: &CloseDetails, window, cx| {
+                this.details_open = false;
+                this.table.focus_handle(cx).focus(window, cx);
+                cx.notify();
+            }))
             .on_key_down(cx.listener(Self::handle_key_down))
             .child(TitleBar::new().child(self.render_header(cx)))
+            .child(self.render_tools(cx))
             // Full-bleed table (spec §5): the window IS the table; 13 px
             // cells at Size::Small density.
             .child(
@@ -779,6 +1009,19 @@ impl Render for RootView {
                         // loaded, the delegate's own render_empty shows the
                         // queue-specific "nothing here" — correct, because we
                         // now KNOW the queue is empty.
+                        BodyState::Loaded
+                            if self.visible_count == 0 && !self.filter_text.trim().is_empty() =>
+                        {
+                            this.child(
+                                h_flex()
+                                    .size_full()
+                                    .justify_center()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        "No matching loaded PRs — clear the filter or load more.",
+                                    ),
+                            )
+                        }
                         BodyState::Loaded => this.child(
                             DataTable::new(&self.table)
                                 .small()
@@ -801,6 +1044,9 @@ impl Render for RootView {
                         ),
                     }),
             )
+            .when(self.details_open, |this| {
+                this.child(self.render_details(cx))
+            })
             .child(self.render_footer(cx))
     }
 }

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use gpui::Context;
-use prboard_core::board::{fetch_board, BoardConfig, BoardRow, Mode};
+use prboard_core::board::{
+    fetch_board, fetch_more_board, BoardConfig, BoardFetch, BoardPagination, BoardRow, Mode,
+};
 use prboard_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
 use prboard_core::github::{GhError, GithubTransport};
 
@@ -24,6 +26,7 @@ pub struct AppState {
     pub error: Option<String>,
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
+    pagination: BoardPagination,
     /// Bumped on every successful fetch; observers use it to detect new rows
     /// without diffing (and to gate their reactions — the PRFlow observer-loop
     /// lesson).
@@ -48,6 +51,7 @@ struct CachedQueue {
     rows: Vec<BoardRow>,
     last_synced: Option<DateTime<Local>>,
     truncated: bool,
+    pagination: BoardPagination,
 }
 
 /// One cache entry per queue; there are exactly two queues today. Kept explicit
@@ -74,6 +78,7 @@ impl AppState {
             error: None,
             rate: None,
             truncated: false,
+            pagination: BoardPagination::default(),
             generation: 0,
             backoff_until: None,
             epoch: 0,
@@ -96,6 +101,7 @@ impl AppState {
                 rows: self.rows.clone(),
                 last_synced: self.last_synced,
                 truncated: self.truncated,
+                pagination: self.pagination.clone(),
             },
         );
     }
@@ -130,11 +136,13 @@ impl AppState {
                 self.rows = cached.rows.clone();
                 self.last_synced = cached.last_synced;
                 self.truncated = cached.truncated;
+                self.pagination = cached.pagination.clone();
             }
             None => {
                 self.rows.clear();
                 self.last_synced = None;
                 self.truncated = false;
+                self.pagination = BoardPagination::default();
             }
         }
         self.generation += 1; // observers push the restored (or empty) rows
@@ -147,6 +155,7 @@ impl AppState {
         self.last_synced = None;
         self.error = None;
         self.truncated = false;
+        self.pagination = BoardPagination::default();
         self.generation += 1; // observers push the (empty) rows to the table
         self.epoch += 1; // any in-flight fetch is now for the wrong view
         self.syncing = false; // don't let it dedup the fetch we start now
@@ -222,6 +231,9 @@ impl AppState {
                         state.rows = board.rows;
                         state.rate = board.rate;
                         state.truncated = board.truncated;
+                        // A deliberate refresh starts again at page one; load-more
+                        // cursors are only preserved by queue cache restoration.
+                        state.pagination = board.pagination;
                         state.last_synced = Some(Local::now());
                         state.generation += 1;
                     }
@@ -237,6 +249,95 @@ impl AppState {
                     Err(e) => {
                         state.error = Some(e.to_string());
                     }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn can_load_more(&self) -> bool {
+        !self.syncing
+            && self.backoff_remaining().is_none()
+            && self.pagination.can_load_more(self.mode)
+    }
+
+    pub fn page_limit_reached(&self) -> bool {
+        self.pagination.page_limit_reached(self.mode)
+    }
+
+    /// Fetch one page for every non-exhausted alias. This is user-invoked only;
+    /// refresh and the timer never auto-paginate.
+    pub fn load_more(&mut self, cx: &mut Context<Self>) {
+        if !self.can_load_more() {
+            return;
+        }
+        let now = Local::now().timestamp().max(0) as u64;
+        if self.backoff_until.is_some_and(|until| now < until) {
+            return;
+        }
+        if let Some(rate) = &self.rate {
+            if should_back_off(rate) {
+                let reset = rate.reset_epoch();
+                if reset.is_some_and(|r| now < r) {
+                    self.backoff_until = Some(now + backoff_secs(reset, now));
+                    self.error = Some(format!(
+                        "GitHub budget low ({} left) — pausing refresh",
+                        rate.remaining
+                    ));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
+        self.syncing = true;
+        self.error = None;
+        cx.notify();
+        let transport = self.transport.clone();
+        let repo = self.repo.clone();
+        let me = self.me.clone();
+        let mode = self.mode;
+        let config = self.config.clone();
+        let epoch = self.epoch;
+        let current = BoardFetch {
+            rows: self.rows.clone(),
+            rate: self.rate.clone(),
+            truncated: self.truncated,
+            pagination: self.pagination.clone(),
+        };
+        cx.spawn(async move |this, cx| {
+            let fetched = cx
+                .background_executor()
+                .spawn(async move {
+                    fetch_more_board(transport.as_ref(), mode, &repo, &me, &config, &current)
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if state.epoch != epoch {
+                    return;
+                }
+                state.syncing = false;
+                match fetched {
+                    Ok(board) => {
+                        state.rows = board.rows;
+                        state.rate = board.rate;
+                        state.truncated = board.truncated;
+                        state.pagination = board.pagination;
+                        // Loading older pages does not refresh the earlier rows.
+                        // Keep their original sync timestamp honest.
+                        state.generation += 1;
+                    }
+                    Err(GhError::RateLimited { reset_epoch }) => {
+                        let now = Local::now().timestamp().max(0) as u64;
+                        let wait = backoff_secs(reset_epoch, now);
+                        state.backoff_until = Some(now + wait);
+                        state.error = Some(format!(
+                            "GitHub rate limited — retrying in {}m",
+                            wait.div_ceil(60)
+                        ));
+                    }
+                    Err(e) => state.error = Some(e.to_string()),
                 }
                 cx.notify();
             });

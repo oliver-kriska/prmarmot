@@ -23,6 +23,11 @@ bounded search aliases share one GraphQL operation. Native GitHub stacks are
 grouped by stack number and ordered by layer position within category, with
 partial-stack counts. Golden prototype behavior remains covered unchanged.
 
+**FACT:** The toolbar now filters loaded PRs and explicitly loads more results
+(five pages per alias maximum). Refresh resets to page one. A bottom details
+panel exposes loaded metadata without per-PR network calls; `/` focuses search,
+Space toggles details, and Escape closes them.
+
 **ASSESSMENT:** Search, clear ownership, and stack relationships improve this
 dense dashboard more than decorative artwork. The design rationale and next UX
 priorities are in `DESIGN.md`; limits and reviewer-vs-assignee semantics are in

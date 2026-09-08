@@ -5,10 +5,12 @@
 
 use regex::Regex;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::github::query::{
-    available_search_string, parse_review_response, parse_search_response, RawPr, PR_SEARCH_QUERY,
+    available_search_string, page_info, parse_alias_response, parse_review_response,
+    parse_search_response, RawPr, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY,
+    REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
     REVIEW_SEARCH_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
@@ -217,12 +219,81 @@ pub struct BoardRow {
 /// guardrail from the PRFlow post-mortem).
 pub const MAX_BOARD_ROWS: usize = 60;
 pub const MAX_EXPANDED_BOARD_ROWS: usize = 120;
+pub const MAX_PAGES_PER_ALIAS: u8 = 5;
+
+#[derive(Debug, Clone, Default)]
+struct AliasCursor {
+    end_cursor: Option<String>,
+    has_next: bool,
+    pages: u8,
+    blocked: bool,
+}
+
+impl AliasCursor {
+    fn from_page(page: crate::github::query::PageInfo) -> Self {
+        let blocked = page.has_next_page && page.end_cursor.is_none();
+        Self {
+            end_cursor: page.end_cursor,
+            has_next: page.has_next_page,
+            pages: 1,
+            blocked,
+        }
+    }
+
+    fn can_load(&self) -> bool {
+        self.has_next
+            && !self.blocked
+            && self.end_cursor.is_some()
+            && self.pages < MAX_PAGES_PER_ALIAS
+    }
+
+    fn update(&mut self, page: crate::github::query::PageInfo) {
+        let advances = page.end_cursor.is_some() && page.end_cursor != self.end_cursor;
+        self.pages += 1;
+        self.end_cursor = page.end_cursor;
+        // A malformed/non-advancing cursor is terminal, even if GitHub says more.
+        self.has_next = page.has_next_page;
+        self.blocked = page.has_next_page && !advances;
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BoardPagination {
+    authored: AliasCursor,
+    requested: AliasCursor,
+    available: AliasCursor,
+}
+
+impl BoardPagination {
+    pub fn can_load_more(&self, mode: Mode) -> bool {
+        match mode {
+            Mode::Authored => self.authored.can_load(),
+            Mode::Review => self.requested.can_load() || self.available.can_load(),
+        }
+    }
+
+    pub fn page_limit_reached(&self, mode: Mode) -> bool {
+        let limited = |c: &AliasCursor| c.has_next && c.pages >= MAX_PAGES_PER_ALIAS;
+        match mode {
+            Mode::Authored => limited(&self.authored),
+            Mode::Review => limited(&self.requested) || limited(&self.available),
+        }
+    }
+
+    fn truncated(&self, mode: Mode) -> bool {
+        match mode {
+            Mode::Authored => self.authored.has_next,
+            Mode::Review => self.requested.has_next || self.available.has_next,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct BoardFetch {
     pub rows: Vec<BoardRow>,
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
+    pub pagination: BoardPagination,
 }
 
 /// Fetch a complete board flow. Authored mode preserves the legacy single
@@ -244,10 +315,15 @@ pub fn fetch_board(
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let (prs, rate) = parse_search_response(&body)?;
+            let pagination = BoardPagination {
+                authored: AliasCursor::from_page(page_info(&body, "search")),
+                ..Default::default()
+            };
             Ok(BoardFetch {
                 rows: derive_rows(&prs, mode, repo, me, cfg),
                 rate,
                 truncated,
+                pagination,
             })
         }
         Mode::Review => {
@@ -297,9 +373,154 @@ pub fn fetch_board(
                 rows,
                 rate: parsed.rate,
                 truncated: parsed.truncated || overflow,
+                pagination: BoardPagination {
+                    requested: AliasCursor::from_page(parsed.requested_page),
+                    available: AliasCursor::from_page(parsed.available_page),
+                    ..Default::default()
+                },
             })
         }
     }
+}
+
+/// Fetch one user-requested page for each alias that still has a usable cursor.
+/// Exhausted aliases are omitted from the GraphQL operation. The returned value
+/// is independent, so callers can retain all prior rows/cursors on any error.
+pub fn fetch_more_board(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+    current: &BoardFetch,
+) -> Result<BoardFetch, GhError> {
+    let mut next = current.clone();
+    match mode {
+        Mode::Authored => {
+            if !next.pagination.authored.can_load() {
+                return Ok(next);
+            }
+            let search = crate::github::query::search_string(mode, repo, me);
+            let cursor = next.pagination.authored.end_cursor.clone().unwrap();
+            let body =
+                transport.graphql(PR_SEARCH_PAGE_QUERY, &[("q", &search), ("after", &cursor)])?;
+            let (prs, rate) = parse_search_response(&body)?;
+            next.pagination.authored.update(page_info(&body, "search"));
+            merge_authored(&mut next.rows, &prs, repo, me, cfg);
+            next.rate = rate;
+        }
+        Mode::Review => {
+            let requested = next.pagination.requested.can_load();
+            let available = next.pagination.available.can_load();
+            if !requested && !available {
+                return Ok(next);
+            }
+            let requested_search = crate::github::query::search_string(mode, repo, me);
+            let available_search = available_search_string(repo, me);
+            let mut requested_prs = Vec::new();
+            let mut available_prs = Vec::new();
+            if requested && available {
+                let rc = next.pagination.requested.end_cursor.clone().unwrap();
+                let ac = next.pagination.available.end_cursor.clone().unwrap();
+                let body = transport.graphql(
+                    REVIEW_BOTH_PAGE_QUERY,
+                    &[
+                        ("requested", &requested_search),
+                        ("requestedAfter", &rc),
+                        ("available", &available_search),
+                        ("availableAfter", &ac),
+                    ],
+                )?;
+                let parsed = parse_review_response(&body)?;
+                requested_prs = parsed.requested;
+                available_prs = parsed.available;
+                next.pagination.requested.update(parsed.requested_page);
+                next.pagination.available.update(parsed.available_page);
+                next.rate = parsed.rate;
+            } else {
+                let (query, alias, search, cursor) = if requested {
+                    (
+                        REVIEW_REQUESTED_PAGE_QUERY,
+                        "requested",
+                        &requested_search,
+                        next.pagination.requested.end_cursor.clone().unwrap(),
+                    )
+                } else {
+                    (
+                        REVIEW_AVAILABLE_PAGE_QUERY,
+                        "available",
+                        &available_search,
+                        next.pagination.available.end_cursor.clone().unwrap(),
+                    )
+                };
+                let body = transport.graphql(query, &[(alias, search), ("after", &cursor)])?;
+                let (prs, page, rate) = parse_alias_response(&body, alias)?;
+                if requested {
+                    requested_prs = prs;
+                    next.pagination.requested.update(page);
+                } else {
+                    available_prs = prs;
+                    next.pagination.available.update(page);
+                }
+                next.rate = rate;
+            }
+            merge_review(
+                &mut next.rows,
+                &requested_prs,
+                &available_prs,
+                repo,
+                me,
+                cfg,
+            );
+        }
+    }
+    next.truncated = next.pagination.truncated(mode);
+    Ok(next)
+}
+
+fn merge_authored(
+    rows: &mut Vec<BoardRow>,
+    prs: &[RawPr],
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+) {
+    let mut by_number: HashMap<u64, BoardRow> = rows.drain(..).map(|r| (r.number, r)).collect();
+    for pr in prs {
+        by_number.insert(pr.number, derive_row(pr, Mode::Authored, repo, me, cfg));
+    }
+    *rows = by_number.into_values().collect();
+    rows.sort_by_key(|r| (r.category.rank(), std::cmp::Reverse(r.number)));
+    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
+}
+
+fn merge_review(
+    rows: &mut Vec<BoardRow>,
+    requested: &[RawPr],
+    available: &[RawPr],
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+) {
+    let mut by_number: HashMap<u64, BoardRow> = rows.drain(..).map(|r| (r.number, r)).collect();
+    for pr in available
+        .iter()
+        .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
+    {
+        by_number
+            .entry(pr.number)
+            .or_insert_with(|| derive_review_row(pr, repo, me, cfg, QueueProvenance::Available));
+    }
+    // Requested provenance wins even when the broad alias produced it earlier.
+    for pr in requested.iter().filter(|pr| !is_own_pr(pr, me)) {
+        by_number.insert(
+            pr.number,
+            derive_review_row(pr, repo, me, cfg, QueueProvenance::Requested),
+        );
+    }
+    *rows = by_number.into_values().collect();
+    rows.sort_by_key(|r| (r.category.rank(), r.number));
+    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize * 2);
 }
 
 fn is_own_pr(pr: &RawPr, me: &str) -> bool {
@@ -436,6 +657,10 @@ fn derive_review_row(
 ) -> BoardRow {
     let mut row = derive_row(pr, Mode::Review, repo, me, cfg);
     row.queue_provenance = Some(provenance);
+    // The compact review queue does not display these columns, but its details
+    // panel still needs the metadata already present in the response.
+    row.requested = requested_reviewers(pr);
+    row.reviews = latest_reviews_excluding(pr, me, &cfg.bots);
     if provenance == QueueProvenance::Available
         && !matches!(row.category, Category::Done | Category::Draft)
     {
@@ -644,6 +869,8 @@ fn review_note(row: &BoardRow) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     struct FakeTransport(serde_json::Value);
 
@@ -656,6 +883,24 @@ mod tests {
             assert_eq!(query, REVIEW_SEARCH_QUERY);
             assert_eq!(variables.len(), 2);
             Ok(self.0.clone())
+        }
+    }
+
+    struct SequenceTransport(Mutex<VecDeque<Result<serde_json::Value, GhError>>>);
+
+    impl SequenceTransport {
+        fn new(values: Vec<Result<serde_json::Value, GhError>>) -> Self {
+            Self(Mutex::new(values.into()))
+        }
+    }
+
+    impl GithubTransport for SequenceTransport {
+        fn graphql(
+            &self,
+            _query: &str,
+            _variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            self.0.lock().unwrap().pop_front().unwrap()
         }
     }
 
@@ -1021,7 +1266,12 @@ mod tests {
     fn expanded_review_queue_filters_deduplicates_and_preserves_states() {
         let mut requested = base(10);
         requested["author"] = json!({"login": "alice"});
-        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
+        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+            {"requestedReviewer": {"__typename": "User", "login": "me"}}
+        ]});
+        requested["reviews"]["nodes"] = json!([
+            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"}
+        ]);
 
         let mut duplicate = requested.clone();
         duplicate["title"] = json!("broad duplicate must lose");
@@ -1087,6 +1337,10 @@ mod tests {
             fetched.rows[0].queue_provenance,
             Some(QueueProvenance::Requested)
         );
+        assert_eq!(fetched.rows[0].requested, vec!["me"]);
+        assert_eq!(fetched.rows[0].reviews.len(), 1);
+        assert_eq!(fetched.rows[0].reviews[0].login.as_deref(), Some("bob"));
+        assert_eq!(fetched.rows[0].reviews[0].state, "COMMENTED");
         assert_eq!(fetched.rows[1].category, Category::Available);
         assert_eq!(fetched.rows[2].category, Category::Done);
         assert_eq!(fetched.rows[3].category, Category::Draft);
@@ -1109,6 +1363,156 @@ mod tests {
         )
         .unwrap();
         assert!(fetched.truncated);
+    }
+
+    #[test]
+    fn paginated_review_deduplicates_with_requested_priority_and_skips_exhausted_alias() {
+        let mut available_duplicate = base(20);
+        available_duplicate["author"] = json!({"login": "alice"});
+        available_duplicate["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+        let first = json!({"data": {
+            "requested": {"pageInfo": {"hasNextPage": false, "endCursor": "r1"}, "nodes": []},
+            "available": {"pageInfo": {"hasNextPage": true, "endCursor": "a1"}, "nodes": [available_duplicate]},
+            "rateLimit": null
+        }});
+        let mut requested_duplicate = base(20);
+        requested_duplicate["author"] = json!({"login": "alice"});
+        requested_duplicate["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
+        // The only live alias is available; a requested-looking result there is
+        // filtered, proving an exhausted requested alias was not refetched.
+        let second = json!({"data": {
+            "available": {"pageInfo": {"hasNextPage": false, "endCursor": "a2"}, "nodes": [requested_duplicate]},
+            "rateLimit": null
+        }});
+        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
+        let initial = fetch_board(&transport, Mode::Review, "acme/widgets", "me", &cfg()).unwrap();
+        let fetched = fetch_more_board(
+            &transport,
+            Mode::Review,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            &initial,
+        )
+        .unwrap();
+        assert_eq!(fetched.rows.len(), 1);
+        assert_eq!(
+            fetched.rows[0].queue_provenance,
+            Some(QueueProvenance::Available)
+        );
+        assert!(!fetched.pagination.can_load_more(Mode::Review));
+    }
+
+    #[test]
+    fn requested_page_replaces_an_available_duplicate() {
+        let mut broad = base(30);
+        broad["author"] = json!({"login": "alice"});
+        broad["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+        let first = json!({"data": {
+            "requested": {"pageInfo": {"hasNextPage": true, "endCursor": "r1"}, "nodes": []},
+            "available": {"pageInfo": {"hasNextPage": false, "endCursor": "a1"}, "nodes": [broad]},
+            "rateLimit": null
+        }});
+        let mut requested = base(30);
+        requested["author"] = json!({"login": "alice"});
+        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
+        let second = json!({"data": {
+            "requested": {"pageInfo": {"hasNextPage": false, "endCursor": "r2"}, "nodes": [requested]},
+            "rateLimit": null
+        }});
+        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
+        let initial = fetch_board(&transport, Mode::Review, "acme/widgets", "me", &cfg()).unwrap();
+        let fetched = fetch_more_board(
+            &transport,
+            Mode::Review,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            &initial,
+        )
+        .unwrap();
+        assert_eq!(fetched.rows.len(), 1);
+        assert_eq!(
+            fetched.rows[0].queue_provenance,
+            Some(QueueProvenance::Requested)
+        );
+    }
+
+    #[test]
+    fn authored_pagination_advances_and_missing_cursor_is_terminal() {
+        let first = json!({"data": {
+            "search": {"pageInfo": {"hasNextPage": true, "endCursor": "p1"}, "nodes": [base(2)]},
+            "rateLimit": null
+        }});
+        let second = json!({"data": {
+            "search": {"pageInfo": {"hasNextPage": true, "endCursor": null}, "nodes": [base(1)]},
+            "rateLimit": null
+        }});
+        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
+        let initial =
+            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+        let fetched = fetch_more_board(
+            &transport,
+            Mode::Authored,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            &initial,
+        )
+        .unwrap();
+        assert_eq!(
+            fetched.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert!(!fetched.pagination.can_load_more(Mode::Authored));
+    }
+
+    #[test]
+    fn pagination_stops_at_five_pages_and_errors_do_not_mutate_input() {
+        let page = |cursor: &str| {
+            json!({"data": {
+                "search": {"pageInfo": {"hasNextPage": true, "endCursor": cursor}, "nodes": []},
+                "rateLimit": null
+            }})
+        };
+        let transport = SequenceTransport::new(vec![
+            Ok(page("p1")),
+            Ok(page("p2")),
+            Ok(page("p3")),
+            Ok(page("p4")),
+            Ok(page("p5")),
+        ]);
+        let mut fetched =
+            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+        for _ in 0..4 {
+            fetched = fetch_more_board(
+                &transport,
+                Mode::Authored,
+                "acme/widgets",
+                "me",
+                &cfg(),
+                &fetched,
+            )
+            .unwrap();
+        }
+        assert!(!fetched.pagination.can_load_more(Mode::Authored));
+        assert!(fetched.pagination.page_limit_reached(Mode::Authored));
+
+        let error_seed = SequenceTransport::new(vec![Ok(page("e1"))]);
+        let before_error =
+            fetch_board(&error_seed, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+        let error_transport = SequenceTransport::new(vec![Err(GhError::Network("offline".into()))]);
+        let before = before_error.rows.len();
+        assert!(fetch_more_board(
+            &error_transport,
+            Mode::Authored,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            &before_error
+        )
+        .is_err());
+        assert_eq!(before_error.rows.len(), before);
     }
 
     #[test]
