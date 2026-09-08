@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "prboard"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs 7.0.0",
