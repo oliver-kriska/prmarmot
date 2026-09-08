@@ -32,6 +32,7 @@ pub struct Launch {
     pub refresh: Duration,
     /// Repo-picker entries; the active repo is always among them.
     pub repos: Vec<String>,
+    pub pinned_repos: Vec<String>,
 }
 
 /// Persist the current window size so the next launch opens the same way.
@@ -49,6 +50,8 @@ pub struct RootView {
     table: Entity<TableState<BoardTableDelegate>>,
     repo_select: Entity<SelectState<SearchableVec<String>>>,
     configured_repos: Vec<String>,
+    pinned_repos: Vec<String>,
+    search_open: bool,
     discovering_repos: bool,
     repo_status: String,
     search: Entity<InputState>,
@@ -131,15 +134,7 @@ impl RootView {
                     let SelectEvent::Confirm(Some(repo)) = event else {
                         return;
                     };
-                    let repo = repo.clone();
-                    crate::config::persist_str("repo", &repo);
-                    // View-local navigation state belongs to the old repo — its
-                    // cached rows and per-queue selections are meaningless for a
-                    // different repo (critique #4). Clear before switching.
-                    this.selections.clear();
-                    this.pending_restore = None;
-                    this.last_selected = 0;
-                    this.state.update(cx, |s, cx| s.switch_repo(repo, cx));
+                    this.select_repo(repo.clone(), cx);
                 },
             )
             .detach();
@@ -229,6 +224,8 @@ impl RootView {
             table,
             repo_select,
             configured_repos: launch.repos,
+            pinned_repos: launch.pinned_repos,
+            search_open: false,
             discovering_repos: false,
             repo_status: String::new(),
             search,
@@ -281,6 +278,33 @@ impl RootView {
         if self.selected_row_url(cx).is_none() {
             self.details_open = false;
         }
+        cx.notify();
+    }
+
+    fn select_repo(&mut self, repo: String, cx: &mut Context<Self>) {
+        if self.state.read(cx).repo.eq_ignore_ascii_case(&repo) {
+            return;
+        }
+        crate::config::persist_str("repo", &repo);
+        self.selections.clear();
+        self.pending_restore = None;
+        self.last_selected = 0;
+        self.details_open = false;
+        self.state.update(cx, |s, cx| s.switch_repo(repo, cx));
+    }
+
+    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
+        let repo = self.state.read(cx).repo.clone();
+        if let Some(ix) = self
+            .pinned_repos
+            .iter()
+            .position(|pin| pin.eq_ignore_ascii_case(&repo))
+        {
+            self.pinned_repos.remove(ix);
+        } else if self.pinned_repos.len() < crate::config::MAX_PINNED_REPOS {
+            self.pinned_repos.push(repo);
+        }
+        crate::config::persist_pins(&self.pinned_repos);
         cx.notify();
     }
 
@@ -506,7 +530,9 @@ impl RootView {
         let platform = event.keystroke.modifiers.platform;
         match key {
             "/" if !platform => {
+                self.search_open = true;
                 self.search.focus_handle(cx).focus(window, cx);
+                cx.notify();
                 cx.stop_propagation();
             }
             "space" if !platform => self.toggle_details(window, cx),
@@ -566,28 +592,99 @@ impl RootView {
 
     fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
+        let pinned = self
+            .pinned_repos
+            .iter()
+            .any(|pin| pin.eq_ignore_ascii_case(&state.repo));
         h_flex()
             .px(px(16.))
             .py(px(6.))
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(
-                div().w(px(280.)).child(
-                    Input::new(&self.search)
+            .when(!self.search_open, |bar| {
+                bar.child(
+                    h_flex()
+                        .id("pinned-repos")
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .gap_2()
+                        .when(self.pinned_repos.is_empty(), |pins| {
+                            pins.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Pin your frequent repositories"),
+                            )
+                        })
+                        .children(self.pinned_repos.iter().enumerate().map(|(ix, repo)| {
+                            let target = repo.clone();
+                            Button::new(("pinned-repo", ix))
+                                .small()
+                                .child(div().max_w(px(160.)).truncate().child(repo.clone()))
+                                .when(repo.eq_ignore_ascii_case(&state.repo), |button| {
+                                    button
+                                        .bg(cx.theme().accent)
+                                        .text_color(cx.theme().accent_foreground)
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_repo(target.clone(), cx);
+                                    this.repo_select.update(cx, |select, cx| {
+                                        select.set_selected_value(&target, window, cx);
+                                    });
+                                    this.table.focus_handle(cx).focus(window, cx);
+                                }))
+                        })),
+                )
+                .child(
+                    Button::new("pin-current")
                         .small()
-                        .aria_label("Filter loaded PRs"),
-                ),
-            )
-            .when(!self.filter_text.is_empty(), |bar| {
+                        .w(px(60.))
+                        .label(if pinned { "Pinned" } else { "Pin" })
+                        .when(pinned, |button| button.bg(cx.theme().secondary))
+                        .tooltip(if pinned {
+                            "Unpin this repository"
+                        } else if self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS {
+                            "Unpin a repository first (12 pins maximum)"
+                        } else {
+                            "Pin this repository"
+                        })
+                        .disabled(
+                            !pinned && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_pin(cx))),
+                )
+                .child(
+                    Button::new("open-search")
+                        .small()
+                        .label("Search · /")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.search_open = true;
+                            this.search.focus_handle(cx).focus(window, cx);
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(self.search_open, |bar| {
+                bar.child(
+                    div().w(px(280.)).child(
+                        Input::new(&self.search)
+                            .small()
+                            .aria_label("Filter loaded PRs"),
+                    ),
+                )
+            })
+            .when(self.search_open, |bar| {
                 bar.child(
                     Button::new("clear-filter")
                         .small()
-                        .label("Clear")
+                        .label("Close search")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.search
                                 .update(cx, |input, cx| input.set_value("", window, cx));
                             this.filter_text.clear();
+                            this.search_open = false;
                             this.sync_table(cx);
                             this.table.focus_handle(cx).focus(window, cx);
                         })),
@@ -605,7 +702,7 @@ impl RootView {
                         )),
                 )
             })
-            .child(div().flex_1())
+            .when(self.search_open, |bar| bar.child(div().flex_1()))
             .when(state.truncated, |bar| {
                 bar.child(
                     Button::new("load-more")

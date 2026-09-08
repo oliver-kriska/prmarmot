@@ -129,6 +129,12 @@ fn main() {
 
     // Repo-picker entries: config list with the active repo always present.
     let mut repos = file.repos.clone();
+    let pinned_repos = config::normalized_pins(&file.pinned_repos);
+    for pin in &pinned_repos {
+        if !repos.contains(pin) {
+            repos.push(pin.clone());
+        }
+    }
     if !repos.contains(&repo) {
         repos.insert(0, repo.clone());
     }
@@ -136,6 +142,7 @@ fn main() {
         theme: crate::theme::ThemePref::resolve(file.theme.as_deref()),
         refresh: crate::state::refresh_interval(file.refresh_secs),
         repos,
+        pinned_repos,
     };
     let window_pref = file.window;
 

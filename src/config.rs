@@ -15,6 +15,8 @@ pub struct FileConfig {
     /// Entries for the repo picker; the active repo is always included.
     #[serde(default)]
     pub repos: Vec<String>,
+    #[serde(default)]
+    pub pinned_repos: Vec<String>,
     pub refresh_secs: Option<u64>,
     /// `system` | `light` | `dark`.
     pub theme: Option<String>,
@@ -74,6 +76,32 @@ pub fn persist_str(key: &str, value: &str) {
     });
 }
 
+pub const MAX_PINNED_REPOS: usize = 12;
+
+pub fn normalized_pins(repos: &[String]) -> Vec<String> {
+    let mut pins: Vec<String> = Vec::new();
+    for repo in repos {
+        let repo = repo.trim();
+        if !repo.is_empty() && !pins.iter().any(|pin| pin.eq_ignore_ascii_case(repo)) {
+            pins.push(repo.to_owned());
+            if pins.len() == MAX_PINNED_REPOS {
+                break;
+            }
+        }
+    }
+    pins
+}
+
+pub fn persist_pins(pins: &[String]) {
+    persist(|doc| {
+        doc["pinned_repos"] = toml_edit::value(
+            pins.iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>(),
+        );
+    });
+}
+
 /// Persist the window size under `[window]`.
 pub fn persist_window(width: f32, height: f32) {
     persist(|doc| {
@@ -102,5 +130,32 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
     }
     if let Err(e) = std::fs::write(&path, doc.to_string()) {
         eprintln!("prboard: could not save {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pins_are_optional_ordered_unique_and_bounded() {
+        let old: FileConfig = toml::from_str("repo = 'acme/api'").unwrap();
+        assert!(old.pinned_repos.is_empty());
+        let mut input = vec![" acme/api ".into(), "ACME/API".into(), "".into()];
+        input.extend((0..20).map(|n| format!("acme/repo{n}")));
+        let pins = normalized_pins(&input);
+        assert_eq!(pins.len(), MAX_PINNED_REPOS);
+        assert_eq!(&pins[..2], &["acme/api", "acme/repo0"]);
+        let mut doc = "repo = 'acme/api'\n# keep this\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        doc["pinned_repos"] = toml_edit::value(
+            pins.iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>(),
+        );
+        assert!(doc.to_string().contains("# keep this"));
+        let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(parsed.pinned_repos, pins);
     }
 }

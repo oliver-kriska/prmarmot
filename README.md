@@ -89,6 +89,7 @@ every value optional, env vars override the file, CLI args override both:
 ```toml
 repo = "acme/widgets"              # default repo
 repos = ["acme/widgets", "acme/api"]  # extra entries merged with discovered repos
+pinned_repos = ["acme/widgets", "acme/api"] # one-click toolbar shortcuts
 refresh_secs = 300                 # hard floor 30
 theme = "system"                   # system | light | dark
 default_reviewers = ["alice", "bob"]
@@ -111,8 +112,14 @@ Use the visible **My PRs / Review queue** control in the titlebar, or press `1`/
 directly (`v` still toggles between them). Other keys: `↑`/`↓` select · `⏎`/`o` open PR in
 browser · `y` copy PR URL · `r` refresh now ·
 `t` cycle theme (system → light → dark) · `q` quit.
-Press `/` to filter loaded PRs by number, title, author, label, issue, or note.
-Words narrow the results together; Clear restores the loaded queue.
+Choose a repo from the dropdown and click **Pin** to add a one-click
+toolbar shortcut. Click **Pinned** to remove it without switching repos. Up to
+12 pins are saved in order across restarts; the shortcut strip scrolls horizontally
+when needed. Switching keeps your current queue. Pins do not fetch in the background.
+
+Click **Search** or press `/` to filter loaded PRs by number, title, author,
+label, issue, or note. Words narrow the results together; **Close search** clears
+the filter and brings back the pinned shortcuts.
 Press `Space` or Details to inspect the selected PR (or the first visible PR
 when nothing is selected); `Esc` closes the panel. Filtering out the selection
 closes details automatically. Single-click a non-link cell to select another PR.

@@ -94,6 +94,11 @@ keycaps 3 px. Small radii are the native-Mac tell.
 - A compact toolbar exposes local text filtering and the visible/loaded count. Explicit
   Load more fetches bounded pages, never infinite-scroll background requests. Refresh
   returns to page one; filtering does not imply a server-wide search.
+- Frequent-repo shortcuts now take priority in that toolbar. Pin/unpin persists an
+  ordered list; the active shortcut uses the existing accent treatment. Full owner/repo
+  labels avoid ambiguous names, and overflow scrolls rather than crowding the controls.
+  Search or `/` temporarily replaces the shortcuts with filtering; Close search resets
+  the filter. These are navigation shortcuts, not independent polling tabs.
 - Details opens below the table rather than narrowing its columns. It follows selection,
   shows unelided snapshot metadata, and closes with Escape. Space toggles it; `/` focuses
   filtering. Dashboard shortcuts must not consume typing inside an input.
