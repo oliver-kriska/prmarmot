@@ -11,7 +11,7 @@ mod theme;
 
 use std::sync::Arc;
 
-use gpui::{px, size, App, AppContext, Application, WindowBounds, WindowKind, WindowOptions};
+use gpui::{px, size, App, AppContext, WindowBounds, WindowKind, WindowOptions};
 use prboard_core::board::{BoardConfig, IssueLinkRule, Mode};
 use prboard_core::github::gh_cli::{current_login, detect_repo, GhCliTransport};
 
@@ -139,7 +139,7 @@ fn main() {
     };
     let window_pref = file.window;
 
-    Application::new()
+    gpui_platform::application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
@@ -167,7 +167,8 @@ fn main() {
                 let state = cx.new(|_| {
                     AppState::new(repo, me, mode, config, Arc::new(GhCliTransport::new()))
                 });
-                cx.new(|cx| RootView::new(state, launch, window, cx))
+                let view = cx.new(|cx| RootView::new(state, launch, window, cx));
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
             .expect("failed to open window");
         });

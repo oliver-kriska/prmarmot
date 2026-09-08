@@ -2,6 +2,7 @@
 //! model). `gh` owns auth, token refresh, enterprise hosts. Calls block — run
 //! them on a background thread/executor, never the UI thread.
 
+use std::collections::HashSet;
 use std::io;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +18,14 @@ use super::{GhError, GithubTransport, TokenSource};
 /// blocks every future fetch including the `r` key. Kill and surface it.
 const GRAPHQL_TIMEOUT: Duration = Duration::from_secs(60);
 const QUICK_TIMEOUT: Duration = Duration::from_secs(30);
+pub const MAX_DISCOVERED_REPOS: usize = 1_000;
+const REPOS_PER_PAGE: usize = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoDiscovery {
+    pub repos: Vec<String>,
+    pub truncated: bool,
+}
 
 /// `Command::output()` with a watchdog: a helper thread SIGKILLs the child
 /// (via `kill -9 <pid>`, no extra deps) if it outlives `timeout`. Output is
@@ -201,19 +210,81 @@ pub fn current_login() -> Result<String, GhError> {
     run_gh_line(Command::new(resolve_gh_path()).args(["api", "user", "--jq", ".login"]))
 }
 
-/// Repos the user can access, newest-activity first — feeds the repo picker.
-pub fn list_repos(limit: u32) -> Result<Vec<String>, GhError> {
-    let out = run_gh_line(Command::new(resolve_gh_path()).args([
-        "repo",
-        "list",
-        "--limit",
-        &limit.to_string(),
-        "--json",
-        "nameWithOwner",
-        "--jq",
-        ".[].nameWithOwner",
-    ]))?;
-    Ok(out.lines().map(|l| l.trim().to_string()).collect())
+/// Every repository affiliation visible to the authenticated user, newest
+/// activity first. Unlike `gh repo list`, this includes collaborations and
+/// organization membership. Pagination and the memory bound are explicit.
+pub fn list_repos() -> Result<RepoDiscovery, GhError> {
+    let gh_path = resolve_gh_path();
+    discover_repos_with(|page| fetch_repo_page(&gh_path, page))
+}
+
+/// Injectable pagination core used by tests and alternative transports.
+pub fn discover_repos_with<F>(mut fetch_page: F) -> Result<RepoDiscovery, GhError>
+where
+    F: FnMut(usize) -> Result<Value, GhError>,
+{
+    let mut repos = Vec::new();
+    let mut seen = HashSet::new();
+    // Bound calls as well as memory: repos can move between pages as they
+    // receive pushes, so repeated pages must not keep discovery alive forever.
+    for page in 1..=MAX_DISCOVERED_REPOS.div_ceil(REPOS_PER_PAGE) {
+        let value = fetch_page(page)?;
+        let items = value
+            .as_array()
+            .ok_or_else(|| GhError::Parse(format!("user/repos page {page} was not an array")))?;
+        for item in items {
+            let name = item
+                .get("full_name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    GhError::Parse(format!("user/repos page {page} item missing full_name"))
+                })?;
+            if seen.insert(name.to_lowercase()) {
+                repos.push(name.to_string());
+                if repos.len() == MAX_DISCOVERED_REPOS {
+                    return Ok(RepoDiscovery {
+                        repos,
+                        truncated: items.len() == REPOS_PER_PAGE,
+                    });
+                }
+            }
+        }
+        if items.len() < REPOS_PER_PAGE {
+            return Ok(RepoDiscovery {
+                repos,
+                truncated: false,
+            });
+        }
+    }
+    Ok(RepoDiscovery {
+        repos,
+        truncated: true,
+    })
+}
+
+fn fetch_repo_page(gh_path: &str, page: usize) -> Result<Value, GhError> {
+    let out = output_with_timeout(
+        Command::new(gh_path).args([
+            "api",
+            "--method",
+            "GET",
+            "user/repos",
+            "-f",
+            "affiliation=owner,collaborator,organization_member",
+            "-f",
+            "per_page=100",
+            "-f",
+            "sort=pushed",
+            "-f",
+            &format!("page={page}"),
+        ]),
+        QUICK_TIMEOUT,
+    )?;
+    if !out.status.success() {
+        return Err(classify_failure(&String::from_utf8_lossy(&out.stderr)));
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| GhError::Parse(format!("invalid user/repos page {page}: {e}")))
 }
 
 fn run_gh_line(cmd: &mut Command) -> Result<String, GhError> {
@@ -226,4 +297,66 @@ fn run_gh_line(cmd: &mut Command) -> Result<String, GhError> {
         return Err(GhError::Parse("empty gh output".into()));
     }
     Ok(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn repo_discovery_paginates_and_deduplicates() {
+        let first: Vec<Value> = (0..REPOS_PER_PAGE)
+            .map(|n| json!({"full_name": format!("acme/repo-{n}")}))
+            .collect();
+        let second = json!([
+            {"full_name": "acme/repo-0"},
+            {"full_name": "other/shared"}
+        ]);
+        let result = discover_repos_with(|page| match page {
+            1 => Ok(Value::Array(first.clone())),
+            2 => Ok(second.clone()),
+            _ => panic!("unexpected page"),
+        })
+        .unwrap();
+        assert_eq!(result.repos.len(), 101);
+        assert_eq!(result.repos.last().unwrap(), "other/shared");
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn repo_discovery_propagates_page_error() {
+        let err = discover_repos_with(|_| Err(GhError::Network("offline".into()))).unwrap_err();
+        assert_eq!(err, GhError::Network("offline".into()));
+    }
+
+    #[test]
+    fn repo_discovery_reports_its_hard_bound() {
+        let result = discover_repos_with(|page| {
+            Ok(Value::Array(
+                (0..REPOS_PER_PAGE)
+                    .map(|n| json!({"full_name": format!("acme/{page}-{n}")}))
+                    .collect(),
+            ))
+        })
+        .unwrap();
+        assert_eq!(result.repos.len(), MAX_DISCOVERED_REPOS);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn repeated_full_pages_cannot_loop_forever() {
+        let mut calls = 0;
+        let result = discover_repos_with(|_| {
+            calls += 1;
+            Ok(json!(vec![
+                json!({"full_name": "acme/repo"});
+                REPOS_PER_PAGE
+            ]))
+        })
+        .unwrap();
+        assert_eq!(calls, 10);
+        assert_eq!(result.repos, vec!["acme/repo"]);
+        assert!(result.truncated);
+    }
 }

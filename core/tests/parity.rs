@@ -127,3 +127,16 @@ fn graphql_rate_limit_error_is_classified() {
         prboard_core::github::GhError::RateLimited { .. }
     ));
 }
+
+#[test]
+fn graphql_partial_data_errors_are_not_silent_success() {
+    let body = json!({
+        "data": {"search": {"nodes": []}},
+        "errors": [{"message": "field resolution failed"}]
+    });
+    let err = parse_search_response(&body).unwrap_err();
+    assert_eq!(
+        err,
+        prboard_core::github::GhError::GraphqlErrors(vec!["field resolution failed".into()])
+    );
+}

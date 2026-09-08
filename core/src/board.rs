@@ -5,7 +5,14 @@
 
 use regex::Regex;
 
-use crate::github::query::RawPr;
+use std::collections::HashSet;
+
+use crate::github::query::{
+    available_search_string, parse_review_response, parse_search_response, RawPr, PR_SEARCH_QUERY,
+    REVIEW_SEARCH_QUERY,
+};
+use crate::github::rate_limit::RateLimitInfo;
+use crate::github::{GhError, GithubTransport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -22,6 +29,8 @@ pub enum Category {
     Await,
     // Review mode
     Todo,
+    /// No reviewer is currently requested; available to pick up.
+    Available,
     Done,
     // Both
     Draft,
@@ -33,6 +42,7 @@ impl Category {
             Category::Action => "action",
             Category::Await => "await",
             Category::Todo => "todo",
+            Category::Available => "available",
             Category::Done => "done",
             Category::Draft => "draft",
         }
@@ -41,8 +51,9 @@ impl Category {
     fn rank(&self) -> u8 {
         match self {
             Category::Action | Category::Todo => 0,
-            Category::Await | Category::Done => 1,
-            Category::Draft => 2,
+            Category::Await | Category::Available => 1,
+            Category::Done => 2,
+            Category::Draft => 3,
         }
     }
 }
@@ -94,6 +105,20 @@ impl ReviewState {
 pub struct ReviewSummary {
     pub login: Option<String>,
     pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackInfo {
+    pub number: u64,
+    pub size: u64,
+    pub base_ref_name: String,
+    pub position: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueProvenance {
+    Requested,
+    Available,
 }
 
 /// A single thing keeping an authored PR out of the merge queue, in the
@@ -164,6 +189,8 @@ pub struct BoardRow {
     pub issue: Option<String>,
     pub issue_url: Option<String>,
     pub author: Option<String>,
+    pub stack: Option<StackInfo>,
+    pub queue_provenance: Option<QueueProvenance>,
     pub draft: bool,
     pub category: Category,
     pub bug: bool,
@@ -189,6 +216,95 @@ pub struct BoardRow {
 /// this keeps the bound explicit at the data boundary (bounded-everything
 /// guardrail from the PRFlow post-mortem).
 pub const MAX_BOARD_ROWS: usize = 60;
+pub const MAX_EXPANDED_BOARD_ROWS: usize = 120;
+
+#[derive(Debug, Clone)]
+pub struct BoardFetch {
+    pub rows: Vec<BoardRow>,
+    pub rate: Option<RateLimitInfo>,
+    pub truncated: bool,
+}
+
+/// Fetch a complete board flow. Authored mode preserves the legacy single
+/// search; review mode combines requested and unrequested candidates in one
+/// GraphQL request, with requested rows first and deduplicated.
+pub fn fetch_board(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+) -> Result<BoardFetch, GhError> {
+    match mode {
+        Mode::Authored => {
+            let search = crate::github::query::search_string(mode, repo, me);
+            let body = transport.graphql(PR_SEARCH_QUERY, &[("q", &search)])?;
+            let truncated = body
+                .pointer("/data/search/pageInfo/hasNextPage")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let (prs, rate) = parse_search_response(&body)?;
+            Ok(BoardFetch {
+                rows: derive_rows(&prs, mode, repo, me, cfg),
+                rate,
+                truncated,
+            })
+        }
+        Mode::Review => {
+            let requested_search = crate::github::query::search_string(mode, repo, me);
+            let available_search = available_search_string(repo, me);
+            let body = transport.graphql(
+                REVIEW_SEARCH_QUERY,
+                &[
+                    ("requested", &requested_search),
+                    ("available", &available_search),
+                ],
+            )?;
+            let parsed = parse_review_response(&body)?;
+            let mut seen = HashSet::new();
+            let mut rows = Vec::new();
+
+            for pr in parsed.requested.iter().filter(|pr| !is_own_pr(pr, me)) {
+                if seen.insert(pr.number) {
+                    rows.push(derive_review_row(
+                        pr,
+                        repo,
+                        me,
+                        cfg,
+                        QueueProvenance::Requested,
+                    ));
+                }
+            }
+            for pr in parsed
+                .available
+                .iter()
+                .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
+            {
+                if seen.insert(pr.number) {
+                    rows.push(derive_review_row(
+                        pr,
+                        repo,
+                        me,
+                        cfg,
+                        QueueProvenance::Available,
+                    ));
+                }
+            }
+            let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
+            rows.truncate(MAX_EXPANDED_BOARD_ROWS);
+            rows.sort_by_key(|r| (r.category.rank(), r.number));
+            Ok(BoardFetch {
+                rows,
+                rate: parsed.rate,
+                truncated: parsed.truncated || overflow,
+            })
+        }
+    }
+}
+
+fn is_own_pr(pr: &RawPr, me: &str) -> bool {
+    pr.author.as_ref().and_then(|a| a.login.as_deref()) == Some(me)
+}
 
 /// Derive and sort the full board. `me` must be the resolved login.
 pub fn derive_rows(
@@ -233,6 +349,13 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         issue,
         issue_url,
         author: pr.author.as_ref().and_then(|a| a.login.clone()),
+        stack: pr.stack.as_ref().map(|stack| StackInfo {
+            number: stack.number,
+            size: stack.size,
+            base_ref_name: stack.base_ref_name.clone(),
+            position: pr.stack_entry.as_ref().map(|entry| entry.position),
+        }),
+        queue_provenance: None,
         draft: pr.is_draft,
         category: Category::Draft, // set below
         bug,
@@ -300,6 +423,24 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             row.my_review = Some(mine);
             row.note = review_note(&row);
         }
+    }
+    row
+}
+
+fn derive_review_row(
+    pr: &RawPr,
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+    provenance: QueueProvenance,
+) -> BoardRow {
+    let mut row = derive_row(pr, Mode::Review, repo, me, cfg);
+    row.queue_provenance = Some(provenance);
+    if provenance == QueueProvenance::Available
+        && !matches!(row.category, Category::Done | Category::Draft)
+    {
+        row.category = Category::Available;
+        row.note = review_note(&row);
     }
     row
 }
@@ -477,11 +618,13 @@ fn authored_note(row: &BoardRow) -> String {
 /// Mode B Note (SKILL.md).
 fn review_note(row: &BoardRow) -> String {
     match row.category {
-        Category::Todo => {
+        Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
                 "⚠️ CI red — maybe wait for green".to_string()
             } else if row.conflict {
                 "⚠️ has conflicts".to_string()
+            } else if row.category == Category::Available {
+                "available for review".to_string()
             } else {
                 "🔵 needs your review".to_string()
             }
@@ -501,6 +644,20 @@ fn review_note(row: &BoardRow) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct FakeTransport(serde_json::Value);
+
+    impl GithubTransport for FakeTransport {
+        fn graphql(
+            &self,
+            query: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            assert_eq!(query, REVIEW_SEARCH_QUERY);
+            assert_eq!(variables.len(), 2);
+            Ok(self.0.clone())
+        }
+    }
 
     fn cfg() -> BoardConfig {
         BoardConfig {
@@ -858,5 +1015,145 @@ mod tests {
         let prs: Vec<RawPr> = (0..100).map(|n| pr(base(n))).collect();
         let rows = derive_rows(&prs, Mode::Authored, "acme/widgets", "me", &cfg());
         assert_eq!(rows.len(), MAX_BOARD_ROWS);
+    }
+
+    #[test]
+    fn expanded_review_queue_filters_deduplicates_and_preserves_states() {
+        let mut requested = base(10);
+        requested["author"] = json!({"login": "alice"});
+        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
+
+        let mut duplicate = requested.clone();
+        duplicate["title"] = json!("broad duplicate must lose");
+
+        let mut available = base(11);
+        available["author"] = json!({"login": "bob"});
+        available["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+
+        let mut completed = base(12);
+        completed["author"] = json!({"login": "carol"});
+        completed["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+        completed["reviews"]["nodes"] = json!([{
+            "author": {"login": "me"}, "state": "APPROVED",
+            "submittedAt": "2026-07-21T10:00:00Z"
+        }]);
+
+        let mut draft = base(13);
+        draft["author"] = json!({"login": "dave"});
+        draft["isDraft"] = json!(true);
+        draft["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+
+        let mut own = base(14);
+        own["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+
+        let mut assigned_other = base(15);
+        assigned_other["author"] = json!({"login": "eve"});
+        assigned_other["reviewRequests"] = json!({
+            "totalCount": 1,
+            "nodes": [{"requestedReviewer": {"__typename": "User", "login": "other"}}]
+        });
+
+        let mut team_requested = base(16);
+        team_requested["author"] = json!({"login": "frank"});
+        team_requested["reviewRequests"] = json!({
+            "totalCount": 1,
+            "nodes": [{"requestedReviewer": {"__typename": "Team", "slug": "platform"}}]
+        });
+
+        let body = json!({
+            "data": {
+                "requested": {"pageInfo": {"hasNextPage": false}, "nodes": [requested]},
+                "available": {"pageInfo": {"hasNextPage": false}, "nodes": [
+                    duplicate, available, completed, draft, own, assigned_other, team_requested
+                ]},
+                "rateLimit": null
+            }
+        });
+        let fetched = fetch_board(
+            &FakeTransport(body),
+            Mode::Review,
+            "acme/widgets",
+            "me",
+            &cfg(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fetched.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![10, 11, 12, 13]
+        );
+        assert_eq!(fetched.rows[0].category, Category::Todo);
+        assert_eq!(
+            fetched.rows[0].queue_provenance,
+            Some(QueueProvenance::Requested)
+        );
+        assert_eq!(fetched.rows[1].category, Category::Available);
+        assert_eq!(fetched.rows[2].category, Category::Done);
+        assert_eq!(fetched.rows[3].category, Category::Draft);
+        assert!(!fetched.truncated);
+    }
+
+    #[test]
+    fn expanded_review_queue_surfaces_alias_truncation() {
+        let body = json!({"data": {
+            "requested": {"pageInfo": {"hasNextPage": true}, "nodes": []},
+            "available": {"pageInfo": {"hasNextPage": false}, "nodes": []},
+            "rateLimit": null
+        }});
+        let fetched = fetch_board(
+            &FakeTransport(body),
+            Mode::Review,
+            "acme/widgets",
+            "me",
+            &cfg(),
+        )
+        .unwrap();
+        assert!(fetched.truncated);
+    }
+
+    #[test]
+    fn stack_metadata_is_native_and_labels_do_not_infer_it() {
+        let mut stacked = base(40);
+        stacked["stack"] = json!({"number": 7, "size": 3, "baseRefName": "main"});
+        stacked["stackEntry"] = json!({"position": 2});
+        let row = derive_one(stacked, Mode::Authored);
+        assert_eq!(
+            row.stack,
+            Some(StackInfo {
+                number: 7,
+                size: 3,
+                base_ref_name: "main".into(),
+                position: Some(2),
+            })
+        );
+
+        let mut no_position = base(42);
+        no_position["stack"] = json!({"number": 8, "size": 2, "baseRefName": "develop"});
+        assert_eq!(
+            derive_one(no_position, Mode::Authored)
+                .stack
+                .unwrap()
+                .position,
+            None
+        );
+
+        let mut label_only = base(41);
+        label_only["labels"]["nodes"] = json!([{"name": "stack"}]);
+        assert!(derive_one(label_only, Mode::Authored).stack.is_none());
+    }
+
+    #[test]
+    fn available_review_keeps_health_warning() {
+        let mut pr: RawPr = serde_json::from_value(base(99)).unwrap();
+        pr.mergeable = Some("CONFLICTING".into());
+        let row = derive_review_row(
+            &pr,
+            "acme/widgets",
+            "reviewer",
+            &cfg(),
+            QueueProvenance::Available,
+        );
+        assert_eq!(row.category, Category::Available);
+        assert_eq!(row.note, "⚠️ has conflicts");
     }
 }

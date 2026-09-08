@@ -13,8 +13,8 @@ prboard is an open-source GitHub PR-review dashboard: a windowed native desktop 
 ## Decisions already made — do not re-litigate
 
 - **Windowed desktop app, NOT a TUI** (Oliver's product decision, 2026-07-24). The ratatui analysis in the UI-framework doc is a record of the alternative, not an option.
-- **UI: GPUI + gpui-component.** Pin crates.io `gpui = "=0.2.2"` + `gpui-component = "=0.5.1"`, stable Rust. The virtualized delegate-based table in the published 0.5.1 is **`Table` + `TableState` + `TableDelegate`** — the `DataTable` name exists only on git main (build-findings doc #1). Do NOT use Guise (no table/list/virtual scroll) and do NOT copy git-main gpui-component snippets (different bootstrap than the published crate).
-- **Data: shell out to `gh api graphql`** behind a `GithubTransport` trait; one `search(type:ISSUE, first:60)` query per refresh (~3 rate-limit points/repo); never fan out per-PR REST.
+- **UI: GPUI + gpui-component.** Upgraded at Oliver's request to published `gpui-component = "=0.6.0"`, with `gpui-pre` and `gpui-pre-platform` pinned to `=0.3.4` (aliased as `gpui` and `gpui_platform`). Bootstrap via `gpui_platform::application()` and wrap the view in component `Root`. The virtualized widget is now **`DataTable` + `TableState` + `TableDelegate`**. The 0.5.1 instructions in historical research no longer apply to current code. Do not copy unpinned git-main snippets.
+- **Data: shell out to `gh api graphql`** behind a `GithubTransport` trait; one request per refresh, authored search capped at 60, review mode two 60-result aliases (requested plus candidates filtered to zero pending reviewer requests). Show truncation; never fan out per-PR REST. Repository discovery separately uses paginated `user/repos`, bounded at 1,000 entries/10 pages, merged with configured/current repos.
 - **Refresh: default 5 min, hard floor 30 s** (the "5 s floor" idea is wrong — math in the data-layer doc).
 - **Auth: reuse `gh` CLI login**, behind a `TokenSource` trait; OAuth/PAT is post-v1.
 - **v1 is read-only + open-in-browser.** No AI, no reviewer assignment, no merging, no Windows (full in/out list: HANDOFF §4).
@@ -40,7 +40,7 @@ The framework choice is validated by an overnight measurement, not assumed: **id
 
 ## Building and testing
 
-- **Toolchain:** latest stable Rust — the dep graph hard-requires ≥ 1.88 (1.97 in use). macOS needs the Xcode **Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) or gpui's shader build fails.
+- **Toolchain:** latest stable Rust — verified with 1.97.1; dependency manifests require at least 1.92 across supported platforms (minimum toolchain not tested). macOS needs the Xcode **Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) or gpui's shader build fails.
 - `cargo test -p prboard-core` — the fast spec suite (no GPUI compile); run after any change to `core/`.
 - **`make check` is the quality gate = CI** — `cargo fmt --all --check` + `cargo clippy -p prboard-core --all-targets -- -D warnings` + `cargo test -p prboard-core`. All fast, no Metal. Keep it green; CI (`.github/workflows/ci.yml`) runs exactly this on push/PR to main and enforces `-D warnings`. `make fix` auto-fixes; `make lint-all` clippies the whole workspace incl. the GPUI binary (needs Metal). `make help` lists targets.
 - **Git hooks:** `make hooks` sets `core.hooksPath=.githooks`. `pre-commit` runs `make check` but only when `.rs`/`Cargo.*` are staged (docs-only commits stay instant; bypass with `--no-verify` or `PRBOARD_SKIP_HOOKS=1`). `pre-push` runs `make verify` — the full-workspace gate incl. the GPUI binary (`fmt --all --check` + `clippy --all-targets -D warnings` + `test --workspace`), the only automated check the app binary gets since CI is core-only (needs Metal, slower; bypass with `git push --no-verify` or `PRBOARD_SKIP_HOOKS=1`). `commit-msg` warns (never blocks) when a subject isn't a Conventional Commit.

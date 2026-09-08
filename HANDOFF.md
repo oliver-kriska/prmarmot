@@ -8,6 +8,28 @@
 
 ---
 
+## Current update — 2026-09-08
+
+**FACT:** At Oliver's request, the app now uses published gpui-component **0.6.0**
+with gpui-pre/gpui-pre-platform **0.3.4**, platform bootstrap, component `Root`, and
+the renamed virtualized `DataTable`. Historical 0.5.1 API/pin guidance below is
+retained as the build record, not current setup instructions; use `Cargo.toml`
+and README for today's versions.
+
+**FACT:** Repo selection now discovers owned/collaborator/organization repos via
+`user/repos` (1,000 repo/10-page ceiling), merged with configured/current entries.
+Review queue includes a separately labeled no-reviewer-requested section; two
+bounded search aliases share one GraphQL operation. Native GitHub stacks are
+grouped by stack number and ordered by layer position within category, with
+partial-stack counts. Golden prototype behavior remains covered unchanged.
+
+**ASSESSMENT:** Search, clear ownership, and stack relationships improve this
+dense dashboard more than decorative artwork. The design rationale and next UX
+priorities are in `DESIGN.md`; limits and reviewer-vs-assignee semantics are in
+README. **OPEN QUESTION:** The framework's overnight memory/idle-GPU gate remains
+unvalidated on the upgraded runtime. These specifically requested changes do not
+establish that the gate passed or unblock the remaining roadmap automatically.
+
 ## 1. What we're building
 
 A dashboard of GitHub pull requests you keep open all day. A dense table — PR number/link, draft/ready, CI state, requested reviewers, completed reviews, unresolved-thread count, merge-conflict flag, bug label, linked issue, and a computed **"Note"** saying what to do next / what it's blocked on. **Three views:** (1) all open PRs in a repo with filters; (2) *my authored PRs*, triaged action → awaiting-review → drafts; (3) *my review queue*. **Multiple named tabs**, each a repo or group of repos. **Auto-refresh** (default 5 min). **Read-only + open-in-browser only** — no AI, no reviewer-assignment, no merging in v1. Installable via **Homebrew**.

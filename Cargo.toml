@@ -5,22 +5,22 @@ members = ["core"]
 name = "prboard"
 version = "0.2.1"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "MIT"
 description = "GitHub PR review dashboard — a native desktop app"
 
 [dependencies]
 prboard-core = { path = "core" }
-# Variant A (crates.io, pinned) — see .claude/research/2026-07-24-gpui-desktop-build.md §1.1.
-# Do NOT copy git-main gpui-component snippets; the bootstrap differs (gpui_platform split).
-gpui = "=0.2.2"
-gpui-component = "=0.5.1"
+# GPUI Kit 0.6 uses the published gpui-pre runtime and platform split.
+gpui = { package = "gpui-pre", version = "=0.3.4" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.4", features = ["font-kit", "wayland", "x11"] }
+gpui-component = "=0.6.0"
 chrono = "0.4"
 # Config file (Spotlight launches have no env vars / cwd).
 toml = "1.1"
 # In-place config updates that preserve the user's comments/formatting.
 toml_edit = "0.25"
-dirs = "6"
+dirs = "7"
 serde = { version = "1", features = ["derive"] }
 # No tokio, no reqwest — transport is a `gh` subprocess on GPUI's background executor.
 # No `open` crate — gpui's cx.open_url covers open-in-browser.

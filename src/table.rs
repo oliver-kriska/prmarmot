@@ -28,7 +28,7 @@ use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 /// (an index into `rows`). Headers are pseudo-rows — `row()` returns `None`
 /// for them, and keyboard selection bounces off them (see `app.rs`).
 enum DisplayRow {
-    Header { label: &'static str, count: usize },
+    Header { label: String, count: Option<usize> },
     Pr(usize),
 }
 
@@ -130,11 +130,18 @@ fn elide(window: &mut Window, text: &str, max_width: Pixels) -> String {
     }
     let font_size = cell_font_px(window);
     let font = window.text_style().font();
-    let mut runs = vec![window.text_style().to_run(text.len())];
+    let runs = vec![window.text_style().to_run(text.len())];
     window
         .text_system()
         .line_wrapper(font, font_size)
-        .truncate_line(text.to_string().into(), max_width, "…", &mut runs)
+        .truncate_line(
+            text.to_string().into(),
+            max_width,
+            "…",
+            &runs,
+            gpui::TruncateFrom::End,
+        )
+        .0
         .to_string()
 }
 
@@ -266,11 +273,43 @@ impl BoardTableDelegate {
                 i += 1;
             }
             display.push(DisplayRow::Header {
-                label: group_label(self.mode, cat),
-                count: i - start,
+                label: group_label(self.mode, cat).into(),
+                count: Some(i - start),
             });
+            let mut emitted = std::collections::HashSet::new();
             for j in start..i {
-                display.push(DisplayRow::Pr(j));
+                if let Some(stack) = &self.rows[j].stack {
+                    if !emitted.insert(stack.number) {
+                        continue;
+                    }
+                    let mut members: Vec<usize> = (start..i)
+                        .filter(|&k| {
+                            self.rows[k]
+                                .stack
+                                .as_ref()
+                                .is_some_and(|s| s.number == stack.number)
+                        })
+                        .collect();
+                    members.sort_by_key(|&k| {
+                        self.rows[k]
+                            .stack
+                            .as_ref()
+                            .and_then(|s| s.position)
+                            .unwrap_or(u64::MAX)
+                    });
+                    display.push(DisplayRow::Header {
+                        label: format!(
+                            "Stack #{} · {} of {} layers in this section",
+                            stack.number,
+                            members.len(),
+                            stack.size
+                        ),
+                        count: None,
+                    });
+                    display.extend(members.into_iter().map(DisplayRow::Pr));
+                } else {
+                    display.push(DisplayRow::Pr(j));
+                }
             }
         }
         self.display = display;
@@ -326,7 +365,8 @@ fn group_label(mode: Mode, cat: Category) -> &'static str {
     match (mode, cat) {
         (Mode::Authored, Category::Action) => "Needs action",
         (Mode::Authored, Category::Await) => "Awaiting review",
-        (Mode::Review, Category::Todo) => "Needs review",
+        (Mode::Review, Category::Todo) => "Requested from you",
+        (Mode::Review, Category::Available) => "Available to review · no reviewer requested",
         (Mode::Review, Category::Done) => "Reviewed",
         (_, Category::Draft) => "Drafts",
         // Unreachable pairings (Action in Review etc.) — a calm fallback.
@@ -532,7 +572,7 @@ fn note_presentation(row: &BoardRow) -> NotePresentation {
         Category::Action => action_presentation(row, tooltip),
         // Review queue: a red health signal interrupts; otherwise it is a
         // routine "please review", warned but calm — never a danger wall.
-        Category::Todo => {
+        Category::Todo | Category::Available => {
             if row.ci == Ci::Fail || row.conflict {
                 let (primary, remedy) = split_remedy(&tooltip);
                 NotePresentation {
@@ -569,8 +609,8 @@ impl TableDelegate for BoardTableDelegate {
         self.display.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     fn render_tr(
@@ -605,15 +645,21 @@ impl TableDelegate for BoardTableDelegate {
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.secondary_foreground)
-                                .child(label.to_uppercase()),
+                                .child(if count.is_some() {
+                                    label.to_uppercase()
+                                } else {
+                                    label.clone()
+                                }),
                         )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.muted_foreground)
-                                .child(count.to_string()),
-                        ),
+                        .when_some(*count, |header, count| {
+                            header.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.muted_foreground)
+                                    .child(count.to_string()),
+                            )
+                        }),
                 ),
             // No per-row tint: the "Needs action" section header, the red note
             // dot, and the red problem phrase already signal urgency three
@@ -848,10 +894,19 @@ impl TableDelegate for BoardTableDelegate {
                 }
             }
             "title" => {
-                let full = match &row.issue {
+                let mut full = match &row.issue {
                     Some(issue) => format!("{issue} · {}", row.title),
                     None => row.title.clone(),
                 };
+                let stack_prefix = row.stack.as_ref().map(|s| {
+                    let position = s.position.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
+                    full.push_str(&format!("\nStack #{} · layer {}/{} · base {}. Only matching PRs are shown; layers may be in other sections.", s.number, position, s.size, s.base_ref_name));
+                    format!("↳ {position}/{}", s.size)
+                });
+                let stack_w = stack_prefix
+                    .as_deref()
+                    .map(|s| measure_width(window, s) + px(GAP_1))
+                    .unwrap_or(px(0.));
                 let tag_color = if dim { muted } else { theme.accent_foreground };
                 // Elide the title to the width the flexible region actually has
                 // (column minus the issue tag, gap and cell padding). A real
@@ -865,7 +920,7 @@ impl TableDelegate for BoardTableDelegate {
                     .map(|s| measure_width(window, s))
                     .unwrap_or(px(0.));
                 let gap = if row.issue.is_some() { GAP_1 } else { 0.0 };
-                let avail = col_w - issue_w - px(CELL_PAD_X + gap + ELIDE_SAFETY);
+                let avail = col_w - issue_w - stack_w - px(CELL_PAD_X + gap + ELIDE_SAFETY);
                 let title = elide(window, &row.title, avail);
                 let inner = match (&row.issue, &row.issue_url) {
                     // A linked issue is a single-click link of its own
@@ -915,7 +970,14 @@ impl TableDelegate for BoardTableDelegate {
                             .child(title),
                     ),
                 };
-                return inner
+                return h_flex()
+                    .w_full()
+                    .gap_1()
+                    .overflow_hidden()
+                    .when_some(stack_prefix, |this, prefix| {
+                        this.child(div().flex_shrink_0().text_color(muted).child(prefix))
+                    })
+                    .child(inner)
                     .id(("title", row_ix))
                     .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                     .into_any_element();
@@ -1017,7 +1079,7 @@ impl TableDelegate for BoardTableDelegate {
         // bundle this app does not ship.
         let msg = match self.mode {
             Mode::Authored => "You have no open PRs",
-            Mode::Review => "Nothing is waiting for your review",
+            Mode::Review => "No requested or available reviews in this result set",
         };
         h_flex()
             .size_full()
@@ -1043,6 +1105,8 @@ mod tests {
             issue: None,
             issue_url: None,
             author: None,
+            stack: None,
+            queue_provenance: None,
             draft: matches!(category, Category::Draft),
             category,
             bug: false,
@@ -1216,7 +1280,7 @@ mod tests {
         match &d.display[0] {
             DisplayRow::Header { label, count } => {
                 assert_eq!(*label, "Needs action");
-                assert_eq!(*count, 2);
+                assert_eq!(*count, Some(2));
             }
             _ => panic!("expected a header at 0"),
         }
@@ -1229,6 +1293,50 @@ mod tests {
         // Only "Awaiting review" — no empty Action/Draft headers.
         assert_eq!(d.display_len(), 2);
         assert!(d.is_header(0) && !d.is_header(1));
+    }
+
+    #[test]
+    fn stacks_keep_layer_order_without_mixing_action_sections() {
+        let stacked = |number, position, category| {
+            let mut r = row(number, category);
+            r.stack = Some(prboard_core::board::StackInfo {
+                number: 70,
+                size: 3,
+                base_ref_name: "main".into(),
+                position: Some(position),
+            });
+            r
+        };
+        let mut d = BoardTableDelegate::new(Mode::Authored);
+        d.set_rows(vec![
+            stacked(9, 3, Category::Action),
+            row(8, Category::Action),
+            stacked(7, 2, Category::Action),
+            stacked(6, 1, Category::Await),
+        ]);
+        let numbers: Vec<_> = (0..d.display_len())
+            .filter_map(|i| d.row(i).map(|r| r.number))
+            .collect();
+        assert_eq!(numbers, vec![7, 9, 8, 6]);
+        assert_eq!(d.display.iter().filter(|d| matches!(d, DisplayRow::Header { label, .. } if label.starts_with("Stack #70"))).count(), 2);
+        assert!(
+            matches!(&d.display[1], DisplayRow::Header { label, .. } if label.contains("2 of 3"))
+        );
+        let ix = d
+            .display_index_of_url("https://github.com/acme/widgets/pull/7")
+            .unwrap();
+        assert_eq!(d.row(ix).unwrap().number, 7);
+    }
+
+    #[test]
+    fn available_reviews_have_a_distinct_section_and_calm_note() {
+        assert_ne!(
+            group_label(Mode::Review, Category::Todo),
+            group_label(Mode::Review, Category::Available)
+        );
+        let mut r = row(1, Category::Available);
+        r.note = "available for review".into();
+        assert_eq!(note_presentation(&r).tone, NoteTone::Warning);
     }
 
     #[test]

@@ -10,9 +10,10 @@ use gpui::{
     div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Styled, Window,
 };
+use gpui_component::button::Button;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::table::{Column, Table, TableEvent, TableState};
+use gpui_component::table::{Column, DataTable, TableEvent, TableState};
 use gpui_component::{h_flex, v_flex, ActiveTheme, IndexPath, Sizable, TitleBar};
 use prboard_core::board::Mode;
 
@@ -41,8 +42,10 @@ fn save_window_size(window: &Window) {
 pub struct RootView {
     state: Entity<AppState>,
     table: Entity<TableState<BoardTableDelegate>>,
-    /// Present only when there is more than one repo to pick from.
-    repo_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    repo_select: Entity<SelectState<SearchableVec<String>>>,
+    configured_repos: Vec<String>,
+    discovering_repos: bool,
+    repo_status: String,
     focus_handle: FocusHandle,
     seen_generation: u64,
     theme_pref: ThemePref,
@@ -91,7 +94,7 @@ impl RootView {
                 .row_selectable(true)
         });
 
-        let repo_select = (launch.repos.len() > 1).then(|| {
+        let repo_select = {
             let current = state.read(cx).repo.clone();
             let selected = launch
                 .repos
@@ -105,6 +108,7 @@ impl RootView {
                     window,
                     cx,
                 )
+                .searchable(true)
             });
             cx.subscribe(
                 &select,
@@ -125,7 +129,7 @@ impl RootView {
             )
             .detach();
             select
-        });
+        };
 
         // Theme: apply the configured preference, and while in System mode
         // follow macOS appearance changes live.
@@ -206,7 +210,7 @@ impl RootView {
             .detach();
 
         // Arrow keys belong to the table's own key context.
-        table.focus_handle(cx).focus(window);
+        table.focus_handle(cx).focus(window, cx);
 
         // Remember the window size across sessions (red traffic light path;
         // the `q` key saves too).
@@ -224,16 +228,17 @@ impl RootView {
                 .timer(Duration::from_secs(60))
                 .await;
             let Some(view) = ticker.upgrade() else { break };
-            if view.update(cx, |_, cx| cx.notify()).is_err() {
-                break;
-            }
+            view.update(cx, |_, cx| cx.notify());
         })
         .detach();
 
-        let this = Self {
+        let mut this = Self {
             state,
             table,
             repo_select,
+            configured_repos: launch.repos,
+            discovering_repos: false,
+            repo_status: String::new(),
             focus_handle: cx.focus_handle(),
             seen_generation: 0,
             theme_pref,
@@ -246,13 +251,63 @@ impl RootView {
             col_overrides: HashMap::new(),
         };
         this.start_refresh_loop(cx);
+        this.discover_repos(window, cx);
         this
+    }
+
+    fn discover_repos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.discovering_repos {
+            return;
+        }
+        self.discovering_repos = true;
+        self.repo_status = "Finding accessible repositories…".into();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { prboard_core::github::gh_cli::list_repos() })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.discovering_repos = false;
+                match result {
+                    Ok(discovery) => {
+                        let current = this.state.read(cx).repo.clone();
+                        let mut repos = this.configured_repos.clone();
+                        repos.extend(discovery.repos);
+                        repos.push(current.clone());
+                        repos.sort_unstable_by_key(|r| r.to_lowercase());
+                        repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                        this.repo_status = format!(
+                            "{} repositories{}",
+                            repos.len(),
+                            if discovery.truncated {
+                                " · discovery limit reached"
+                            } else {
+                                ""
+                            }
+                        );
+                        this.repo_select.update(cx, |select, cx| {
+                            select.set_items(SearchableVec::new(repos), window, cx);
+                            select.set_selected_value(&current, window, cx);
+                            cx.notify();
+                        });
+                    }
+                    Err(err) => {
+                        this.repo_status =
+                            format!("Repo discovery failed: {err} · retry with Repos")
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn start_refresh_loop(&self, cx: &mut Context<Self>) {
         let state = self.state.clone();
         state.update(cx, |s, cx| s.refresh(cx));
         let interval = self.refresh;
+        let state = state.downgrade();
         cx.spawn(async move |_this, cx| {
             loop {
                 cx.background_executor().timer(interval).await;
@@ -406,6 +461,11 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Search input owns text keys. Typing a repository containing q/r/t
+        // must not quit, refresh, or change the app's theme.
+        if !self.table.focus_handle(cx).contains_focused(window, cx) {
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
         match key {
@@ -450,7 +510,15 @@ impl RootView {
         // breakdown, so repeating "N need action · N awaiting…" here is
         // redundant and truncates at narrow widths (design review). This frees
         // titlebar room for the future `/` search field.
-        let counts = format!("{} open", state.rows.len());
+        let counts = format!(
+            "{} shown{}",
+            state.rows.len(),
+            if state.truncated {
+                " · partial results"
+            } else {
+                ""
+            }
+        );
         // Status priority: a hard error wins; then a rate-limit back-off (so a
         // switch into a paused window shows "paused", not a permanent
         // "Loading…"); otherwise the queue-specific sync line. Static text only
@@ -514,19 +582,19 @@ impl RootView {
             .pr(px(crate::design::HEADER_PAD_X))
             .gap_3()
             .items_center()
-            .map(|this| match &self.repo_select {
-                Some(select) => this.child(
-                    div()
-                        .min_w(px(200.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(Select::new(select).small().menu_width(px(320.))),
-                ),
-                None => this.child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(state.repo.clone()),
-                ),
-            })
+            .child(
+                div()
+                    .w(px(220.))
+                    .flex_shrink_0()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(
+                        Select::new(&self.repo_select)
+                            .small()
+                            .menu_width(px(420.))
+                            .search_placeholder("Search accessible repositories…")
+                            .accessibility_label("Repository"),
+                    ),
+            )
             .child(view_switcher)
             .child(
                 div()
@@ -596,7 +664,21 @@ impl RootView {
                     ),
             );
         }
-        bar
+        bar.child(div().flex_1())
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.))
+                    .text_color(theme.muted_foreground)
+                    .child(self.repo_status.clone()),
+            )
+            .child(
+                Button::new("discover-repos")
+                    .small()
+                    .label("Repos")
+                    .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
+            )
     }
 }
 
@@ -606,14 +688,14 @@ impl RootView {
 fn queue_sync_text(mode: Mode, syncing: bool, last_synced: Option<DateTime<Local>>) -> String {
     let loading = match mode {
         Mode::Authored => "Loading your open PRs…",
-        Mode::Review => "Loading requested reviews…",
+        Mode::Review => "Loading review queue…",
     };
     match (syncing, last_synced) {
         (true, None) | (false, None) => loading.to_string(),
         (true, Some(t)) => {
             let verb = match mode {
                 Mode::Authored => "Updating your PRs…",
-                Mode::Review => "Updating review requests…",
+                Mode::Review => "Updating review queue…",
             };
             format!("{verb} · synced {}", relative(t))
         }
@@ -625,7 +707,7 @@ fn queue_sync_text(mode: Mode, syncing: bool, last_synced: Option<DateTime<Local
 fn queue_loading_text(mode: Mode) -> &'static str {
     match mode {
         Mode::Authored => "Loading your open PRs…",
-        Mode::Review => "Loading requested reviews…",
+        Mode::Review => "Loading review queue…",
     }
 }
 
@@ -697,9 +779,12 @@ impl Render for RootView {
                         // loaded, the delegate's own render_empty shows the
                         // queue-specific "nothing here" — correct, because we
                         // now KNOW the queue is empty.
-                        BodyState::Loaded => {
-                            this.child(Table::new(&self.table).small().stripe(true).bordered(false))
-                        }
+                        BodyState::Loaded => this.child(
+                            DataTable::new(&self.table)
+                                .small()
+                                .stripe(true)
+                                .bordered(false),
+                        ),
                         BodyState::Loading(text) | BodyState::Paused(text) => this.child(
                             h_flex()
                                 .size_full()

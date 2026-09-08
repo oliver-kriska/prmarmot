@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use gpui::Context;
-use prboard_core::board::{derive_rows, BoardConfig, BoardRow, Mode};
-use prboard_core::github::query::{parse_search_response, search_string, PR_SEARCH_QUERY};
+use prboard_core::board::{fetch_board, BoardConfig, BoardRow, Mode};
 use prboard_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
 use prboard_core::github::{GhError, GithubTransport};
 
@@ -24,6 +23,7 @@ pub struct AppState {
     pub syncing: bool,
     pub error: Option<String>,
     pub rate: Option<RateLimitInfo>,
+    pub truncated: bool,
     /// Bumped on every successful fetch; observers use it to detect new rows
     /// without diffing (and to gate their reactions — the PRFlow observer-loop
     /// lesson).
@@ -47,6 +47,7 @@ pub struct AppState {
 struct CachedQueue {
     rows: Vec<BoardRow>,
     last_synced: Option<DateTime<Local>>,
+    truncated: bool,
 }
 
 /// One cache entry per queue; there are exactly two queues today. Kept explicit
@@ -72,6 +73,7 @@ impl AppState {
             syncing: false,
             error: None,
             rate: None,
+            truncated: false,
             generation: 0,
             backoff_until: None,
             epoch: 0,
@@ -93,6 +95,7 @@ impl AppState {
             CachedQueue {
                 rows: self.rows.clone(),
                 last_synced: self.last_synced,
+                truncated: self.truncated,
             },
         );
     }
@@ -126,10 +129,12 @@ impl AppState {
             Some(cached) => {
                 self.rows = cached.rows.clone();
                 self.last_synced = cached.last_synced;
+                self.truncated = cached.truncated;
             }
             None => {
                 self.rows.clear();
                 self.last_synced = None;
+                self.truncated = false;
             }
         }
         self.generation += 1; // observers push the restored (or empty) rows
@@ -141,6 +146,7 @@ impl AppState {
         self.rows.clear();
         self.last_synced = None;
         self.error = None;
+        self.truncated = false;
         self.generation += 1; // observers push the (empty) rows to the table
         self.epoch += 1; // any in-flight fetch is now for the wrong view
         self.syncing = false; // don't let it dedup the fetch we start now
@@ -202,10 +208,7 @@ impl AppState {
                 .spawn(async move {
                     // The `gh` subprocess blocks; that is fine on the
                     // background pool for a call made every few minutes.
-                    let search = search_string(mode, &repo, &me);
-                    let body = transport.graphql(PR_SEARCH_QUERY, &[("q", &search)])?;
-                    let (prs, rate) = parse_search_response(&body)?;
-                    Ok::<_, GhError>((derive_rows(&prs, mode, &repo, &me, &config), rate))
+                    fetch_board(transport.as_ref(), mode, &repo, &me, &config)
                 })
                 .await;
 
@@ -215,9 +218,10 @@ impl AppState {
                 }
                 state.syncing = false;
                 match fetched {
-                    Ok((rows, rate)) => {
-                        state.rows = rows;
-                        state.rate = rate;
+                    Ok(board) => {
+                        state.rows = board.rows;
+                        state.rate = board.rate;
+                        state.truncated = board.truncated;
                         state.last_synced = Some(Local::now());
                         state.generation += 1;
                     }

@@ -7,7 +7,7 @@
 
 ## Theme
 
-Guise/Mantine language on gpui-component 0.5.1 theme tokens. Strategy: **Restrained** — one neutral
+Guise/Mantine language on gpui-component 0.6.0 theme tokens. Strategy: **Restrained** — one neutral
 ramp, one blue accent, status hues as dots/short text only (never filled slabs). Dual mode
 (dark / light / system), applied via `ThemePref::apply` → `refine_theme(cx)` after every mode change.
 
@@ -72,6 +72,33 @@ keycaps 3 px. Small radii are the native-Mac tell.
   The selected queue uses a body-colored inset surface, semibold label, and subtle shadow; the
   inactive queue uses muted text. Traffic lights overlay.
 - **Footer**: keycap legend — key in a bordered `muted` chip (11 px medium), label in 12 px muted.
+
+## Repository and review navigation (0.6 migration)
+
+- Repository selection is always visible and searchable. Discovery includes collaborations
+  and organization memberships, not just config entries. The footer shows discovery status
+  and a **Repos** retry control; errors do not discard the existing choices.
+- Keep two queue tabs: **Requested from you** and **Available to review** are sections within
+  Review queue, not separate navigation destinations. This separates responsibility from
+  optional work without adding another tab to scan.
+- Stack headers and indented `position/size` title prefixes express dependency order without
+  another column. Group only native GitHub stacks; shared labels are not stack evidence.
+  Preserve action categories, and state how many layers are visible in each section rather
+  than implying the whole stack is present. Base branch detail stays in the title tooltip.
+- Prioritize these functional affordances over decorative icons or illustrations. The
+  existing calm palette, row density, and status dots remain the visual hierarchy.
+- Next UX priorities, not implemented here: a user-invoked next page for busy queues,
+  PR text filtering, and a detail surface that preserves context without opening a browser.
+  Validate idle resource use on the new runtime before expanding those features.
+
+The [0.6.0 release](https://github.com/longbridge/gpui-kit/releases/tag/v0.6.0)
+adds accessible control labels (used by our repository picker), revised nested
+scrolling, and a richer `DataTable`. Its new `Command`, `Pagination`, and
+`HoverCard` components are candidates for the next navigation/detail pass, not
+reasons to add UI now. Keep the supported direct component dependency rather
+than migrating every import to the optional `gpui-kit` facade. Do not enable
+shimmer, animated progress, or a continuously updating resource HUD in the
+normal dashboard; they conflict with its quiet-idle goal.
 
 ## Motion
 

@@ -1,8 +1,8 @@
-//! The one GraphQL query (verbatim from the prototype, plus the free
-//! `rateLimit{}` field) and the raw response model.
+//! Bounded GraphQL board queries and the raw response model.
 //!
-//! Never fan out per-PR REST calls — this single query is the whole data
-//! layer (~3 rate-limit points per repo refresh).
+//! Never fan out per-PR REST calls. Authored mode uses one search; review mode
+//! combines requested and unrequested candidates in one operation. Both return
+//! `rateLimit{}` so the UI reports the actual shared budget.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,15 +21,25 @@ pub fn search_string(mode: crate::board::Mode, repo: &str, who: &str) -> String 
     }
 }
 
-/// Verbatim from `pr-board.sh`, with `rateLimit{}` appended (costs nothing,
-/// lets the UI show the live budget).
+/// Broad review-queue candidates. GitHub search has no working
+/// `no:review-requested` qualifier, so callers filter `reviewRequests.totalCount`
+/// after fetching these alongside the requested-review alias.
+pub fn available_search_string(repo: &str, who: &str) -> String {
+    format!("repo:{repo} is:pr is:open -author:{who}")
+}
+
+/// Prototype authored query extended with native stacks, request totals,
+/// pagination visibility, and the live rate-limit budget.
 pub const PR_SEARCH_QUERY: &str = r#"query($q:String!){
   search(query:$q, type:ISSUE, first:60){
+    pageInfo{ hasNextPage }
     nodes{ ... on PullRequest {
       number title isDraft reviewDecision mergeable createdAt
+      stack { number size baseRefName }
+      stackEntry { position }
       author{ login }
       labels(first:20){ nodes{ name } }
-      reviewRequests(first:15){ nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+      reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
       reviews(first:60){ nodes{ author{login} state submittedAt } }
       reviewThreads(first:100){ nodes{ isResolved } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
@@ -38,15 +48,45 @@ pub const PR_SEARCH_QUERY: &str = r#"query($q:String!){
   rateLimit { limit cost remaining resetAt }
 }"#;
 
+/// Review mode keeps requested PRs as the first alias so they cannot be
+/// starved by broad available candidates. Both aliases are bounded at 60.
+pub const REVIEW_SEARCH_QUERY: &str = r#"query($requested:String!,$available:String!){
+  requested: search(query:$requested, type:ISSUE, first:60){
+    pageInfo{ hasNextPage }
+    nodes{ ...ReviewQueuePr }
+  }
+  available: search(query:$available, type:ISSUE, first:60){
+    pageInfo{ hasNextPage }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}
+fragment ReviewQueuePr on PullRequest {
+  number title isDraft reviewDecision mergeable createdAt
+  stack { number size baseRefName }
+  stackEntry { position }
+  author{ login }
+  labels(first:20){ nodes{ name } }
+  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+  reviews(first:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(first:100){ nodes{ isResolved } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+}"#;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Nodes<T> {
     #[serde(default = "Vec::new")]
     pub nodes: Vec<T>,
+    #[serde(default, rename = "totalCount")]
+    pub total_count: usize,
 }
 
 impl<T> Default for Nodes<T> {
     fn default() -> Self {
-        Self { nodes: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            total_count: 0,
+        }
     }
 }
 
@@ -111,6 +151,19 @@ pub struct CommitNode {
     pub commit: Commit,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawStack {
+    pub number: u64,
+    pub size: u64,
+    pub base_ref_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawStackEntry {
+    pub position: u64,
+}
+
 /// One PR as returned by the search query. Field names follow GitHub's schema;
 /// the product view-model lives in [`crate::board::BoardRow`].
 #[derive(Debug, Clone, Deserialize)]
@@ -125,6 +178,10 @@ pub struct RawPr {
     pub mergeable: Option<String>,
     pub created_at: String,
     #[serde(default)]
+    pub stack: Option<RawStack>,
+    #[serde(default)]
+    pub stack_entry: Option<RawStackEntry>,
+    #[serde(default)]
     pub author: Option<Login>,
     #[serde(default)]
     pub labels: Nodes<LabelNode>,
@@ -138,11 +195,47 @@ pub struct RawPr {
     pub commits: Nodes<CommitNode>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ReviewSearchResult {
+    pub requested: Vec<RawPr>,
+    pub available: Vec<RawPr>,
+    pub rate: Option<RateLimitInfo>,
+    pub truncated: bool,
+}
+
+pub fn parse_review_response(body: &Value) -> Result<ReviewSearchResult, GhError> {
+    check_graphql_errors(body)?;
+    let requested = parse_pr_nodes(body, "/data/requested/nodes")?;
+    let available = parse_pr_nodes(body, "/data/available/nodes")?;
+    let truncated = body
+        .pointer("/data/requested/pageInfo/hasNextPage")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || body
+            .pointer("/data/available/pageInfo/hasNextPage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    Ok(ReviewSearchResult {
+        requested,
+        available,
+        rate: parse_rate(body),
+        truncated,
+    })
+}
+
 /// Parse the full `gh api graphql` response body.
 ///
 /// GraphQL errors are classified (RATE_LIMITED vs the rest); nodes that are
 /// not PullRequests (empty inline-fragment objects) are skipped.
 pub fn parse_search_response(body: &Value) -> Result<(Vec<RawPr>, Option<RateLimitInfo>), GhError> {
+    check_graphql_errors(body)?;
+    Ok((
+        parse_pr_nodes(body, "/data/search/nodes")?,
+        parse_rate(body),
+    ))
+}
+
+fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
     if let Some(errors) = body.get("errors").and_then(Value::as_array) {
         if !errors.is_empty() {
             let rate_limited = errors
@@ -151,25 +244,27 @@ pub fn parse_search_response(body: &Value) -> Result<(Vec<RawPr>, Option<RateLim
             if rate_limited {
                 return Err(GhError::RateLimited { reset_epoch: None });
             }
-            if body.get("data").is_none_or(Value::is_null) {
-                let msgs = errors
-                    .iter()
-                    .map(|e| {
-                        e.get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown error")
-                            .to_string()
-                    })
-                    .collect();
-                return Err(GhError::GraphqlErrors(msgs));
-            }
+            let msgs = errors
+                .iter()
+                .map(|e| {
+                    e.get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error")
+                        .to_string()
+                })
+                .collect();
+            return Err(GhError::GraphqlErrors(msgs));
         }
     }
 
+    Ok(())
+}
+
+fn parse_pr_nodes(body: &Value, pointer: &str) -> Result<Vec<RawPr>, GhError> {
     let nodes = body
-        .pointer("/data/search/nodes")
+        .pointer(pointer)
         .and_then(Value::as_array)
-        .ok_or_else(|| GhError::Parse("missing data.search.nodes".into()))?;
+        .ok_or_else(|| GhError::Parse(format!("missing {pointer}")))?;
 
     let mut prs = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -182,10 +277,11 @@ pub fn parse_search_response(body: &Value) -> Result<(Vec<RawPr>, Option<RateLim
         prs.push(pr);
     }
 
-    let rate = body
-        .pointer("/data/rateLimit")
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<RateLimitInfo>(v.clone()).ok());
+    Ok(prs)
+}
 
-    Ok((prs, rate))
+fn parse_rate(body: &Value) -> Option<RateLimitInfo> {
+    body.pointer("/data/rateLimit")
+        .filter(|v| !v.is_null())
+        .and_then(|v| serde_json::from_value::<RateLimitInfo>(v.clone()).ok())
 }

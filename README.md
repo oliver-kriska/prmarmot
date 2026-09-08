@@ -10,10 +10,15 @@ through github.com.
   threads, merge conflicts, labels, linked issue, reviewers and their verdicts
   — plus the Note ("CI red — fix before ping", "2 unresolved threads", …).
 - **Two queues, one click apart:** **My PRs** (needs action → awaiting review
-  → drafts) and your incoming **Review queue**.
-- **Cheap and calm:** auto-refresh (default 5 min) costs one GraphQL search
-  per cycle; the header always shows "synced Xm ago" and your live API budget.
-  No animations, ~0 idle CPU/GPU, flat memory.
+  → drafts) and your incoming **Review queue**, separating requests addressed
+  to you from PRs **available to review** (no user or team reviewer requested).
+- **Searchable repositories:** discovers owned, collaborator, and organization
+  repositories accessible through your `gh` login, not just configured repos.
+- **Native stacks:** GitHub stack groups show layers in dependency order, with
+  position badges and explicit partial-stack counts within each section.
+- **Cheap and calm:** auto-refresh (default 5 min) uses one GraphQL request
+  per cycle; the header shows "synced Xm ago" and your live API budget.
+  No perpetual animations; overnight memory/idle-GPU validation remains pending.
 - **Read-only by design:** it opens PRs in your browser; it never merges,
   assigns, or comments. Auth is your existing [`gh`](https://cli.github.com)
   CLI login — prboard never touches a token itself.
@@ -41,8 +46,8 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.
   | sh -s -- --repo owner/name
 ```
 
-**Any platform — build current `main` from source** (needs git + stable
-Rust ≥ 1.88; macOS also needs Xcode's Metal toolchain):
+**Any platform — build current `main` from source** (needs git and
+latest stable Rust; macOS also needs Xcode's Metal toolchain):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh | sh -s -- --from-source
@@ -83,7 +88,7 @@ every value optional, env vars override the file, CLI args override both:
 
 ```toml
 repo = "acme/widgets"              # default repo
-repos = ["acme/widgets", "acme/api"]  # >1 entries -> repo picker in the header
+repos = ["acme/widgets", "acme/api"]  # extra entries merged with discovered repos
 refresh_secs = 300                 # hard floor 30
 theme = "system"                   # system | light | dark
 default_reviewers = ["alice", "bob"]
@@ -109,14 +114,38 @@ browser · `y` copy PR URL · `r` refresh now ·
 Double-click a row to open it; drag column edges to resize; hover the Note,
 Title, Labels, or Reviewed-by cell for the full text.
 
+### Discovery and queue limits
+
+Repository discovery runs at startup; **Repos** retries it without restarting.
+It fetches at most 1,000 repositories (10 pages). Configured entries and the
+current repo remain available if discovery fails or hits its limit. GitHub token
+permissions and organization SSO still determine which repos are visible.
+
+My PRs fetches up to 60 results. Review queue fetches up to 60 explicitly
+requested PRs plus 60 other-authored candidates in one GraphQL operation, then
+keeps candidates with no pending reviewer request. Requests to a team or another
+person are not considered unassigned. Your own PRs are excluded; already-reviewed
+PRs and drafts retain their sections. This refers to **review requests**, not the
+separate issue-assignee field. A **partial results** notice means more results
+exist on GitHub; the available section may be incomplete in busy repositories.
+
+Stack grouping uses GitHub's native stack metadata, not labels or guessed branch
+relationships. Layers are ordered bottom-to-top inside each queue section;
+`X of Y layers in this section` makes missing or differently categorized layers
+explicit. Hover a layer's title for stack number, position, and base branch.
+
 ## Building
 
-- Latest **stable** Rust (the dependency graph requires ≥ 1.88).
+- Latest **stable** Rust (verified with 1.97.1; dependency manifests require at
+  least 1.92 across supported platforms; the minimum toolchain is not tested).
+- `gpui-component = 0.6.0` with `gpui-pre` / `gpui-pre-platform = 0.3.4`.
+  Bootstrap uses the platform application and component `Root`; the virtualized
+  table is now `DataTable` + `TableState` + `TableDelegate`.
 - macOS: full Xcode with the **Metal Toolchain** component — if the build fails
   with `cannot execute tool 'metal'`, run
   `xcodebuild -downloadComponent MetalToolchain`.
-- One GraphQL search per refresh (~3 rate-limit points); the categorization
-  logic in `core/` is pinned to the shell-prototype spec by golden tests
+- One GraphQL request per refresh (two bounded search aliases in Review queue);
+  the legacy categorization logic in `core/` is pinned by golden tests
   (`scripts/gen-golden.sh`, `core/tests/parity.rs`).
 
 ```sh
