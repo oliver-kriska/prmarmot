@@ -28,7 +28,11 @@ use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 /// (an index into `rows`). Headers are pseudo-rows — `row()` returns `None`
 /// for them, and keyboard selection bounces off them (see `app.rs`).
 enum DisplayRow {
-    Header { label: String, count: Option<usize> },
+    Header {
+        label: String,
+        count: Option<usize>,
+        detail: Option<String>,
+    },
     Pr(usize),
 }
 
@@ -275,6 +279,7 @@ impl BoardTableDelegate {
             display.push(DisplayRow::Header {
                 label: group_label(self.mode, cat).into(),
                 count: Some(i - start),
+                detail: None,
             });
             let mut emitted = std::collections::HashSet::new();
             for j in start..i {
@@ -298,13 +303,13 @@ impl BoardTableDelegate {
                             .unwrap_or(u64::MAX)
                     });
                     display.push(DisplayRow::Header {
-                        label: format!(
-                            "Stack #{} · {} of {} layers in this section",
-                            stack.number,
-                            members.len(),
-                            stack.size
-                        ),
+                        label: format!("Stack #{}", stack.number),
                         count: None,
+                        detail: Some(if members.len() as u64 == stack.size {
+                            format!("{} layers", stack.size)
+                        } else {
+                            format!("{} of {} layers shown", members.len(), stack.size)
+                        }),
                     });
                     display.extend(members.into_iter().map(DisplayRow::Pr));
                 } else {
@@ -313,6 +318,17 @@ impl BoardTableDelegate {
             }
         }
         self.display = display;
+    }
+
+    /// End the tree at the visible section boundary, even if other layers
+    /// exist elsewhere. Standalone rows must never look like stack children.
+    fn stack_ends_at(&self, display_ix: usize) -> bool {
+        let Some(stack) = self.row(display_ix).and_then(|row| row.stack.as_ref()) else {
+            return false;
+        };
+        self.row(display_ix + 1)
+            .and_then(|row| row.stack.as_ref())
+            .is_none_or(|next| next.number != stack.number)
     }
 
     /// The `BoardRow` at a display index, or `None` if it is a section header.
@@ -625,39 +641,56 @@ impl TableDelegate for BoardTableDelegate {
             // Section header: a subtle band with a stronger top rule, and the
             // label drawn as an absolute overlay (cells render empty on this
             // row so nothing paints over it — see the module note).
-            Some(DisplayRow::Header { label, count }) => tr
+            Some(DisplayRow::Header {
+                label,
+                count,
+                detail,
+            }) => tr
                 .relative()
-                .bg(theme
-                    .secondary
-                    .opacity(if theme.mode.is_dark() { 0.5 } else { 0.7 }))
-                .border_t_1()
-                .border_color(theme.border)
+                .bg(theme.background)
+                .when(count.is_some(), |header| {
+                    header
+                        .bg(theme.secondary)
+                        .border_t_1()
+                        .border_color(theme.border)
+                })
                 .child(
                     h_flex()
                         .absolute()
-                        .left(px(crate::design::HEADER_PAD_X))
+                        .left(if count.is_some() {
+                            px(crate::design::HEADER_PAD_X)
+                        } else {
+                            self.columns[0].width + px(6.)
+                        })
                         .top_0()
                         .bottom_0()
                         .items_center()
                         .gap_1p5()
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(px(if count.is_some() { 12. } else { 11. }))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.secondary_foreground)
-                                .child(if count.is_some() {
-                                    label.to_uppercase()
-                                } else {
-                                    label.clone()
-                                }),
+                                .child(label.clone()),
                         )
                         .when_some(*count, |header, count| {
                             header.child(
                                 div()
+                                    .px(px(6.))
+                                    .rounded(px(4.))
+                                    .bg(theme.background)
                                     .text_size(px(11.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.muted_foreground)
                                     .child(count.to_string()),
+                            )
+                        })
+                        .when_some(detail.clone(), |header, detail| {
+                            header.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("· {detail}")),
                             )
                         }),
                 ),
@@ -667,7 +700,9 @@ impl TableDelegate for BoardTableDelegate {
             // and flattens individual CI-fail / conflict rows into one alarm
             // block (design review, 2026-07-24). Zebra striping stays; state
             // lives in the Note cell.
-            Some(DisplayRow::Pr(_)) => tr,
+            Some(DisplayRow::Pr(_)) => tr.when(self.stack_ends_at(row_ix), |row| {
+                row.border_b_1().border_color(theme.border)
+            }),
             None => tr,
         }
     }
@@ -901,7 +936,8 @@ impl TableDelegate for BoardTableDelegate {
                 let stack_prefix = row.stack.as_ref().map(|s| {
                     let position = s.position.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
                     full.push_str(&format!("\nStack #{} · layer {}/{} · base {}. Only matching PRs are shown; layers may be in other sections.", s.number, position, s.size, s.base_ref_name));
-                    format!("↳ {position}/{}", s.size)
+                    let branch = if self.stack_ends_at(row_ix) { "└─" } else { "├─" };
+                    format!("{branch} {position}/{}", s.size)
                 });
                 let stack_w = stack_prefix
                     .as_deref()
@@ -1278,7 +1314,7 @@ mod tests {
         assert!(d.is_header(3) && !d.is_header(4));
         assert!(d.is_header(5) && !d.is_header(6));
         match &d.display[0] {
-            DisplayRow::Header { label, count } => {
+            DisplayRow::Header { label, count, .. } => {
                 assert_eq!(*label, "Needs action");
                 assert_eq!(*count, Some(2));
             }
@@ -1320,12 +1356,27 @@ mod tests {
         assert_eq!(numbers, vec![7, 9, 8, 6]);
         assert_eq!(d.display.iter().filter(|d| matches!(d, DisplayRow::Header { label, .. } if label.starts_with("Stack #70"))).count(), 2);
         assert!(
-            matches!(&d.display[1], DisplayRow::Header { label, .. } if label.contains("2 of 3"))
+            matches!(&d.display[1], DisplayRow::Header { detail: Some(detail), .. } if detail == "2 of 3 layers shown")
         );
         let ix = d
             .display_index_of_url("https://github.com/acme/widgets/pull/7")
             .unwrap();
         assert_eq!(d.row(ix).unwrap().number, 7);
+        assert!(!d.stack_ends_at(ix));
+        assert!(d.stack_ends_at(ix + 1)); // closes before standalone #8
+        assert!(!d.stack_ends_at(ix + 2)); // standalone, not a stack child
+        assert!(d.stack_ends_at(d.display_len() - 1)); // final partial layer
+        assert!(!d.stack_ends_at(0)); // category header
+
+        d.set_rows(vec![
+            stacked(7, 1, Category::Action),
+            stacked(8, 2, Category::Action),
+            stacked(9, 3, Category::Action),
+        ]);
+        assert!(
+            matches!(&d.display[1], DisplayRow::Header { detail: Some(detail), .. } if detail == "3 layers")
+        );
+        assert!(d.stack_ends_at(d.display_len() - 1));
     }
 
     #[test]

@@ -85,6 +85,10 @@ keycaps 3 px. Small radii are the native-Mac tell.
   another column. Group only native GitHub stacks; shared labels are not stack evidence.
   Preserve action categories, and state how many layers are visible in each section rather
   than implying the whole stack is present. Base branch detail stays in the title tooltip.
+- Category headings use sentence case, a stronger neutral band, and a small count badge.
+  Stack subheadings sit on the body surface aligned with Title, with quieter layer counts:
+  `2 layers` when complete, `2 of 3 layers shown` when partial. Tree branches end with `└─`
+  at the last visible layer, and a bottom rule separates the stack from ordinary PRs.
 - Prioritize these functional affordances over decorative icons or illustrations. The
   existing calm palette, row density, and status dots remain the visual hierarchy.
 - Next UX priorities, not implemented here: a user-invoked next page for busy queues,

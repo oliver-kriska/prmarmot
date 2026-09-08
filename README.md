@@ -131,7 +131,7 @@ exist on GitHub; the available section may be incomplete in busy repositories.
 
 Stack grouping uses GitHub's native stack metadata, not labels or guessed branch
 relationships. Layers are ordered bottom-to-top inside each queue section;
-`X of Y layers in this section` makes missing or differently categorized layers
+`X of Y layers shown` makes missing or differently categorized layers
 explicit. Hover a layer's title for stack number, position, and base branch.
 
 ## Building
