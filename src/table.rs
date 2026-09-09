@@ -344,30 +344,52 @@ impl BoardTableDelegate {
         self.rebuild_display();
     }
 
-    /// Interleave a section header before each contiguous category band. Rows
-    /// arrive already sorted by category rank (core `derive_rows`), so a band
-    /// is just a run of equal categories.
+    /// Split approved authored PRs out of Await without changing core categories
+    /// or row identities. Stable ordering preserves order within each section.
     fn rebuild_display(&mut self) {
         let mut display = Vec::with_capacity(self.rows.len() + 3);
+        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        order.sort_by_key(|&ix| {
+            let row = &self.rows[ix];
+            match row.category {
+                Category::Await if self.is_approved_section(row) => 0,
+                Category::Action | Category::Todo => 1,
+                Category::Available => 2,
+                Category::Await | Category::Done => 3,
+                Category::Draft => 4,
+            }
+        });
         let mut i = 0;
-        while i < self.rows.len() {
-            let cat = self.rows[i].category;
+        while i < order.len() {
+            let row = &self.rows[order[i]];
+            let cat = row.category;
+            let approved = self.is_approved_section(row);
             let start = i;
-            while i < self.rows.len() && self.rows[i].category == cat {
+            while i < order.len()
+                && self.rows[order[i]].category == cat
+                && self.is_approved_section(&self.rows[order[i]]) == approved
+            {
                 i += 1;
             }
             display.push(DisplayRow::Header {
-                label: group_label(self.mode, cat).into(),
+                label: if approved {
+                    "Approved"
+                } else {
+                    group_label(self.mode, cat)
+                }
+                .into(),
                 count: Some(i - start),
                 detail: None,
             });
             let mut emitted = std::collections::HashSet::new();
-            for j in start..i {
+            for &j in &order[start..i] {
                 if let Some(stack) = &self.rows[j].stack {
                     if !emitted.insert(stack.number) {
                         continue;
                     }
-                    let mut members: Vec<usize> = (start..i)
+                    let mut members: Vec<usize> = order[start..i]
+                        .iter()
+                        .copied()
                         .filter(|&k| {
                             self.rows[k]
                                 .stack
@@ -398,6 +420,12 @@ impl BoardTableDelegate {
             }
         }
         self.display = display;
+    }
+
+    fn is_approved_section(&self, row: &BoardRow) -> bool {
+        self.mode == Mode::Authored
+            && row.category == Category::Await
+            && row.review_state == ReviewState::Approved
     }
 
     /// End the tree at the visible section boundary, even if other layers
@@ -1403,6 +1431,57 @@ mod tests {
             }
             _ => panic!("expected a header at 0"),
         }
+    }
+
+    #[test]
+    fn approved_section_separates_interleaved_approvals_but_keeps_blockers_and_drafts() {
+        let approved = |number, category| {
+            let mut r = row(number, category);
+            r.review_state = ReviewState::Approved;
+            r
+        };
+        let mut d = BoardTableDelegate::new(Mode::Authored);
+        d.set_rows(vec![
+            approved(10, Category::Action),
+            row(20, Category::Await),
+            approved(30, Category::Await),
+            row(40, Category::Await),
+            approved(50, Category::Await),
+            approved(60, Category::Draft),
+        ]);
+        let headers: Vec<_> = d
+            .display
+            .iter()
+            .filter_map(|r| match r {
+                DisplayRow::Header { label, count, .. } => Some((label.as_str(), *count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            headers,
+            vec![
+                ("Approved", Some(2)),
+                ("Needs action", Some(1)),
+                ("Awaiting review", Some(2)),
+                ("Drafts", Some(1))
+            ]
+        );
+        let numbers: Vec<_> = (0..d.display_len())
+            .filter_map(|i| d.row(i).map(|r| r.number))
+            .collect();
+        assert_eq!(numbers, vec![30, 50, 10, 20, 40, 60]);
+        assert_eq!(
+            d.row(d.display_index_of_url(&d.rows[2].url).unwrap())
+                .unwrap()
+                .number,
+            30
+        );
+
+        let mut review = BoardTableDelegate::new(Mode::Review);
+        review.set_rows(vec![approved(30, Category::Done)]);
+        assert!(
+            matches!(&review.display[0], DisplayRow::Header { label, .. } if label == "Reviewed")
+        );
     }
 
     #[test]

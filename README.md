@@ -7,8 +7,9 @@ requests.** prboard turns CI, review requests, completed reviews, unresolved
 threads, conflicts, labels, linked issues, and GitHub stacks into two focused
 queues with a plain-language **Note** on every row.
 
-- **My PRs** sorts your authored work into needs action, awaiting review, and
-  drafts.
+- **My PRs** puts approved PRs first, followed by needs action, awaiting review,
+  and drafts. Approved PRs with action blockers stay in needs action; drafts
+  stay in drafts.
 - **Review queue** separates PRs that request your review from PRs with no
   reviewer requested that are available for someone to pick up.
 - **Read-only by design:** prboard can open a PR or linked issue and copy its

@@ -94,6 +94,10 @@ keycaps 3 px. Small radii are the native-Mac tell.
   Preserve action categories, and state how many layers are visible in each section rather
   than implying the whole stack is present. Base branch detail stays in the title tooltip.
 - Category headings use sentence case, a stronger neutral band, and a small count badge.
+  In My PRs, approved PRs without action blockers have their own **Approved** section
+  at the top, before Needs action and Awaiting review. It uses the same neutral heading and count,
+  not a new badge or row tint. Approved PRs with blockers stay in Needs action; drafts
+  stay in Drafts. Review queue retains its Reviewed section.
   Stack subheadings sit on the body surface aligned with Title, with quieter layer counts:
   `2 layers` when complete, `2 of 3 layers shown` when partial. Tree branches end with `└─`
   at the last visible layer, and a bottom rule separates the stack from ordinary PRs.
