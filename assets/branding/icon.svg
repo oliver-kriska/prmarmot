@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>prboard</title>
+  <desc>A blue pull-request arrow and three nodes on a rounded navy tile.</desc>
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1">
+      <stop stop-color="#202A3B"/>
+      <stop offset="1" stop-color="#182131"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="180" fill="url(#tile)"/>
+  <rect x="65" y="65" width="894" height="894" rx="179" fill="none" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="2"/>
+  <g fill="none" stroke="#6AAEFF" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M352 410V610 M690 610V430Q690 340 600 340H510 M565 282L507 340L565 398"/>
+    <circle cx="352" cy="340" r="70"/>
+    <circle cx="352" cy="680" r="70"/>
+    <circle cx="690" cy="680" r="70"/>
+  </g>
+</svg>

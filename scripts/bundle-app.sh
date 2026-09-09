@@ -50,71 +50,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/prboard"
 
-# --- icon (best-effort; skipped gracefully on any failure) -----------------
-# Draws a simple pull-request glyph via JXA/Cocoa, then sips + iconutil.
-make_icon() {
-  local workdir master iconset
-  workdir="$(mktemp -d "${TMPDIR:-/tmp}/prboard-icon.XXXXXX")"
-  master="$workdir/master.png"
-  iconset="$workdir/prboard.iconset"
-
-  cat > "$workdir/icon.jxa" <<'JXA'
-ObjC.import('Cocoa')
-const out = $.NSProcessInfo.processInfo.environment.objectForKey('ICON_OUT').js
-const S = 1024
-const img = $.NSImage.alloc.initWithSize($.NSMakeSize(S, S))
-img.lockFocus
-// dark rounded-square background
-$.NSColor.colorWithSRGBRedGreenBlueAlpha(0.11, 0.14, 0.21, 1).setFill
-$.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius(
-  $.NSMakeRect(64, 64, 896, 896), 200, 200).fill
-// pull-request glyph, stroked in accent blue
-$.NSColor.colorWithSRGBRedGreenBlueAlpha(0.42, 0.63, 0.98, 1).setStroke
-function strokePath(p) { p.setLineWidth(58); p.setLineCapStyle(1); p.setLineJoinStyle(1); p.stroke }
-// circles: top-left, bottom-left, bottom-right
-;[[392, 700], [392, 324], [632, 324]].forEach(function (c) {
-  const o = $.NSBezierPath.bezierPathWithOvalInRect(
-    $.NSMakeRect(c[0] - 74, c[1] - 74, 148, 148))
-  o.setLineWidth(58); o.stroke
-})
-// left rail: top circle down to bottom-left circle
-let p = $.NSBezierPath.bezierPath
-p.moveToPoint($.NSMakePoint(392, 398)); p.lineToPoint($.NSMakePoint(392, 626))
-strokePath(p)
-// branch: out of top-left circle, elbow down into bottom-right circle
-p = $.NSBezierPath.bezierPath
-p.moveToPoint($.NSMakePoint(500, 700))
-p.appendBezierPathWithArcFromPointToPointRadius(
-  $.NSMakePoint(632, 700), $.NSMakePoint(632, 398), 90)
-p.lineToPoint($.NSMakePoint(632, 398))
-strokePath(p)
-img.unlockFocus
-const rep = $.NSBitmapImageRep.imageRepWithData(img.TIFFRepresentation)
-const png = rep.representationUsingTypeProperties(4 /* PNG */, $.NSDictionary.dictionary)
-if (!png.writeToFileAtomically(out, true)) throw new Error('png write failed')
-JXA
-
-  ICON_OUT="$master" osascript -l JavaScript "$workdir/icon.jxa" >/dev/null
-
-  mkdir -p "$iconset"
-  local size double
-  for size in 16 32 128 256 512; do
-    double=$((size * 2))
-    sips -z "$size" "$size" "$master" --out "$iconset/icon_${size}x${size}.png" >/dev/null
-    sips -z "$double" "$double" "$master" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$iconset" -o "$APP/Contents/Resources/prboard.icns"
-  rm -rf "$workdir"
-}
-
-ICON_KEY=""
-if make_icon 2>/dev/null; then
-  step "Icon generated (Contents/Resources/prboard.icns)"
-  ICON_KEY="	<key>CFBundleIconFile</key>
-	<string>prboard</string>"
-else
-  step "Icon generation failed — continuing without an icon"
-fi
+# --- icon -----------------------------------------------------------------
+# Generated from assets/branding/icon.svg by scripts/generate-icons.sh.
+# Use the committed asset so every local/CI build has the same icon, without
+# rasterizer dependencies or a silent fallback to an unbranded application.
+cp "$REPO_ROOT/assets/branding/prboard.icns" "$APP/Contents/Resources/prboard.icns"
 
 # --- Info.plist ------------------------------------------------------------
 step "Writing Info.plist"
@@ -145,7 +85,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
-$ICON_KEY
+	<key>CFBundleIconFile</key>
+	<string>prboard</string>
 </dict>
 </plist>
 PLIST
