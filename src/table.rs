@@ -780,9 +780,13 @@ impl TableDelegate for BoardTableDelegate {
             // and flattens individual CI-fail / conflict rows into one alarm
             // block (design review, 2026-07-24). Zebra striping stays; state
             // lives in the Note cell.
-            Some(DisplayRow::Pr(_)) => tr.when(self.stack_ends_at(row_ix), |row| {
-                row.border_b_1().border_color(theme.border)
-            }),
+            Some(DisplayRow::Pr(ix)) => tr
+                // Built-in striping generates filler rows below the data.
+                // Style real PRs here instead; headers keep their own bands.
+                .when(ix % 2 != 0, |row| row.bg(theme.table_even))
+                .when(self.stack_ends_at(row_ix), |row| {
+                    row.border_b_1().border_color(theme.border)
+                }),
             None => tr,
         }
     }

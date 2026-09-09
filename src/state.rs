@@ -118,6 +118,17 @@ impl AppState {
         self.reset_and_refetch(cx);
     }
 
+    /// Derived notes and issue links depend on configuration. Discard both
+    /// queues and invalidate in-flight results before fetching with new rules.
+    pub fn apply_config(&mut self, config: BoardConfig, cx: &mut Context<Self>) {
+        if self.config == config {
+            return;
+        }
+        self.config = config;
+        self.cache.clear();
+        self.reset_and_refetch(cx);
+    }
+
     /// Select one of the two prototype dashboards. The previous queue's rows
     /// are stashed and the target queue is restored from cache immediately (if
     /// seen before) so the table never flashes empty; a background refresh then

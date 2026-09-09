@@ -151,6 +151,14 @@ pub struct IssueLinkRule {
     strip_prefix: Regex,
 }
 
+impl PartialEq for IssueLinkRule {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern.as_str() == other.pattern.as_str() && self.url_template == other.url_template
+    }
+}
+
+impl Eq for IssueLinkRule {}
+
 impl IssueLinkRule {
     pub fn new(pattern: &str, url_template: &str) -> Result<Self, regex::Error> {
         Ok(Self {
@@ -161,7 +169,7 @@ impl IssueLinkRule {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardConfig {
     /// Review authors that never count as human review (prototype default).
     pub bots: Vec<String>,
@@ -1559,5 +1567,26 @@ mod tests {
         );
         assert_eq!(row.category, Category::Available);
         assert_eq!(row.note, "⚠️ has conflicts");
+    }
+
+    #[test]
+    fn settings_comparison_tracks_reviewers_and_issue_rule_content() {
+        let mut first = BoardConfig::default();
+        let mut second = first.clone();
+        assert_eq!(first, second);
+        second.default_reviewers.push("alex".into());
+        assert_ne!(first, second);
+        first = second.clone();
+        first.issue_link =
+            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://example.com/{id}").unwrap());
+        second.issue_link =
+            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://example.com/{id}").unwrap());
+        assert_eq!(first, second);
+        second.issue_link =
+            Some(IssueLinkRule::new("TASK-[0-9]+", "https://example.com/{id}").unwrap());
+        assert_ne!(first, second);
+        second.issue_link =
+            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://other.example/{id}").unwrap());
+        assert_ne!(first, second);
     }
 }

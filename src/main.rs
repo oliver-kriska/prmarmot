@@ -5,18 +5,47 @@ mod app;
 mod assets;
 mod config;
 mod design;
+mod settings;
 mod state;
 mod table;
 mod theme;
 
 use std::sync::Arc;
 
-use gpui::{px, size, App, AppContext, WindowBounds, WindowKind, WindowOptions};
+use gpui::{
+    px, size, App, AppContext, KeyBinding, Menu, MenuItem, WindowBounds, WindowKind, WindowOptions,
+};
 use prboard_core::board::{BoardConfig, IssueLinkRule, Mode};
 use prboard_core::github::gh_cli::{current_login, detect_repo, GhCliTransport};
 
 use crate::app::RootView;
 use crate::state::AppState;
+
+gpui::actions!(prboard, [Quit]);
+
+fn install_app_menu(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        if cfg!(target_os = "macos") {
+            "cmd-q"
+        } else {
+            "ctrl-q"
+        },
+        Quit,
+        None,
+    )]);
+    cx.on_action(|_: &Quit, cx: &mut App| {
+        // Application quit does not call the individual window-close callback.
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, _| app::save_window_size(window));
+        }
+        cx.quit();
+    });
+    cx.set_menus(vec![Menu {
+        name: "prboard".into(),
+        items: vec![MenuItem::action("Quit prboard", Quit)],
+        disabled: false,
+    }]);
+}
 
 const USAGE: &str = "usage: prboard [--repo owner/name] [--review]
 
@@ -151,6 +180,7 @@ fn main() {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             cx.activate(true);
+            install_app_menu(cx);
 
             // Persisted size from the last session, else the default that fits
             // the authored column set (~1430px — at 1280 the Note column, the

@@ -4,7 +4,8 @@
 //! env and start in `/`, so env vars and cwd-based repo detection both fail
 //! there. Precedence everywhere: CLI arg > env var > config file > detection.
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -34,10 +35,75 @@ pub struct WindowSection {
     pub height: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct IssueLinkSection {
     pub pattern: String,
     pub url_template: String,
+}
+
+/// Editable values from the Settings dialog. `None` means an environment
+/// variable owns that field, so saving must leave its TOML value untouched.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SettingsUpdate {
+    pub default_reviewers: Option<Vec<String>>,
+    pub refresh_secs: Option<u64>,
+    pub theme: Option<String>,
+    /// `Some(None)` removes `[issue_link]`; `None` preserves it.
+    pub issue_link: Option<Option<(String, String)>>,
+}
+
+/// Save editable settings while preserving comments and unrelated keys.
+/// Existing malformed or unreadable files are rejected, never replaced.
+pub fn save_settings(update: &SettingsUpdate) -> Result<(), String> {
+    save_settings_at(&config_path(), update)
+}
+
+fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let mut doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("{} is not valid TOML: {e}", path.display()))?;
+    toml::from_str::<FileConfig>(&text)
+        .map_err(|e| format!("{} has invalid settings: {e}", path.display()))?;
+
+    if let Some(reviewers) = &update.default_reviewers {
+        doc["default_reviewers"] = toml_edit::value(
+            reviewers
+                .iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>(),
+        );
+    }
+    if let Some(secs) = update.refresh_secs {
+        doc["refresh_secs"] = toml_edit::value(
+            i64::try_from(secs).map_err(|_| "Refresh interval is too large".to_owned())?,
+        );
+    }
+    if let Some(theme) = &update.theme {
+        doc["theme"] = toml_edit::value(theme.as_str());
+    }
+    if let Some(issue_link) = &update.issue_link {
+        match issue_link {
+            Some((pattern, template)) => {
+                doc["issue_link"]["pattern"] = toml_edit::value(pattern.as_str());
+                doc["issue_link"]["url_template"] = toml_edit::value(template.as_str());
+            }
+            None => {
+                doc.remove("issue_link");
+            }
+        }
+    }
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
 pub fn config_path() -> PathBuf {
@@ -137,6 +203,14 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
 mod tests {
     use super::*;
 
+    fn temp_config(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "prboard-config-{name}-{}-{}.toml",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ))
+    }
+
     #[test]
     fn pins_are_optional_ordered_unique_and_bounded() {
         let old: FileConfig = toml::from_str("repo = 'acme/api'").unwrap();
@@ -157,5 +231,61 @@ mod tests {
         assert!(doc.to_string().contains("# keep this"));
         let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
         assert_eq!(parsed.pinned_repos, pins);
+    }
+
+    #[test]
+    fn settings_preserve_comments_unrelated_keys_and_disabled_fields() {
+        let path = temp_config("preserve");
+        std::fs::write(
+            &path,
+            "# mine\nrepo = 'acme/api'\nrefresh_secs = 99\ntheme = 'dark'\n",
+        )
+        .unwrap();
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                default_reviewers: Some(vec!["alice".into()]),
+                refresh_secs: None,
+                theme: Some("light".into()),
+                issue_link: Some(None),
+            },
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# mine"));
+        assert!(saved.contains("repo = 'acme/api'"));
+        assert!(saved.contains("refresh_secs = 99"));
+        assert!(saved.contains("theme = \"light\""));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn settings_never_overwrite_malformed_files() {
+        let path = temp_config("malformed");
+        let malformed = "repo = [not toml";
+        std::fs::write(&path, malformed).unwrap();
+        let result = save_settings_at(&path, &SettingsUpdate::default());
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn settings_reject_invalid_table_types_and_numeric_overflow() {
+        let path = temp_config("invalid-types");
+        std::fs::write(&path, "issue_link = 42").unwrap();
+        assert!(save_settings_at(&path, &SettingsUpdate::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "issue_link = 42");
+        std::fs::write(&path, "# preserved\n").unwrap();
+        assert!(save_settings_at(
+            &path,
+            &SettingsUpdate {
+                refresh_secs: Some(u64::MAX),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# preserved\n");
+        std::fs::remove_file(path).unwrap();
     }
 }

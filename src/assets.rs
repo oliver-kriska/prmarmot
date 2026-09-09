@@ -15,6 +15,10 @@ const ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/chevron-down.svg"),
     ),
     (
+        "icons/chevron-right.svg",
+        include_bytes!("../assets/icons/chevron-right.svg"),
+    ),
+    (
         "icons/check.svg",
         include_bytes!("../assets/icons/check.svg"),
     ),
@@ -42,5 +46,18 @@ impl AssetSource for Assets {
             .filter(|(name, _)| name.starts_with(path))
             .map(|(name, _)| SharedString::from(*name))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_disclosure_icons_are_embedded() {
+        for path in ["icons/chevron-right.svg", "icons/chevron-down.svg"] {
+            let bytes = Assets.load(path).unwrap().expect("missing disclosure icon");
+            assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+        }
     }
 }

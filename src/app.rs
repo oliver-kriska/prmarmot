@@ -11,13 +11,15 @@ use gpui::{
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
     StatefulInteractiveElement, Styled, Window,
 };
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{Column, DataTable, TableEvent, TableState};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar};
+use gpui_component::{
+    h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
+};
 use prboard_core::board::Mode;
 
 use crate::state::{relative, AppState};
@@ -38,7 +40,7 @@ pub struct Launch {
 /// Persist the current window size so the next launch opens the same way.
 /// Only the plain-windowed size — maximized/fullscreen store their restore
 /// size, which is what we'd want back anyway.
-fn save_window_size(window: &Window) {
+pub(crate) fn save_window_size(window: &Window) {
     let (gpui::WindowBounds::Windowed(bounds)
     | gpui::WindowBounds::Maximized(bounds)
     | gpui::WindowBounds::Fullscreen(bounds)) = window.window_bounds();
@@ -62,6 +64,9 @@ pub struct RootView {
     seen_generation: u64,
     theme_pref: ThemePref,
     refresh: Duration,
+    refresh_task: Option<gpui::Task<()>>,
+    feedback: Option<&'static str>,
+    feedback_task: Option<gpui::Task<()>>,
     /// Selected PR per queue, keyed by stable identity (URL), restored on
     /// switch-back so a queue keeps its place (critique #1). Stored by URL —
     /// NOT display index — so a background refresh that inserts/removes/reorders
@@ -137,6 +142,24 @@ impl RootView {
                     this.select_repo(repo.clone(), cx);
                 },
             )
+            .detach();
+            // 0.6 renders the trigger from the filtered cursor, not the committed
+            // value. Restore the full list on close (Escape or outside click).
+            // Focusable exposes the popup handle while open, the trigger otherwise.
+            let trigger = select.focus_handle(cx);
+            let mut was_open = false;
+            cx.observe_in(&select, window, move |_, select, window, cx| {
+                let open = select.focus_handle(cx) != trigger;
+                let closed = was_open && !open;
+                was_open = open;
+                if let Some(current) = select.read(cx).selected_value().cloned().filter(|_| closed)
+                {
+                    select.update(cx, |select, cx| {
+                        select.set_selected_value(&current, window, cx);
+                        cx.notify();
+                    });
+                }
+            })
             .detach();
             select
         };
@@ -236,6 +259,9 @@ impl RootView {
             seen_generation: 0,
             theme_pref,
             refresh: launch.refresh,
+            refresh_task: None,
+            feedback: None,
+            feedback_task: None,
             selections: HashMap::new(),
             pending_restore: None,
             last_selected: 0,
@@ -243,6 +269,7 @@ impl RootView {
             viewport_width: initial_width,
             col_overrides: HashMap::new(),
         };
+        this.state.update(cx, |state, cx| state.refresh(cx));
         this.start_refresh_loop(cx);
         this.discover_repos(window, cx);
         this
@@ -308,6 +335,51 @@ impl RootView {
         cx.notify();
     }
 
+    fn show_config(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = cx.new(|cx| crate::settings::SettingsView::new(window, cx));
+        cx.subscribe_in(
+            &settings,
+            window,
+            |this, _, _: &crate::settings::SettingsSaved, window, cx| {
+                let file = crate::config::load();
+                this.theme_pref = ThemePref::resolve(file.theme.as_deref());
+                this.theme_pref.apply(window, cx);
+                let refresh = crate::state::refresh_interval(file.refresh_secs);
+                if this.refresh != refresh {
+                    this.refresh = refresh;
+                    this.start_refresh_loop(cx);
+                }
+                this.state.update(cx, |state, cx| {
+                    state.apply_config(crate::board_config(&file), cx)
+                });
+                window.close_dialog(cx);
+                this.table.focus_handle(cx).focus(window, cx);
+                this.show_feedback("Settings saved", cx);
+            },
+        )
+        .detach();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Settings")
+                .w(px(560.))
+                .close_button(false)
+                .child(settings.clone())
+        });
+    }
+
+    /// One replaceable confirmation, with no queue or continuous animation.
+    fn show_feedback(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.feedback = Some(message);
+        self.feedback_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.feedback = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn discover_repos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.discovering_repos {
             return;
@@ -356,12 +428,11 @@ impl RootView {
         .detach();
     }
 
-    fn start_refresh_loop(&self, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        state.update(cx, |s, cx| s.refresh(cx));
+    fn start_refresh_loop(&mut self, cx: &mut Context<Self>) {
         let interval = self.refresh;
-        let state = state.downgrade();
-        cx.spawn(async move |_this, cx| {
+        let state = self.state.downgrade();
+        // Replacing the task cancels the old timer, leaving exactly one loop.
+        self.refresh_task = Some(cx.spawn(async move |_this, cx| {
             loop {
                 cx.background_executor().timer(interval).await;
                 // Rate-limit gating and in-flight dedup live inside refresh().
@@ -369,8 +440,7 @@ impl RootView {
                     break; // app is shutting down
                 }
             }
-        })
-        .detach();
+        }));
     }
 
     fn selected_row_url(&self, cx: &App) -> Option<String> {
@@ -515,17 +585,29 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
         if event.keystroke.key == "escape" {
             self.details_open = false;
             self.table.focus_handle(cx).focus(window, cx);
             cx.notify();
             return;
         }
-        // Search input owns text keys. Typing a repository containing q/r/t
-        // must not quit, refresh, or change the app's theme.
-        if !self.table.focus_handle(cx).contains_focused(window, cx) {
+        // Text inputs own character keys; toolbar buttons do not. The select's
+        // dynamic focus handle includes its searchable popup.
+        if self.search.focus_handle(cx).contains_focused(window, cx)
+            || self
+                .repo_select
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+            || event.keystroke.modifiers.platform
+            || event.keystroke.modifiers.control
+            || event.keystroke.modifiers.alt
+        {
             return;
         }
+        let table_focused = self.table.focus_handle(cx).contains_focused(window, cx);
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
         match key {
@@ -535,7 +617,7 @@ impl RootView {
                 cx.notify();
                 cx.stop_propagation();
             }
-            "space" if !platform => self.toggle_details(window, cx),
+            "space" if table_focused => self.toggle_details(window, cx),
             "q" => {
                 save_window_size(window);
                 cx.quit();
@@ -556,7 +638,12 @@ impl RootView {
                 crate::config::persist_str("theme", self.theme_pref.label());
                 cx.notify();
             }
-            "enter" | "o" if !platform => {
+            "enter" if table_focused => {
+                if let Some(url) = self.selected_row_url(cx) {
+                    cx.open_url(&url);
+                }
+            }
+            "o" => {
                 if let Some(url) = self.selected_row_url(cx) {
                     cx.open_url(&url);
                 }
@@ -564,6 +651,7 @@ impl RootView {
             "y" if !platform => {
                 if let Some(url) = self.selected_row_url(cx) {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
+                    self.show_feedback("PR URL copied", cx);
                 }
             }
             _ => {}
@@ -935,15 +1023,10 @@ impl RootView {
 
     fn render_footer(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let theme_label = format!("theme ({})", self.theme_pref.label());
         let hints: Vec<(&str, String)> = vec![
             ("↑↓", "select".into()),
             ("⏎", "open".into()),
-            ("y", "copy".into()),
-            ("1/2", "views".into()),
             ("r", "refresh".into()),
-            ("t", theme_label),
-            ("q", "quit".into()),
         ];
         // Keycap legend (spec §6): reference material lives at the bottom,
         // status at the top — the gh-dash/native pattern.
@@ -981,21 +1064,77 @@ impl RootView {
                     ),
             );
         }
-        bar.child(div().flex_1())
-            .child(
+        bar.child(
+            Button::new("shortcuts")
+                .small()
+                .ghost()
+                .label("Shortcuts")
+                .on_click(cx.listener(|this, _, window, cx| this.show_shortcuts(window, cx))),
+        )
+        .child(div().flex_1())
+        .when_some(self.feedback, |bar, message| {
+            bar.child(
                 div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(theme.muted_foreground)
-                    .child(self.repo_status.clone()),
+                    .text_size(px(12.))
+                    .text_color(theme.foreground)
+                    .child(message),
             )
-            .child(
-                Button::new("discover-repos")
-                    .small()
-                    .label("Repos")
-                    .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
-            )
+        })
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(px(11.))
+                .text_color(theme.muted_foreground)
+                .child(self.repo_status.clone()),
+        )
+        .child(
+            Button::new("discover-repos")
+                .small()
+                .label("Repos")
+                .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
+        )
+        .child(
+            Button::new("configuration")
+                .small()
+                .label("Settings")
+                .tooltip("Reviewer suggestions, refresh interval and appearance")
+                .on_click(cx.listener(|this, _, window, cx| this.show_config(window, cx))),
+        )
+    }
+
+    fn show_shortcuts(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.table.focus_handle(cx);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let mut rows = v_flex().id("shortcut-list").overflow_y_scroll()
+                .max_h((window.viewport_size().height - px(300.)).min(px(340.)))
+                .gap_2().text_size(px(13.));
+            for (label, keys) in [
+                ("Select a PR", "↑ / ↓"),
+                ("Open selected PR", "Enter / o"),
+                ("Copy selected PR URL", "y"),
+                ("My PRs / Review queue", "1 / 2"),
+                ("Switch queue", "v"),
+                ("Refresh", "r"),
+                ("Search loaded PRs", "/"),
+                ("Toggle selected PR details", "Space"),
+                ("Cycle theme", "t"),
+                ("Close dialog or details", "Esc"),
+                ("Quit", if cfg!(target_os = "macos") { "⌘Q / q" } else { "Ctrl Q / q" }),
+            ] {
+                rows = rows.child(h_flex().justify_between().child(label).child(
+                    div().px_1().rounded(px(3.)).bg(cx.theme().muted)
+                        .text_color(cx.theme().muted_foreground).child(keys),
+                ));
+            }
+            let focus = focus.clone();
+            dialog.title("Keyboard shortcuts").w(px(420.)).close_button(false).child(rows)
+                .child(div().mt_3().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                    .child("Typing in search, the repository picker, or Settings never triggers dashboard shortcuts. Arrow keys, Enter, and Space act on the focused control."))
+                .child(h_flex().mt_3().justify_end().child(Button::new("close-shortcuts")
+                    .label("Done").on_click(|_, window, cx| window.close_dialog(cx))))
+                .on_close(move |_, window, cx| focus.focus(window, cx))
+        });
     }
 }
 
@@ -1054,7 +1193,8 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
         if self.selected_row_url(cx).is_none() {
             self.details_open = false;
         }
@@ -1072,7 +1212,7 @@ impl Render for RootView {
             } else if let Some(secs) = s.backoff_remaining() {
                 BodyState::Paused(format!("Paused — retrying in {}", human_duration(secs)))
             } else if let Some(err) = s.error.clone() {
-                BodyState::Failed(format!("Couldn't load — {err}  ·  press r to retry"))
+                BodyState::Failed(format!("Couldn't load — {err}"))
             } else {
                 BodyState::Loading(queue_loading_text(s.mode).to_string())
             }
@@ -1122,7 +1262,7 @@ impl Render for RootView {
                         BodyState::Loaded => this.child(
                             DataTable::new(&self.table)
                                 .small()
-                                .stripe(true)
+                                .stripe(false)
                                 .bordered(false),
                         ),
                         BodyState::Loading(text) | BodyState::Paused(text) => this.child(
@@ -1133,11 +1273,22 @@ impl Render for RootView {
                                 .child(text),
                         ),
                         BodyState::Failed(text) => this.child(
-                            h_flex()
+                            v_flex()
                                 .size_full()
+                                .gap_3()
+                                .items_center()
                                 .justify_center()
-                                .text_color(theme.danger)
-                                .child(text),
+                                .px_4()
+                                .child(div().max_w(px(640.)).text_color(theme.danger).child(text))
+                                .child(
+                                    Button::new("retry-board")
+                                        .label("Retry")
+                                        .tooltip("Retry loading this queue · r")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.state.update(cx, |state, cx| state.refresh(cx));
+                                            this.focus_handle.focus(window, cx);
+                                        })),
+                                ),
                         ),
                     }),
             )
@@ -1145,5 +1296,6 @@ impl Render for RootView {
                 this.child(self.render_details(cx))
             })
             .child(self.render_footer(cx))
+            .children(dialog_layer)
     }
 }
