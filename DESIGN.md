@@ -56,9 +56,11 @@ keycaps 3 px. Small radii are the native-Mac tell.
 
 ## Components
 
-- **Table**: gpui-component `Table` + `TableState` + delegate, `.small()` (30 px rows, 6×3 cell
-  pad), `.stripe(true)`, `.bordered(false)` — full-bleed, the window IS the table. Zebra on,
-  hairlines off. Columns drag-resizable; Note wins width over Title; both carry full-text tooltips.
+- **Table**: gpui-component `DataTable` + `TableState` + delegate, `.small()` (30 px rows, 6×3 cell
+  pad), `.stripe(false)`, `.bordered(false)` — full-bleed, the window IS the table. The delegate
+  stripes real PR rows only; category and stack headers retain their own bands, and unused
+  space is plain background rather than synthetic empty rows. Columns drag-resizable;
+  Note wins width over Title; both carry full-text tooltips.
 - **Status dots**: 7 px (`STATUS_DOT`) `rounded_full` div + text, `gap_1p5`. The calm rule: bad
   states get colored text; good states get only a colored dot with muted text.
 - **Reviewer glyphs**: glyph-first before login (survives truncation): ✓ success · `·` muted ·
@@ -72,6 +74,12 @@ keycaps 3 px. Small radii are the native-Mac tell.
   The selected queue uses a body-colored inset surface, semibold label, and subtle shadow; the
   inactive queue uses muted text. Traffic lights overlay.
 - **Footer**: keycap legend — key in a bordered `muted` chip (11 px medium), label in 12 px muted.
+  Keep select/open/refresh visible; the compact Shortcuts control opens the full reference
+  with aligned command/key rows. No wider Pin/Unpin text or additional navigation tabs.
+- **Recovery**: an initial fetch error offers a visible Retry button using the existing
+  rate-gated refresh path. Settings errors focus and reveal the offending input, expanding
+  Advanced when necessary. Character shortcuts work outside inputs; Enter/Space remain
+  owned by the focused control. No success animation or background notification queue.
 
 ## Repository and review navigation (0.6 migration)
 

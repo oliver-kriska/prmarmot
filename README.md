@@ -1,222 +1,301 @@
+<img src="assets/branding/icon-256.png" alt="prboard logo" width="96" height="96">
+
 # prboard
 
-A GitHub PR-review dashboard as a native desktop app (Rust, GPUI +
-[gpui-component](https://github.com/longbridge/gpui-component)) for macOS and
-Linux. One dense, always-open table of your pull requests with a computed
-**Note** per row saying what to do next — so you glance instead of tab-cycling
-through github.com.
+**A native desktop dashboard for deciding what to do next on GitHub pull
+requests.** prboard turns CI, review requests, completed reviews, unresolved
+threads, conflicts, labels, linked issues, and GitHub stacks into two focused
+queues with a plain-language **Note** on every row.
 
-- **Every signal in one row:** PR number, draft/ready, CI state, unresolved
-  threads, merge conflicts, labels, linked issue, reviewers and their verdicts
-  — plus the Note ("CI red — fix before ping", "2 unresolved threads", …).
-- **Two queues, one click apart:** **My PRs** (needs action → awaiting review
-  → drafts) and your incoming **Review queue**, separating requests addressed
-  to you from PRs **available to review** (no user or team reviewer requested).
-- **Searchable repositories:** discovers owned, collaborator, and organization
-  repositories accessible through your `gh` login, not just configured repos.
-- **Native stacks:** GitHub stack groups show layers in dependency order, with
-  position badges and explicit partial-stack counts within each section.
-- **Cheap and calm:** auto-refresh (default 5 min) uses one GraphQL request
-  per cycle; the header shows "synced Xm ago" and your live API budget.
-  No perpetual animations; overnight memory/idle-GPU validation remains pending.
-- **Read-only by design:** it opens PRs in your browser; it never merges,
-  assigns, or comments. Auth is your existing [`gh`](https://cli.github.com)
-  CLI login — prboard never touches a token itself.
+- **My PRs** sorts your authored work into needs action, awaiting review, and
+  drafts.
+- **Review queue** separates PRs that request your review from PRs with no
+  reviewer requested that are available for someone to pick up.
+- **Read-only by design:** prboard can open a PR or linked issue and copy its
+  URL, but it never assigns reviewers, comments, merges, or changes GitHub.
+- **Uses your existing GitHub CLI login:** API access goes through an
+  authenticated [`gh`](https://cli.github.com) installation.
 
-**Status: early (Step-0 walking skeleton).** The framework choice is gated on
-an overnight memory measurement (see below). Roadmap and evidence:
-`HANDOFF.md` and `.claude/research/`.
+![My PRs view showing authored pull requests grouped by next action](assets/screenshots/my-prs.png)
+
+*My PRs. All repositories, people, pull requests, labels, and statuses shown in
+the screenshot are fictional.*
+
+![Review queue showing requested and available reviews](assets/screenshots/review-queue.png)
+
+*Review queue. The screenshot uses entirely fictional data. “Requested” means
+your user was explicitly requested. “Available to review” means the PR has no
+pending user or team review request; it is an optional pool, not an assignment.*
+
+Native GitHub stacks are grouped and ordered by layer, so dependent PRs can be
+reviewed from the base upward. A label such as `backend`, `security`, or
+`frontend` supplies context at scan speed. Together, stack order and labels make
+the available pool useful when choosing work that matches your area without
+pretending GitHub assigned it to you.
 
 ## Install
 
-Requires an authenticated [`gh`](https://cli.github.com) (`gh auth login`).
+### Requirements
 
-**macOS (Apple silicon) — latest release:**
+Install and authenticate the GitHub CLI first:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh | sh
+gh auth login
 ```
 
-On a first install, the script detects the current checkout's repo or asks for
-`owner/name`, then writes the minimal config needed for Spotlight launches. For
-a non-interactive install, pass it explicitly:
+prboard currently provides a prebuilt release for **Apple-silicon macOS only**.
+Linux and Intel Mac users must build from source for now.
+
+### Apple-silicon macOS
+
+Run the installer from inside a GitHub checkout so it can detect that
+repository, or pass the initial repository explicitly:
 
 ```sh
+# Detect the repository from the current checkout
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh | sh
+
+# Or configure a repository explicitly (recommended for scripted installs)
 curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh \
   | sh -s -- --repo owner/name
 ```
 
-**Any platform — build current `main` from source** (needs git and
-latest stable Rust; macOS also needs Xcode's Metal toolchain):
+The installer downloads the latest macOS arm64 release, installs
+`~/Applications/prboard.app`, and creates the config file only when it can
+resolve an accessible repository. It never overwrites an existing config. Early
+releases are ad-hoc signed on the destination Mac and are not yet notarized;
+Homebrew installation is therefore not available yet.
+
+**Updating? Quit the installed app before running the installer again.**
+
+### Build from source
+
+Requires Git, latest stable Rust (dependency minimum 1.92, not tested), and the
+platform dependencies required by GPUI. macOS additionally needs full Xcode and its Metal Toolchain. Linux
+needs a working Vulkan stack plus fontconfig, xkbcommon, and the normal X11 or
+Wayland development/runtime libraries.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh | sh -s -- --from-source
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh \
+  | sh -s -- --from-source --repo owner/name
 ```
 
-Both install `prboard.app` into `~/Applications` (Spotlight-launchable);
-on Linux the source build installs the binary to `~/.local/bin`. Why curl and
-not a browser download: until notarization lands, the installer strips download
-metadata and ad-hoc signs and verifies the app locally. Homebrew (`brew install
---cask …`) is templated in `packaging/` and blocked on an Apple Developer ID —
-see `packaging/RELEASING.md`.
+On macOS this installs `~/Applications/prboard.app`; on Linux it installs the
+`prboard` binary to `~/.local/bin` by default. There are no prebuilt Linux
+packages yet.
 
-## Running
+## First run
 
-Requires an authenticated [`gh`](https://cli.github.com) (`gh auth login`) —
-prboard inherits its credentials and never touches a token itself.
+1. Confirm `gh auth status` succeeds and that your account can access the
+   repository.
+2. Launch **prboard** from Spotlight/Finder on macOS, or run `prboard` on Linux.
+3. Pick another accessible repository from the searchable repository control
+   if needed. Discovery includes owned, collaborator, and organization repos
+   visible to the current `gh` account.
+4. Switch between **My PRs** and **Review queue** in the title bar.
 
-```sh
-cargo build --release
-./target/release/prboard --repo owner/name    # or run inside a repo checkout
-./target/release/prboard --review             # your incoming review queue
-```
+Spotlight and Finder launches have no useful repository working directory, so
+they require `repo` in the config file. If the installer could not create it,
+create the file described below before launching. Running the binary directly
+from a checkout can instead detect that checkout's GitHub remote.
 
-### Install as a Mac app from a checkout
+Click **Settings** in the bottom-right corner to edit reviewer suggestions,
+the refresh interval, and the theme directly—no file editing required.
+Expand **Advanced** to configure issue links or copy the config-file path.
+**Save** validates and applies changes without restarting; **Cancel** discards
+your edits. Reviewer and issue-link changes reload the board, subject to the
+GitHub rate-limit budget. Theme changes apply immediately on Save. Validation
+errors appear beside the relevant fields and focus the first invalid input
+(opening and scrolling Advanced when needed); a brief footer message confirms a
+successful save.
 
-```sh
-cargo build --release
-scripts/bundle-app.sh     # assembles + ad-hoc-signs ~/Applications/prboard.app
-```
+![Editable Settings with reviewer suggestions, refresh interval, and theme](assets/screenshots/settings.png)
 
-Spotlight launches carry no shell env and no working directory, so configure
-via the config file below (at minimum `repo`).
+*Settings shown with fictional reviewer names. Environment-controlled fields
+are disabled and labeled; saving other settings leaves their file values alone.*
 
-### Configuration
+## Configuration
 
-`~/.config/prboard/config.toml` (or `$XDG_CONFIG_HOME/prboard/config.toml`);
-every value optional, env vars override the file, CLI args override both:
+The config file is:
+
+- `$XDG_CONFIG_HOME/prboard/config.toml` when `XDG_CONFIG_HOME` is an absolute
+  path;
+- otherwise `~/.config/prboard/config.toml`.
+
+Every setting is optional, but app-bundle launches need `repo`:
 
 ```toml
-repo = "acme/widgets"              # default repo
-repos = ["acme/widgets", "acme/api"]  # extra entries merged with discovered repos
-pinned_repos = ["acme/widgets", "acme/api"] # one-click toolbar shortcuts
-refresh_secs = 300                 # hard floor 30
-theme = "system"                   # system | light | dark
+repo = "acme/widgets"                    # repository opened at startup
+repos = ["acme/widgets", "acme/api"]    # extra repo-picker entries
+pinned_repos = ["acme/widgets"]          # toolbar shortcuts, maximum 12
+refresh_secs = 300                       # default 300; hard floor 30
+theme = "system"                         # system | light | dark
+view = "authored"                        # authored | review
+
+# Static, global suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]
 
 [issue_link]
-pattern = "PROJ-[0-9]+"            # ticket id regex matched in PR titles
+pattern = "PROJ-[0-9]+"                  # regex matched in PR titles
 url_template = "https://linear.app/acme/issue/{id}"
+
+[window]
+width = 1440
+height = 860
 ```
 
-Issue links are optional and tracker-agnostic. `pattern` can match any ticket
-format and `url_template` can point to Linear, Jira, or a custom tracker; `{id}`
-is replaced with the matched identifier. No project prefix or tracker URL is
-built into prboard.
+### What `default_reviewers` does—and does not do
 
-Env vars: `PRBOARD_REPO`, `PRBOARD_REFRESH_SECS`, `PRBOARD_THEME`,
-`PRBOARD_ISSUE_PATTERN` + `PRBOARD_ISSUE_URL_TEMPLATE`,
-`PRBOARD_DEFAULT_REVIEWERS` (comma-separated).
+`default_reviewers` is a static global hint. When one of **your** non-draft PRs
+has no pending reviewer request and no qualifying completed review, its Note
+can say, for example, “assign alice + bob.” prboard does **not** assign those people, validate that they are suitable
+for the repository, read or implement `CODEOWNERS`, or infer GitHub ownership.
+The same list is suggested for every repository. Leave it empty if a global
+suggestion would be misleading.
 
-Use the visible **My PRs / Review queue** control in the titlebar, or press `1`/`2` to switch
-directly (`v` still toggles between them). Other keys: `↑`/`↓` select · `⏎`/`o` open PR in
-browser · `y` copy PR URL · `r` refresh now ·
-`t` cycle theme (system → light → dark) · `q` quit.
-Choose a repo from the dropdown and click **Pin** to add a one-click
-toolbar shortcut. Click **Pinned** to remove it without switching repos. Up to
-12 pins are saved in order across restarts; the shortcut strip scrolls horizontally
-when needed. Switching keeps your current queue. Pins do not fetch in the background.
+Issue links are optional and tracker-agnostic. `{id}` in `url_template` is
+replaced with the first identifier matched by `pattern`; no tracker or project
+prefix is built in.
 
-Click **Search** or press `/` to filter loaded PRs by number, title, author,
-label, issue, or note. Words narrow the results together; **Close search** clears
-the filter and brings back the pinned shortcuts.
-Press `Space` or Details to inspect the selected PR (or the first visible PR
-when nothing is selected); `Esc` closes the panel. Filtering out the selection
-closes details automatically. Single-click a non-link cell to select another PR.
-Double-click a row to open it; drag column edges to resize; hover the Note,
-Title, Labels, or Reviewed-by cell for the full text.
+Environment variables override the config file, and `--repo` overrides both:
 
-### Discovery and queue limits
+- `PRBOARD_REPO`
+- `PRBOARD_REFRESH_SECS`
+- `PRBOARD_THEME`
+- `PRBOARD_DEFAULT_REVIEWERS` (comma-separated)
+- `PRBOARD_ISSUE_PATTERN` and `PRBOARD_ISSUE_URL_TEMPLATE` (use together)
 
-Repository discovery runs at startup; **Repos** retries it without restarting.
-It fetches at most 1,000 repositories (10 pages). Configured entries and the
-current repo remain available if discovery fails or hits its limit. GitHub token
-permissions and organization SSO still determine which repos are visible.
+The app persists repository, theme, starting view, window size, pinned repos,
+and saved Settings back to valid TOML while preserving comments and unrelated
+settings. It refuses to overwrite an unparseable config. Manual file edits
+require a restart; changes saved in Settings do not.
 
-My PRs fetches up to 60 results. Review queue fetches up to 60 explicitly
-requested PRs plus 60 other-authored candidates in one GraphQL operation, then
-keeps candidates with no pending reviewer request. Requests to a team or another
-person are not considered unassigned. Your own PRs are excluded; already-reviewed
-PRs and drafts retain their sections. This refers to **review requests**, not the
-separate issue-assignee field. A **partial results** notice means more results
-exist on GitHub; use **Load more** to fetch the next page of each active search.
-Each search is bounded to five pages: at most 300 authored or 600 review rows
-before filtering and deduplication. Available candidates may be filtered out,
-so a page can advance without adding visible PRs. Refresh, including automatic
-refresh, starts again at page one. Failed page requests preserve loaded rows.
+## Using prboard
 
-Filtering searches only loaded PRs, not all of GitHub. Details uses the loaded
-snapshot without additional requests; reviewer, label, and thread lists remain
-subject to the GraphQL query's per-PR limits.
+- **Shortcuts:** the footer opens the full keyboard reference. Character shortcuts
+  work from dashboard controls, but never while typing in search, the repo picker,
+  or Settings. Arrow keys, Enter, and Space belong to the focused control.
+- **Queues:** click **My PRs** / **Review queue**, press `1` / `2`, or press `v`
+  to toggle.
+- **Navigate:** `↑` / `↓` selects; `Enter` or `o` opens the PR; `y` copies its
+  URL with a brief footer confirmation; double-clicking a row opens it.
+- **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
+- **Search loaded rows:** click **Search** or press `/`. Terms match PR number,
+  title, author, label, issue, and Note, and multiple terms narrow together.
+- **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
+  minutes and the header shows the last sync time and GitHub API budget. If the
+  initial load fails, click **Retry**; rate-limit pauses still wait for their budget.
+- **Repositories:** use the searchable picker; **Pin** adds an in-app shortcut
+  and **Pinned** removes it. Up to 12 pins persist in order. Pins do not fetch in
+  the background.
+- **Theme:** `t` cycles system → light → dark.
+- **Quit:** use **prboard → Quit prboard**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
+  The global shortcut works even in Settings and text inputs. Plain `q` also
+  quits when no text input or dialog is active.
 
-Stack grouping uses GitHub's native stack metadata, not labels or guessed branch
-relationships. Layers are ordered bottom-to-top inside each queue section;
-`X of Y layers shown` makes missing or differently categorized layers
-explicit. Hover a layer's title for stack number, position, and base branch.
+![Selected stacked pull request with its reviewer, label, and stack-layer details](assets/screenshots/pr-details.png)
 
-## Building
+*Select a row and open Details to inspect its loaded metadata, including the
+stack layer and base branch. This example uses fictional data; opening the
+panel makes no additional GitHub request.*
 
-- Latest **stable** Rust (verified with 1.97.1; dependency manifests require at
-  least 1.92 across supported platforms; the minimum toolchain is not tested).
-- `gpui-component = 0.6.0` with `gpui-pre` / `gpui-pre-platform = 0.3.4`.
-  Bootstrap uses the platform application and component `Root`; the virtualized
-  table is now `DataTable` + `TableState` + `TableDelegate`.
-- macOS: full Xcode with the **Metal Toolchain** component — if the build fails
-  with `cannot execute tool 'metal'`, run
-  `xcodebuild -downloadComponent MetalToolchain`.
-- One GraphQL request per refresh (two bounded search aliases in Review queue);
-  the legacy categorization logic in `core/` is pinned by golden tests
-  (`scripts/gen-golden.sh`, `core/tests/parity.rs`).
+## Data and queue limits
+
+Repository discovery runs at startup and **Repos** retries it. Discovery is
+limited to 1,000 repositories (10 pages); configured, pinned, and current repos
+remain available if discovery fails. GitHub permissions and organization SSO
+determine what is visible.
+
+Each initial authored search returns up to 60 PRs. Review queue uses one GraphQL
+operation with two search aliases: up to 60 explicitly requested PRs and 60
+other-authored candidates, then keeps available candidates only when they have
+no pending user or team reviewer request. Your own PRs are excluded from the
+review queue. This is based on **review requests**, not issue assignees.
+
+A **partial results** notice means GitHub has another page. **Load more** can
+advance each active search to a maximum of five pages: at most 300 authored
+results or 600 review candidates before filtering and deduplication. An
+available-candidate page can add no visible rows after filtering. Refreshing,
+including automatic refresh, returns to page one; a failed page request keeps
+the rows already loaded.
+
+Search and Details operate on the loaded snapshot and make no per-PR request.
+Reviewer, label, thread, and stack information is subject to the GraphQL
+query's per-PR limits. Stack grouping uses GitHub's native stack metadata—not
+labels or guessed branch relationships—and reports partial stacks when not all
+layers appear in the same loaded section.
+
+## Build and develop
+
+The workspace contains the GPUI app and `core/`, a UI-independent crate for
+GitHub transport, categorization, and Note logic. Current UI dependencies are
+`gpui-component 0.6.0` and `gpui-pre` / `gpui-pre-platform 0.3.4`.
 
 ```sh
-cargo test -p prboard-core   # categorization/Note parity + unit tests
-cargo clippy --all-targets
+make check      # fmt check + core clippy -D warnings + core tests (same as CI)
+make build      # debug GPUI app build
+make verify     # full-workspace fmt, clippy, and tests
+make hooks      # install repository git hooks
 ```
 
-## Development
-
-`make help` lists everything. The quality gate is fast because `prboard-core`
-has no GPUI/Metal dependency — only the app binary does.
+`make check` and CI intentionally compile only `prboard-core`, so they do not
+need Metal. `make build`, `make verify`, and the pre-push hook compile the GPUI
+binary and need the platform graphics toolchain. On macOS, if `metal` is
+missing, run:
 
 ```sh
-make check     # fmt --check + clippy(core) + test(core) — exactly what CI runs
-make fix       # auto-format and apply the auto-fixable clippy lints
-make build     # debug build of the GPUI app (needs the Metal Toolchain)
-make hooks     # install the git pre-commit + commit-msg hooks (one-time)
+xcodebuild -downloadComponent MetalToolchain
 ```
 
-- **Pre-commit hook** runs the same `check` gate, but only when Rust/Cargo files
-  are staged (docs-only commits stay instant). Bypass with `git commit
-  --no-verify` or `PRBOARD_SKIP_HOOKS=1`.
-- **Pre-push hook** runs `make verify` — the full-workspace gate incl. the GPUI
-  app binary (`fmt --all --check` + `clippy --all-targets -D warnings` +
-  `test --workspace`). This is the one automated check the app binary gets, since
-  CI only compiles `prboard-core`; it needs the Metal Toolchain and is slower.
-  Bypass with `git push --no-verify` or `PRBOARD_SKIP_HOOKS=1`.
-- **CI** (`.github/workflows/ci.yml`) runs `fmt --check` and clippy+test on
-  `prboard-core` for every push and PR to `main`. The GPUI binary is not built
-  in CI — build it locally with `make build`.
-- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, …) are grouped
-  into [`CHANGELOG.md`](CHANGELOG.md) by [git-cliff](https://git-cliff.org); the
-  `commit-msg` hook nudges (never blocks) toward them. A **draft "Unreleased"
-  GitHub release** is kept in sync with everything on `main` that isn't in the
-  latest tag — or run `make unreleased` to see it locally. `make changelog`
-  regenerates `CHANGELOG.md` when cutting a release.
-
-## The Step-0 memory gate
-
-GPUI is validated, not assumed: the skeleton must hold **flat RSS < ~150 MB
-and ~0 idle GPU over 12–24 h** before anything gets built on top of it.
+Run without installing:
 
 ```sh
-scripts/spike-run.sh owner/repo     # app + per-minute RSS sampler + caffeinate
-scripts/measure-summary.sh          # next day: verdict against the gate
+cargo run -- --repo owner/name
+cargo run -- --repo owner/name --review
 ```
 
-Deeper probes during the run (optional): `leaks <pid>` after a few refresh
-cycles (growing count = fail), `sudo powermetrics --samplers gpu_power -i 1000`
-(idle GPU should be ~0 between refreshes).
+Build a local Mac app only after quitting any running installed instance:
+
+```sh
+make install
+```
+
+The categorization behavior is pinned against the original shell prototype by
+golden tests in `core/tests/parity.rs`. Fix the port when parity fails; do not
+change golden expectations to make a failing implementation pass.
+
+### Reproduce the screenshots
+
+```sh
+cargo build
+scripts/demo.sh             # fictional My PRs
+scripts/demo.sh --review    # fictional Review queue
+scripts/demo.sh --fail-once # exercise the initial error and Retry recovery
+scripts/demo.sh --self-test # validate the demo fixtures (Python 3 required)
+```
+
+The demo runs the real UI with a local, fail-closed `gh` stand-in. It requires
+Python 3 but no GitHub login or API requests, uses a temporary config, and never
+reads or modifies your normal prboard settings. Links are synthetic; do not use
+the demo to act on real PRs. Quit its window when finished.
+
+### App icon and logo
+
+The vector source is [`assets/branding/icon.svg`](assets/branding/icon.svg).
+Transparent PNGs at 16, 32, 64, 128, 256, 512, and 1024 pixels and the macOS
+`prboard.icns` are included alongside it. The README and app bundle use these
+same assets. Normal builds need no icon-generation tools.
+
+To regenerate the assets on macOS with `rsvg-convert` (librsvg) installed:
+
+```sh
+scripts/generate-icons.sh
+```
+
+The upgraded GPUI runtime's overnight memory and idle-GPU measurement remains
+pending; no resource-usage guarantee is claimed. Linux is source-only and has
+not been verified in the macOS development environment.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE).

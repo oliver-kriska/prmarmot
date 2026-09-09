@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Offline, fail-closed gh stand-in for prboard screenshot fixtures."""
+
+import json
+import os
+from pathlib import Path
+import sys
+import unittest
+
+
+def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
+       mergeable="MERGEABLE", labels=(), requested=(), reviews=(), unresolved=0,
+       ci="SUCCESS", stack=None):
+    request_nodes = [
+        {"requestedReviewer": {"__typename": "User", "login": login}}
+        for login in requested
+    ]
+    review_nodes = [
+        {"author": {"login": login}, "state": state,
+         "submittedAt": f"2026-08-{day:02d}T12:00:00Z"}
+        for day, (login, state) in enumerate(reviews, 1)
+    ]
+    node = {
+        "number": number,
+        "title": title,
+        "isDraft": draft,
+        "reviewDecision": decision,
+        "mergeable": mergeable,
+        "createdAt": f"2026-08-{number % 20 + 1:02d}T09:00:00Z",
+        "author": {"login": author},
+        "labels": {"nodes": [{"name": label} for label in labels]},
+        "reviewRequests": {"totalCount": len(request_nodes), "nodes": request_nodes},
+        "reviews": {"nodes": review_nodes},
+        "reviewThreads": {"nodes":
+            [{"isResolved": False} for _ in range(unresolved)]},
+        "commits": {"nodes": [{"commit": {"statusCheckRollup":
+            None if ci is None else {"state": ci}}}]},
+    }
+    if stack:
+        stack_number, position = stack
+        node["stack"] = {"number": stack_number, "size": 3,
+                         "baseRefName": "main"}
+        node["stackEntry"] = {"position": position}
+    else:
+        node["stack"] = None
+        node["stackEntry"] = None
+    return node
+
+
+AUTHORED = [
+    pr(418, "[DEMO-418] Repair offline cache reconciliation", labels=("bug",),
+       requested=("alex",), unresolved=2, ci="FAILURE"),
+    pr(417, "Resolve atlas navigation conflicts", mergeable="CONFLICTING",
+       labels=("feature",), requested=("sam",)),
+    pr(416, "Add compact device activity cards", labels=("mobile",)),
+    pr(415, "[DEMO-415] Introduce workspace search", labels=("feature",),
+       requested=("alex", "sam"), unresolved=1),
+    pr(414, "Atlas stack: define event envelope", labels=("feature",), stack=(72, 1)),
+    pr(413, "Atlas stack: persist event batches", labels=("feature",),
+       stack=(72, 2)),
+    pr(412, "Atlas stack: render delivery timeline", labels=("mobile",),
+       stack=(72, 3)),
+    pr(410, "Publish export schema", labels=("docs",), requested=("sam",)),
+    pr(409, "Reduce startup queries", labels=("performance",), decision="APPROVED",
+       reviews=(("alex", "APPROVED"),)),
+    pr(411, "Draft adaptive sync experiment", draft=True, decision=None,
+       labels=("mobile",), ci=None),
+]
+
+REQUESTED = [
+    pr(528, "Review secure session handoff", author="river", labels=("bug",),
+       requested=("demo-user",), unresolved=1),
+    pr(527, "Polish mobile project switcher", author="taylor", labels=("mobile",),
+       requested=("demo-user",)),
+    pr(526, "Approve atlas export format", author="jordan", labels=("feature",),
+       requested=("demo-user",), decision="APPROVED",
+       reviews=(("demo-user", "APPROVED"),)),
+    pr(525, "Draft notification grouping", author="casey", draft=True, decision=None,
+       requested=("demo-user",), labels=("mobile",)),
+]
+
+AVAILABLE = [
+    pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",)),
+    pr(523, "Document atlas import boundaries", author="skyler", labels=("feature",)),
+    # Included in the broad alias too; requested provenance must win after merge.
+    REQUESTED[1],
+]
+
+
+def page(nodes):
+    return {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+
+
+def rate(cost):
+    return {"limit": 5000, "cost": cost, "remaining": 4937,
+            "resetAt": "2026-09-08T18:00:00Z"}
+
+
+def graphql(args):
+    fields = dict(arg.split("=", 1) for i, arg in enumerate(args)
+                  if i and args[i - 1] == "-f" and "=" in arg)
+    query = fields.get("query", "")
+    if "requested:" in query or "requested: search" in query:
+        data = {"rateLimit": rate(5)}
+        if "$requested" in query:
+            data["requested"] = page(REQUESTED)
+        if "$available" in query:
+            data["available"] = page(AVAILABLE)
+        return {"data": data}
+    if "search(query:$q" in query:
+        return {"data": {"search": page(AUTHORED), "rateLimit": rate(3)}}
+    raise ValueError("unrecognized GraphQL operation")
+
+
+class FixtureTests(unittest.TestCase):
+    def test_numbers_are_unique_and_views_are_distinct(self):
+        authored = {item["number"] for item in AUTHORED}
+        review = {item["number"] for item in REQUESTED + AVAILABLE}
+        self.assertEqual(len(authored), 10)
+        self.assertTrue(authored.isdisjoint(review))
+
+    def test_native_stack_has_three_ordered_layers(self):
+        layers = [item for item in AUTHORED if item["stack"]]
+        self.assertEqual([item["stackEntry"]["position"] for item in layers], [1, 2, 3])
+        self.assertTrue(all(item["stack"]["number"] == 72 and item["stack"]["size"] == 3
+                            for item in layers))
+
+    def test_alias_and_node_schema(self):
+        body = graphql(["api", "graphql", "-f", "query=query($requested:String!,$available:String!){ requested: search available: search }"])
+        self.assertEqual(set(body["data"]), {"requested", "available", "rateLimit"})
+        for alias in ("requested", "available"):
+            self.assertIn("pageInfo", body["data"][alias])
+            for node in body["data"][alias]["nodes"]:
+                self.assertIn("totalCount", node["reviewRequests"])
+                self.assertIn("statusCheckRollup", node["commits"]["nodes"][0]["commit"])
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["--self-test"]:
+        unittest.main(argv=[sys.argv[0]], verbosity=2)
+        return
+    try:
+        if args == ["api", "user", "--jq", ".login"]:
+            print("demo-user")
+        elif len(args) >= 3 and args[:3] == ["api", "--method", "GET"] and "user/repos" in args:
+            print(json.dumps([{"full_name": "demo-labs/atlas"},
+                              {"full_name": "demo-labs/mobile"}]))
+        elif len(args) >= 2 and args[:2] == ["api", "graphql"]:
+            marker = Path(os.environ["XDG_CONFIG_HOME"]) / "fail-next-graphql"
+            if marker.exists():
+                marker.unlink()
+                print("Demo connection interrupted. Retry to load the fictional board.", file=sys.stderr)
+                raise SystemExit(1)
+            print(json.dumps(graphql(args)))
+        else:
+            raise ValueError("unexpected gh call")
+    except (ValueError, KeyError) as error:
+        print(f"fake gh: {error}: {' '.join(args)}", file=sys.stderr)
+        raise SystemExit(64)
+
+
+if __name__ == "__main__":
+    main()
