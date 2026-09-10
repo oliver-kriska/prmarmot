@@ -26,8 +26,10 @@ user's installed app is never touched.
 - **Release only from an up-to-date `main`.** The tag must point at a pushed
   commit. If local `main` is ahead of / behind `origin/main`, reconcile first —
   never tag work that isn't on the remote.
-- **`/releases/latest` hides pre-releases** — `install.sh` reads the releases
-  *list*; keep releases `--prerelease` while ad-hoc-signed and keep it that way.
+- **Always mark each new release Latest** — publish with `--latest`, not
+  `--prerelease`. Oliver's release policy applies even while the app is
+  ad-hoc-signed; retain that signing disclosure in the release notes.
+  Verify `/releases/latest` returns the newly published tag.
 - **raw.githubusercontent.com caches ~5 min.** After pushing an `install.sh`
   change, a curl of the raw URL can serve the old script; test the local file
   first, re-verify the raw URL after the cache expires.
@@ -123,7 +125,7 @@ git commit -m "chore(release): v$V"        # cliff.toml skips this commit next c
 git push origin main
 
 gh release create "v$V" "$SCRATCHPAD/prboard-v$V-macos-arm64.tar.gz" \
-  --prerelease --title "prboard v$V" --notes-file "$SCRATCHPAD/notes.md" --target main
+  --latest --title "prboard v$V" --notes-file "$SCRATCHPAD/notes.md" --target main
 ```
 
 `gh release create` makes the tag on the remote only — `git fetch --tags` if
@@ -131,6 +133,9 @@ local work needs it. To refresh an existing release's asset instead of cutting a
 new one: `gh release upload "v$V" <tarball> --clobber`.
 
 ### 5. Verify end-to-end
+
+Check `gh api repos/oliver-kriska/prboard/releases/latest --jq '.tag_name'`
+returns `v$V`. GitHub Latest releases must not be drafts or pre-releases.
 
 Run the exact README command into a scratch dir so the user's installed app is
 untouched. A release is not done until this passes against the live release:
