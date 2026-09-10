@@ -1280,6 +1280,9 @@ mod tests {
         requested["reviews"]["nodes"] = json!([
             {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"}
         ]);
+        requested["labels"] = json!({"nodes": [{"name": "bug"}, {"name": "backend"}]});
+        requested["stack"] = json!({"number": 70, "size": 3, "baseRefName": "main"});
+        requested["stackEntry"] = json!({"position": 2});
 
         let mut duplicate = requested.clone();
         duplicate["title"] = json!("broad duplicate must lose");
@@ -1287,6 +1290,9 @@ mod tests {
         let mut available = base(11);
         available["author"] = json!({"login": "bob"});
         available["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+        available["labels"] = json!({"nodes": [{"name": "frontend"}]});
+        available["stack"] = json!({"number": 70, "size": 3, "baseRefName": "main"});
+        available["stackEntry"] = json!({"position": 3});
 
         let mut completed = base(12);
         completed["author"] = json!({"login": "carol"});
@@ -1349,7 +1355,14 @@ mod tests {
         assert_eq!(fetched.rows[0].reviews.len(), 1);
         assert_eq!(fetched.rows[0].reviews[0].login.as_deref(), Some("bob"));
         assert_eq!(fetched.rows[0].reviews[0].state, "COMMENTED");
+        assert_eq!(fetched.rows[0].labels, vec!["bug", "backend"]);
+        assert!(fetched.rows[0].bug);
+        assert_eq!(fetched.rows[0].stack.as_ref().unwrap().position, Some(2));
         assert_eq!(fetched.rows[1].category, Category::Available);
+        assert_eq!(fetched.rows[1].labels, vec!["frontend"]);
+        assert!(!fetched.rows[1].bug);
+        assert_eq!(fetched.rows[1].stack.as_ref().unwrap().number, 70);
+        assert_eq!(fetched.rows[1].stack.as_ref().unwrap().position, Some(3));
         assert_eq!(fetched.rows[2].category, Category::Done);
         assert_eq!(fetched.rows[3].category, Category::Draft);
         assert!(!fetched.truncated);

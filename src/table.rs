@@ -1627,6 +1627,48 @@ mod tests {
     }
 
     #[test]
+    fn labeled_stack_layers_keep_metadata_in_both_tabs() {
+        for (mode, category) in [
+            (Mode::Authored, Category::Action),
+            (Mode::Review, Category::Todo),
+            (Mode::Review, Category::Available),
+            (Mode::Review, Category::Done),
+            (Mode::Review, Category::Draft),
+        ] {
+            let mut upper = row(42, category);
+            upper.labels = vec!["backend".into(), "bug".into()];
+            upper.stack = Some(prboard_core::board::StackInfo {
+                number: 70,
+                size: 3,
+                base_ref_name: "main".into(),
+                position: Some(3),
+            });
+            let mut lower = row(57, category);
+            lower.labels = vec!["frontend".into()];
+            lower.stack = Some(prboard_core::board::StackInfo {
+                position: Some(1),
+                ..upper.stack.clone().unwrap()
+            });
+            let mut d = BoardTableDelegate::new(mode);
+            d.set_rows(vec![upper, lower]);
+            // Layer order must win over input order and PR-number order.
+            assert_eq!(d.row(2).unwrap().number, 57);
+            assert_eq!(d.row(3).unwrap().number, 42);
+            assert_eq!(d.row(2).unwrap().labels, vec!["frontend"]);
+            let upper = d.row(3).unwrap();
+            assert_eq!(upper.labels, vec!["backend", "bug"]);
+            assert!(matches_filter(upper, "backend bug"));
+            assert!(!matches_filter(upper, "frontend"));
+            assert!(detail_text(upper).contains("Labels: backend, bug"));
+            assert!(detail_text(upper).contains("Stack #70 · Layer 3 of 3 · Base: main"));
+            assert_eq!(d.display_index_of_url(&upper.url), Some(3));
+            assert!(
+                matches!(&d.display[1], DisplayRow::Header { detail: Some(detail), .. } if detail == "2 of 3 layers shown")
+            );
+        }
+    }
+
+    #[test]
     fn available_reviews_have_a_distinct_section_and_calm_note() {
         assert_ne!(
             group_label(Mode::Review, Category::Todo),
