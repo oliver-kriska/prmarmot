@@ -8,8 +8,8 @@ threads, conflicts, labels, linked issues, and GitHub stacks into two focused
 queues with a plain-language **Note** on every row.
 
 - **My PRs** puts approved PRs first, followed by needs action, awaiting review,
-  and drafts. Approved PRs with action blockers stay in needs action; drafts
-  stay in drafts.
+  and drafts. Approved PRs with action blockers lead needs action, with stack
+  layers kept together in dependency order. Drafts stay in drafts.
 - **Review queue** separates PRs that request your review from PRs with no
   reviewer requested that are available for someone to pick up.
 - **Read-only by design:** prboard can open a PR or linked issue and copy its

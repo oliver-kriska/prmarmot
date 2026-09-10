@@ -96,8 +96,9 @@ keycaps 3 px. Small radii are the native-Mac tell.
 - Category headings use sentence case, a stronger neutral band, and a small count badge.
   In My PRs, approved PRs without action blockers have their own **Approved** section
   at the top, before Needs action and Awaiting review. It uses the same neutral heading and count,
-  not a new badge or row tint. Approved PRs with blockers stay in Needs action; drafts
-  stay in Drafts. Review queue retains its Reviewed section.
+  not a new badge or row tint. Approved PRs with blockers lead Needs action. If one
+  belongs to a stack, promote that stack together and preserve dependency order.
+  Drafts stay in Drafts. Review queue retains its Reviewed section.
   Stack subheadings sit on the body surface aligned with Title, with quieter layer counts:
   `2 layers` when complete, `2 of 3 layers shown` when partial. Tree branches end with `└─`
   at the last visible layer, and a bottom rule separates the stack from ordinary PRs.

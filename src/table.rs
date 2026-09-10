@@ -345,19 +345,24 @@ impl BoardTableDelegate {
     }
 
     /// Split approved authored PRs out of Await without changing core categories
-    /// or row identities. Stable ordering preserves order within each section.
+    /// or row identities. Prioritize approved Action rows, keeping stack layers
+    /// together in dependency order and otherwise preserving stable ordering.
     fn rebuild_display(&mut self) {
         let mut display = Vec::with_capacity(self.rows.len() + 3);
         let mut order: Vec<usize> = (0..self.rows.len()).collect();
         order.sort_by_key(|&ix| {
             let row = &self.rows[ix];
-            match row.category {
+            let section = match row.category {
                 Category::Await if self.is_approved_section(row) => 0,
                 Category::Action | Category::Todo => 1,
                 Category::Available => 2,
                 Category::Await | Category::Done => 3,
                 Category::Draft => 4,
-            }
+            };
+            let approved_action = self.mode == Mode::Authored
+                && row.category == Category::Action
+                && row.review_state == ReviewState::Approved;
+            (section, !approved_action)
         });
         let mut i = 0;
         while i < order.len() {
@@ -1482,6 +1487,86 @@ mod tests {
         assert!(
             matches!(&review.display[0], DisplayRow::Header { label, .. } if label == "Reviewed")
         );
+    }
+
+    #[test]
+    fn approved_action_rows_lead_without_changing_notes_or_review_queue_order() {
+        let mut failing = row(2, Category::Action);
+        failing.review_state = ReviewState::Approved;
+        failing.blockers = vec![Blocker::CiFailing];
+        failing.note = "CI failing".into();
+        let mut conflict = row(4, Category::Action);
+        conflict.review_state = ReviewState::Approved;
+        conflict.blockers = vec![Blocker::MergeConflict, Blocker::UnresolvedComments(2)];
+        conflict.note = "merge conflict · 2 unresolved".into();
+        let rows = vec![
+            row(1, Category::Action),
+            failing,
+            row(3, Category::Action),
+            conflict,
+        ];
+        let mut d = BoardTableDelegate::new(Mode::Authored);
+        d.set_rows(rows.clone());
+        assert!(
+            matches!(&d.display[0], DisplayRow::Header { label, count, .. }
+            if label == "Needs action" && *count == Some(4))
+        );
+        assert_eq!(
+            (0..d.display_len())
+                .filter_map(|i| d.row(i).map(|r| r.number))
+                .collect::<Vec<_>>(),
+            vec![2, 4, 1, 3]
+        );
+        assert_eq!(d.row(1).unwrap().note, "CI failing");
+        assert_eq!(d.row(2).unwrap().blockers, rows[3].blockers);
+        assert_eq!(d.display_index_of_url(&rows[0].url), Some(3));
+
+        let mut review = BoardTableDelegate::new(Mode::Review);
+        review.set_rows(
+            rows.into_iter()
+                .map(|mut r| {
+                    r.category = Category::Todo;
+                    r
+                })
+                .collect(),
+        );
+        assert_eq!(
+            (0..review.display_len())
+                .filter_map(|i| review.row(i).map(|r| r.number))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn approved_action_promotes_its_stack_but_preserves_layer_order() {
+        let mut base = row(2, Category::Action);
+        base.stack = Some(prboard_core::board::StackInfo {
+            number: 70,
+            size: 2,
+            base_ref_name: "main".into(),
+            position: Some(1),
+        });
+        let mut top = row(4, Category::Action);
+        top.review_state = ReviewState::Approved;
+        top.stack = Some(prboard_core::board::StackInfo {
+            position: Some(2),
+            ..base.stack.clone().unwrap()
+        });
+        let mut d = BoardTableDelegate::new(Mode::Authored);
+        d.set_rows(vec![
+            row(1, Category::Action),
+            base,
+            row(3, Category::Action),
+            top,
+        ]);
+        assert_eq!(
+            (0..d.display_len())
+                .filter_map(|i| d.row(i).map(|r| r.number))
+                .collect::<Vec<_>>(),
+            vec![2, 4, 1, 3]
+        );
+        assert!(matches!(&d.display[1], DisplayRow::Header { label, .. } if label == "Stack #70"));
     }
 
     #[test]

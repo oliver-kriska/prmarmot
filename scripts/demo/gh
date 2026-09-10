@@ -54,7 +54,7 @@ AUTHORED = [
        labels=("feature",), requested=("sam",)),
     pr(416, "Add compact device activity cards", labels=("mobile",)),
     pr(415, "[DEMO-415] Introduce workspace search", labels=("feature",),
-       requested=("alex", "sam"), unresolved=1),
+       decision="APPROVED", reviews=(("alex", "APPROVED"),), unresolved=1),
     pr(414, "Atlas stack: define event envelope", labels=("feature",), stack=(72, 1)),
     pr(413, "Atlas stack: persist event batches", labels=("feature",),
        stack=(72, 2)),
