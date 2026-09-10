@@ -181,6 +181,8 @@ require a restart; changes saved in Settings do not.
 - **Navigate:** `↑` / `↓` selects; `Enter` or `o` opens the PR; `y` copies its
   URL with a brief footer confirmation; double-clicking a row opens it.
 - **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
+  Select text in the panel and press `⌘C` (macOS) or `Ctrl+C` (Linux) to copy it.
+  The **Copy** menu offers the PR number, title, URL, or all details without selecting text.
 - **Search loaded rows:** click **Search** or press `/`. Terms match PR number,
   title, author, label, issue, and Note, and multiple terms narrow together.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five

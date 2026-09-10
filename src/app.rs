@@ -11,8 +11,10 @@ use gpui::{
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
     StatefulInteractiveElement, Styled, Window,
 };
+use gpui_base::SelectableText;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{Column, DataTable, TableEvent, TableState};
@@ -853,6 +855,46 @@ impl RootView {
                             .child("PR details"),
                     )
                     .when_some(selected.clone(), |bar, row| {
+                        let copy_row = row.clone();
+                        let view = cx.entity().downgrade();
+                        bar.child(
+                            Button::new("copy-detail")
+                                .small()
+                                .label("Copy")
+                                .dropdown_caret(true)
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for (label, text) in [
+                                        ("Copy PR number", format!("#{}", copy_row.number)),
+                                        ("Copy title", copy_row.title.clone()),
+                                        ("Copy URL", copy_row.url.clone()),
+                                        (
+                                            "Copy all details",
+                                            format!(
+                                                "#{} {}\n{}\n\n{}",
+                                                copy_row.number,
+                                                copy_row.title,
+                                                copy_row.url,
+                                                detail_text(&copy_row)
+                                            ),
+                                        ),
+                                    ] {
+                                        let view = view.clone();
+                                        menu = menu.item(PopupMenuItem::new(label).on_click(
+                                            move |_, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    text.clone(),
+                                                ));
+                                                let _ = view.update(cx, |this, cx| {
+                                                    this.show_feedback("Copied to clipboard", cx)
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    menu
+                                }),
+                        )
+                    })
+                    .when_some(selected.clone(), |bar, row| {
                         bar.child(
                             Button::new("open-detail")
                                 .small()
@@ -880,12 +922,17 @@ impl RootView {
                     .gap_2()
                     .map(|content| match selected {
                         Some(row) => content
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(
+                                SelectableText::new(
+                                    "detail-title",
+                                    format!("#{}  {}", row.number, row.title),
+                                ),
+                            ))
                             .child(
                                 div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("#{}  {}", row.number, row.title)),
-                            )
-                            .child(div().text_size(px(13.)).child(detail_text(&row))),
+                                    .text_size(px(13.))
+                                    .child(SelectableText::new("detail-body", detail_text(&row))),
+                            ),
                         None => content.child("Select a PR to inspect its details."),
                     }),
             )
