@@ -8,7 +8,7 @@
 
 ## Platform
 
-Native desktop: macOS and Linux, implemented in Rust with GPUI + gpui-component.
+PR Marmot is a native desktop app for macOS and Linux, implemented in Rust with GPUI + gpui-component.
 This is not a website, iOS app, or Android app. Impeccable's current platform enum does
 not represent desktop GPUI; use native window inspection, not browser/DOM checks.
 
@@ -59,8 +59,9 @@ stack metadata shows dependency order without inferring relationships from label
   Refresh resets pagination. Never imply that a partial list contains every accessible PR.
 - Read-only GitHub access: no merging, commenting, or reviewer assignment. No embedded browser.
 - Default refresh 300 seconds, minimum 30 seconds. No continuous idle animation or unbounded caches.
-- Current prebuilt distribution: Apple-silicon macOS, ad-hoc signed. Linux/Intel Mac require
-  source builds; Homebrew and notarized distribution are not currently available.
+- Prepared prebuilt distribution: signed and notarized Apple-silicon macOS via
+  direct download and Homebrew. The first release still requires provisioned
+  Apple/tap credentials and manual acceptance. Linux/Intel Mac remain source-only.
 
 ## Evidence on Hand
 
@@ -90,11 +91,11 @@ no mascot. The single permitted emoji is 🐛 on the bug label (semantic, a prod
 ## Anti-references
 
 - **Web-app-in-a-window**: Electron chrome, shadcn defaults (pure-black/white surfaces, 16 px text,
-  6–8 px radii on everything), oversized empty states with illustrations. prboard's benchmark is
+  6–8 px radii on everything), oversized empty states with illustrations. PR Marmot's benchmark is
   Finder/Mail density, not a SaaS dashboard.
 - **Emoji-as-status dashboards** (the shell prototype's 🔴✅⚠️ language): platform-colored, unthemed,
   oversized at 13 px. Themed dots + text words replaced them; never regress.
-- **The GitHub notifications firehose**: undifferentiated, unranked, anxiety-inducing. prboard ranks
+- **The GitHub notifications firehose**: undifferentiated, unranked, anxiety-inducing. PR Marmot ranks
   (action first) and computes the next step; it must never feel like a backlog.
 - **TUI aesthetics**: ruled out as a product form (Oliver, 2026-07-24). No box-drawing, no
   full-block selection bars, no terminal color slabs.

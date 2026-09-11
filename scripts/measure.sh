@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Overnight memory sampler for the Step-0 gate (HANDOFF §5, r2 build doc §5.1).
-# Samples RSS + CPU% of a running prboard every 60s into a CSV.
+# Samples RSS + CPU% of a running PR Marmot every 60s into a CSV.
 #
 # Usage: scripts/measure.sh <pid> [outdir]     (default outdir: measurements/)
 # Stop:  ctrl-C, or it stops by itself when the process exits.

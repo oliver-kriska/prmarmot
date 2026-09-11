@@ -3,7 +3,7 @@ name: Unreleased
 # Keeps a draft GitHub release named "unreleased" in sync with everything that
 # has landed on main but is not in the latest vX.Y.Z tag. Open it any time to
 # see what's queued for the next release. Nothing here publishes a real release
-# — cutting a real tag is the `cut-release` flow (packaging/RELEASING.md).
+# — publishing a real tag is the fail-closed flow in packaging/RELEASING.md.
 
 on:
   push:

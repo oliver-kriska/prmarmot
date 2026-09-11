@@ -52,12 +52,12 @@ source "$HOME/.cargo/env"
 rustup set profile minimal
 rustup toolchain install stable --component rustfmt --component clippy
 
-profile_marker="# prboard Rust toolchain"
+profile_marker="# PR Marmot Rust toolchain"
 touch "$HOME/.bash_profile"
 if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile"; then
   cat >>"$HOME/.bash_profile" <<'EOF'
 
-# prboard Rust toolchain
+# PR Marmot Rust toolchain
 if [[ -f "$HOME/.cargo/env" ]]; then
   source "$HOME/.cargo/env"
 fi

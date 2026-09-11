@@ -1,18 +1,22 @@
-//! File config at `~/.config/prboard/config.toml` (or `$XDG_CONFIG_HOME`).
+//! File config at `~/.config/prmarmot/config.toml` (or `$XDG_CONFIG_HOME`).
 //!
 //! This is what makes Spotlight/Finder launches work: those carry no shell
-//! env and start in `/`, so env vars and cwd-based repo detection both fail
-//! there. Precedence everywhere: CLI arg > env var > config file > detection.
+//! environment. Precedence is CLI > environment > config; when no scope is
+//! configured, the app opens all repositories involving the signed-in user.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use prmarmot_core::board::BoardScope;
 use serde::Deserialize;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct FileConfig {
-    /// Default repo (`owner/name`) when neither `--repo` nor `PRBOARD_REPO` is set.
+    /// Default repo (`owner/name`) when neither `--repo` nor `PRMARMOT_REPO` is set.
     pub repo: Option<String>,
+    /// `all` or `repo`. Absent keeps old configs compatible: a saved repo is
+    /// specific, while a clean config defaults to all repositories.
+    pub scope: Option<String>,
     /// Entries for the repo picker; the active repo is always included.
     #[serde(default)]
     pub repos: Vec<String>,
@@ -27,6 +31,43 @@ pub struct FileConfig {
     pub default_reviewers: Vec<String>,
     pub issue_link: Option<IssueLinkSection>,
     pub window: Option<WindowSection>,
+    #[serde(default = "default_true")]
+    pub notifications: bool,
+    #[serde(default = "default_true")]
+    pub notification_sound: bool,
+    #[serde(default)]
+    pub notify_all_needs_action: bool,
+    #[serde(default = "default_true")]
+    pub dock_badge: bool,
+    /// Check GitHub's latest stable release on launch, at most once per day.
+    #[serde(default = "default_true")]
+    pub automatic_update_checks: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for FileConfig {
+    fn default() -> Self {
+        Self {
+            repo: None,
+            scope: None,
+            repos: Vec::new(),
+            pinned_repos: Vec::new(),
+            refresh_secs: None,
+            theme: None,
+            view: None,
+            default_reviewers: Vec::new(),
+            issue_link: None,
+            window: None,
+            notifications: true,
+            notification_sound: true,
+            notify_all_needs_action: false,
+            dock_badge: true,
+            automatic_update_checks: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +91,11 @@ pub struct SettingsUpdate {
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
+    pub notifications: Option<bool>,
+    pub notification_sound: Option<bool>,
+    pub notify_all_needs_action: Option<bool>,
+    pub dock_badge: Option<bool>,
+    pub automatic_update_checks: Option<bool>,
 }
 
 /// Save editable settings while preserving comments and unrelated keys.
@@ -97,6 +143,17 @@ fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> 
             }
         }
     }
+    for (key, value) in [
+        ("notifications", update.notifications),
+        ("notification_sound", update.notification_sound),
+        ("notify_all_needs_action", update.notify_all_needs_action),
+        ("dock_badge", update.dock_badge),
+        ("automatic_update_checks", update.automatic_update_checks),
+    ] {
+        if let Some(value) = value {
+            doc[key] = toml_edit::value(value);
+        }
+    }
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
@@ -112,8 +169,104 @@ pub fn config_path() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("prboard")
+        .join("prmarmot")
         .join("config.toml")
+}
+
+/// Copy legacy directories once, leaving the originals untouched. Stage the
+/// entire copy before making it visible so a failed copy is retryable.
+pub fn migrate_legacy_data() -> io::Result<()> {
+    let config = config_path();
+    let state = update_paths();
+    for path in [&config, &state.check_state] {
+        let root = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing data root"))?;
+        if migrate_directory(root)? {
+            eprintln!(
+                "prmarmot: copied legacy data into {}",
+                root.join("prmarmot").display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn migrate_directory(root: &Path) -> io::Result<bool> {
+    let old = root.join("prboard");
+    let new = root.join("prmarmot");
+    if new.try_exists()? || !old.try_exists()? {
+        return Ok(false);
+    }
+    let staging = root.join(format!(".prmarmot-migration-{}", std::process::id()));
+    std::fs::create_dir(&staging)?;
+    let result = (|| {
+        copy_directory(&old, &staging)?;
+        std::fs::rename(&staging, &new)?;
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        // Process bookkeeping must not cross installations. The update cache
+        // also contains release URLs belonging to the old repository identity.
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".lock")
+            || name.ends_with(".tmp")
+            || name.starts_with("update-helper")
+            || name == "updates.toml"
+        {
+            continue;
+        }
+        if kind.is_dir() {
+            std::fs::create_dir(&target)?;
+            copy_directory(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "cannot migrate non-regular entry {}; copy it manually",
+                    entry.path().display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdatePaths {
+    pub check_state: PathBuf,
+    pub upgrade_receipt: PathBuf,
+    pub helper_lock: PathBuf,
+}
+
+/// Update bookkeeping is installation-global and deliberately separate from
+/// account-namespaced PR attention state.
+pub fn update_paths() -> UpdatePaths {
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("prmarmot");
+    UpdatePaths {
+        check_state: root.join("updates.toml"),
+        upgrade_receipt: root.join("update-receipt.toml"),
+        helper_lock: root.join("update-helper.lock"),
+    }
 }
 
 /// Missing file → defaults; unparseable file → defaults with a warning
@@ -126,7 +279,7 @@ pub fn load() -> FileConfig {
     match toml::from_str(&text) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("prboard: ignoring invalid {}: {e}", path.display());
+            eprintln!("prmarmot: ignoring invalid {}: {e}", path.display());
             FileConfig::default()
         }
     }
@@ -168,6 +321,57 @@ pub fn persist_pins(pins: &[String]) {
     });
 }
 
+pub fn resolve_scope(
+    cli: Option<BoardScope>,
+    env_repo: Option<String>,
+    env_scope: Option<&str>,
+    file: &FileConfig,
+) -> BoardScope {
+    if let Some(scope) = cli {
+        return scope;
+    }
+    if let Some(repo) = env_repo.filter(|repo| !repo.trim().is_empty()) {
+        return BoardScope::Repository(repo);
+    }
+    if env_scope.is_some_and(|scope| scope.eq_ignore_ascii_case("all")) {
+        return BoardScope::AllRepositories;
+    }
+    if env_scope.is_some_and(|scope| scope.eq_ignore_ascii_case("repo")) {
+        if let Some(repo) = file.repo.clone().filter(|repo| !repo.trim().is_empty()) {
+            return BoardScope::Repository(repo);
+        }
+    }
+    match file.scope.as_deref() {
+        Some(scope) if scope.eq_ignore_ascii_case("all") => BoardScope::AllRepositories,
+        Some(scope) if scope.eq_ignore_ascii_case("repo") => file
+            .repo
+            .clone()
+            .filter(|repo| !repo.trim().is_empty())
+            .map(BoardScope::Repository)
+            .unwrap_or(BoardScope::AllRepositories),
+        _ => file
+            .repo
+            .clone()
+            .filter(|repo| !repo.trim().is_empty())
+            .map(BoardScope::Repository)
+            .unwrap_or(BoardScope::AllRepositories),
+    }
+}
+
+pub fn persist_scope(scope: &BoardScope) {
+    persist(|doc| set_scope(doc, scope));
+}
+
+fn set_scope(doc: &mut toml_edit::DocumentMut, scope: &BoardScope) {
+    match scope {
+        BoardScope::AllRepositories => doc["scope"] = toml_edit::value("all"),
+        BoardScope::Repository(repo) => {
+            doc["scope"] = toml_edit::value("repo");
+            doc["repo"] = toml_edit::value(repo.as_str());
+        }
+    }
+}
+
 /// Persist the window size under `[window]`.
 pub fn persist_window(width: f32, height: f32) {
     persist(|doc| {
@@ -184,7 +388,7 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
         Err(e) => {
             // Never clobber a file we can't parse — the user's edits win.
             eprintln!(
-                "prboard: not saving into unparseable {}: {e}",
+                "prmarmot: not saving into unparseable {}: {e}",
                 path.display()
             );
             return;
@@ -195,7 +399,7 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Err(e) = std::fs::write(&path, doc.to_string()) {
-        eprintln!("prboard: could not save {}: {e}", path.display());
+        eprintln!("prmarmot: could not save {}: {e}", path.display());
     }
 }
 
@@ -205,10 +409,77 @@ mod tests {
 
     fn temp_config(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "prboard-config-{name}-{}-{}.toml",
+            "prmarmot-config-{name}-{}-{}.toml",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    #[test]
+    fn migration_preserves_bytes_and_originals_and_never_overwrites_new_data() {
+        let root = temp_config("migration");
+        let old = root.join("prboard");
+        let new = root.join("prmarmot");
+        assert!(!migrate_directory(&root).unwrap());
+        std::fs::create_dir_all(old.join("nested")).unwrap();
+        let config = "# keep my comments\ntheme = 'dark'\nrepo = 'acme/api'\n";
+        std::fs::write(old.join("config.toml"), config).unwrap();
+        let attention = b"{\"watches\":[\"acme/api#17\"],\"snoozes\":[\"acme/web#42\"]}";
+        std::fs::write(old.join("attention-github.com-me.json"), attention).unwrap();
+        std::fs::write(old.join("nested/custom.txt"), "preserved").unwrap();
+        std::fs::write(old.join("update-helper.lock"), "old lock").unwrap();
+        std::fs::write(old.join("updates.toml"), "old release URL").unwrap();
+        assert!(migrate_directory(&root).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            config
+        );
+        assert_eq!(
+            std::fs::read(new.join("attention-github.com-me.json")).unwrap(),
+            attention
+        );
+        assert_eq!(
+            std::fs::read_to_string(new.join("nested/custom.txt")).unwrap(),
+            "preserved"
+        );
+        assert!(!new.join("update-helper.lock").exists());
+        assert!(!new.join("updates.toml").exists());
+        assert!(old.join("update-helper.lock").exists());
+        assert_eq!(
+            std::fs::read_to_string(old.join("config.toml")).unwrap(),
+            config
+        );
+        std::fs::write(new.join("config.toml"), "theme = 'light'").unwrap();
+        std::fs::remove_file(new.join("attention-github.com-me.json")).unwrap();
+        assert!(!migrate_directory(&root).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "theme = 'light'"
+        );
+        assert!(!new.join("attention-github.com-me.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_migration_leaves_no_partial_destination_and_can_be_retried() {
+        let root = temp_config("failed-migration");
+        let old = root.join("prboard");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("config.toml"), "theme = 'dark'").unwrap();
+        std::os::unix::fs::symlink("missing-target", old.join("link")).unwrap();
+        assert!(migrate_directory(&root).is_err());
+        assert!(!root.join("prmarmot").exists());
+        assert!(!root
+            .join(format!(".prmarmot-migration-{}", std::process::id()))
+            .exists());
+        std::fs::remove_file(old.join("link")).unwrap();
+        assert!(migrate_directory(&root).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(root.join("prmarmot/config.toml")).unwrap(),
+            "theme = 'dark'"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -234,6 +505,54 @@ mod tests {
     }
 
     #[test]
+    fn scope_precedence_and_clean_default_are_explicit() {
+        let clean = FileConfig::default();
+        assert_eq!(
+            resolve_scope(None, None, None, &clean),
+            BoardScope::AllRepositories
+        );
+        let old: FileConfig = toml::from_str("repo = 'acme/legacy'").unwrap();
+        assert_eq!(
+            resolve_scope(None, None, None, &old),
+            BoardScope::Repository("acme/legacy".into())
+        );
+        let all: FileConfig = toml::from_str("scope = 'all'\nrepo = 'acme/remembered'").unwrap();
+        assert_eq!(
+            resolve_scope(None, None, None, &all),
+            BoardScope::AllRepositories
+        );
+        assert_eq!(
+            resolve_scope(None, Some("env/repo".into()), Some("all"), &all),
+            BoardScope::Repository("env/repo".into())
+        );
+        assert_eq!(
+            resolve_scope(
+                Some(BoardScope::AllRepositories),
+                Some("env/repo".into()),
+                Some("repo"),
+                &old
+            ),
+            BoardScope::AllRepositories
+        );
+    }
+
+    #[test]
+    fn persisted_all_scope_keeps_the_last_repository_for_switch_back() {
+        let mut doc = "repo = 'acme/remembered'\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        set_scope(&mut doc, &BoardScope::AllRepositories);
+        let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(parsed.scope.as_deref(), Some("all"));
+        assert_eq!(parsed.repo.as_deref(), Some("acme/remembered"));
+
+        set_scope(&mut doc, &BoardScope::Repository("other/repo".into()));
+        let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(parsed.scope.as_deref(), Some("repo"));
+        assert_eq!(parsed.repo.as_deref(), Some("other/repo"));
+    }
+
+    #[test]
     fn settings_preserve_comments_unrelated_keys_and_disabled_fields() {
         let path = temp_config("preserve");
         std::fs::write(
@@ -248,6 +567,7 @@ mod tests {
                 refresh_secs: None,
                 theme: Some("light".into()),
                 issue_link: Some(None),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -257,6 +577,25 @@ mod tests {
         assert!(saved.contains("refresh_secs = 99"));
         assert!(saved.contains("theme = \"light\""));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn automatic_update_checks_default_on_and_persist() {
+        let old: FileConfig = toml::from_str("repo = 'acme/api'").unwrap();
+        assert!(old.automatic_update_checks);
+
+        let path = temp_config("automatic-updates");
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                automatic_update_checks: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!saved.automatic_update_checks);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

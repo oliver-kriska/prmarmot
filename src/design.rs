@@ -1,4 +1,4 @@
-//! prboard's visual language — Guise/Mantine-inspired token overrides on top
+//! PR Marmot's visual language — Guise/Mantine-inspired token overrides on top
 //! of gpui-component's shadcn defaults, plus the layout constants the views
 //! share. Spec: `.claude/research/2026-07-24-visual-design.md`.
 //!
@@ -46,7 +46,7 @@ fn ca(hex: u32, alpha: f32) -> Hsla {
     color
 }
 
-/// Overwrite the active palette with prboard's Guise-derived tokens.
+/// Overwrite the active palette with PR Marmot's Guise-derived tokens.
 /// Neutrals: Mantine dark ramp / open-color gray. Accent: open-color blue.
 /// Status hues are tuned as *text* colors (they render as dots + short text,
 /// never filled slabs); every text token meets WCAG AA on its background —

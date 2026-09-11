@@ -1,5 +1,5 @@
 #!/bin/sh
-# prboard commit-msg hook — advisory Conventional Commits check.
+# PR Marmot commit-msg hook — advisory Conventional Commits check.
 #
 # WARNS (never blocks) when the subject isn't a Conventional Commit, so the
 # git-cliff changelog can file it under Features / Bug Fixes / Docs / … instead

@@ -44,10 +44,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      # prboard-core has no GPUI/Metal dependency, so this compiles cleanly on
+      # prmarmot-core has no GPUI/Metal dependency, so this compiles cleanly on
       # Linux. The root GPUI binary is intentionally not built in CI — see
       # CLAUDE.md ("Fast core checks only"); build it locally with `make build`.
-      - name: Clippy (prboard-core, warnings as errors)
-        run: cargo clippy -p prboard-core --all-targets -- -D warnings
-      - name: Test (prboard-core spec + golden suite)
-        run: cargo test -p prboard-core
+      - name: Clippy (prmarmot-core, warnings as errors)
+        run: cargo clippy -p prmarmot-core --all-targets -- -D warnings
+      - name: Test (prmarmot-core spec + golden suite)
+        run: cargo test -p prmarmot-core

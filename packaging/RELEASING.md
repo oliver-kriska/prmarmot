@@ -1,154 +1,124 @@
-# Releasing prboard (macOS)
+# Releasing PR Marmot on macOS
 
-Step-by-step runbook for shipping a signed, notarized `prboard.app` via a
-Homebrew cask in a personal tap. Synthesized from
-`.claude/research/2026-07-24-desktop-packaging.md` — see that doc for sources
-and reasoning.
+PR Marmot ships one Apple-silicon archive named
+`prmarmot-v<VERSION>-macos-arm64.tar.gz`. The archive contains
+`prmarmot.app`, whose bundle identifier is `dev.oliverkriska.prmarmot`,
+`CFBundleName` is `prmarmot`, and display name is **PR Marmot**. Intel macOS and
+Linux release assets are intentionally out of scope.
 
-**Status legend:**
-- ✅ works today
-- 🔒 **BLOCKED on Apple Developer Program enrollment** ($99/yr,
-  developer.apple.com). Until enrolled there is no Developer ID certificate
-  and no notarization access, so nothing past step 2 can ship to other people.
+The release pipeline is fail-closed: it will not publish an unsigned,
+unnotarized, unstapled, or Gatekeeper-rejected app. Existing releases and their
+assets are never replaced.
 
-**Why the blocked steps are mandatory, not optional:** Homebrew applies the
-`com.apple.quarantine` attribute to cask downloads, `--no-quarantine` is being
-removed, and **from 2026-09-01 Homebrew stops supporting casks that fail
-Gatekeeper checks**. A personal tap does not dodge this — quarantine happens on
-the user's machine regardless of tap. An un-notarized `.app` is only usable on
-the machine that built it.
+## One-time repository setup
 
----
+The GitHub repository must be renamed to `oliver-kriska/prmarmot` manually.
+Create these Actions repository secrets; this repo currently has none:
 
-## 0. One-time setup (🔒 blocked on enrollment)
+| Secret | Value |
+|---|---|
+| `MACOS_SIGN_P12` | Base64 of the exported Developer ID Application PKCS#12 file |
+| `MACOS_SIGN_PASSWORD` | Password used when exporting that `.p12` |
+| `MACOS_NOTARY_KEY` | Raw or base64 App Store Connect API `.p8` key |
+| `MACOS_NOTARY_KEY_ID` | App Store Connect API key ID |
+| `MACOS_NOTARY_ISSUER_ID` | App Store Connect issuer UUID |
+| `HOMEBREW_TAP_GITHUB_TOKEN` | Fine-grained PAT with Contents read/write for **only** `oliver-kriska/homebrew-tap` |
 
-1. Enroll in the Apple Developer Program ($99/yr). Note your **Team ID**.
-2. Create a **Developer ID Application** certificate; export as `.p12`.
-3. Create an **app-specific password** for notarization (or, better for CI, an
-   App Store Connect **API key** — `notarytool` accepts
-   `--key/--key-id/--issuer`).
-4. Create the tap repo **`oliver-kriska/homebrew-tap`** with a `Casks/`
-   directory. Copy `packaging/homebrew/prboard.rb` there as the live cask.
-5. For CI later: store the 7 secrets from the research doc §3.3
-   (`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PWD`, `MACOS_CERTIFICATE_NAME`,
-   `MACOS_NOTARIZATION_APPLE_ID`, `MACOS_NOTARIZATION_TEAM_ID`,
-   `MACOS_NOTARIZATION_PWD`, `MACOS_CI_KEYCHAIN_PWD`).
+Generate the base64 certificate locally without printing it:
 
-## 1. Build ✅
-
-```bash
-cargo build --release
+```sh
+base64 < DeveloperIDApplication.p12 | tr -d '\n' | pbcopy
 ```
 
-CI later: build **universal** (arm64 + x86_64) on a `macos-14` runner. Cold
-GPUI builds are 15–30+ min — cache cargo registry/git/target keyed on
-`Cargo.lock`.
+Create the App Store Connect key with only the access needed for notarization.
+Paste secrets through GitHub's encrypted secret UI or `gh secret set`; do not
+put them in shell history, logs, repo files, or Actions variables. The Scribe
+tap token may be scoped to a different repository and must not be assumed to
+work for `oliver-kriska/homebrew-tap`.
 
-## 2. Bundle ✅ (local script now; Zed cargo-bundle fork in CI later)
+Create the tap repository's `Casks/` directory if needed. The release workflow
+renders `packaging/homebrew/prmarmot.rb` into `Casks/prmarmot.rb`, commits only
+when content changes, and pushes after the GitHub release exists.
 
-Today, locally:
+## Safe signed candidate (publishes nothing)
 
-```bash
-scripts/bundle-app.sh    # hand-rolled .app → ad-hoc sign → ~/Applications
+Before the first release—and after signing changes—run the manual **Signed
+release candidate** workflow at an exact commit:
+
+```sh
+gh workflow run release-build.yml --ref main -f ref=<full-commit-sha>
 ```
 
-This is enough for *your own machine* (Spotlight launch). For releases, CI
-should instead use **Zed's cargo-bundle fork** (built for GPUI apps, produces
-universal binaries):
+It runs the full workspace gate, builds arm64, imports credentials into a
+temporary keychain, Developer-ID-signs with hardened runtime and timestamp,
+waits for notarization acceptance, staples and validates the ticket, runs
+`codesign` and `spctl`, packages the tarball, verifies its checksum, and uploads
+a seven-day Actions artifact. It never creates a tag, release, or tap commit.
 
-```bash
-cargo install cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --branch zed-deploy
-cargo bundle --release
+Download that candidate to a scratch directory and verify it without replacing
+the installed app:
+
+```sh
+gh run download <run-id> -n prmarmot-v0.5.3-macos-arm64-signed-candidate -D /tmp/prmarmot-candidate
+(cd /tmp/prmarmot-candidate && shasum -a 256 -c prmarmot-v0.5.3-macos-arm64.tar.gz.sha256)
+mkdir /tmp/prmarmot-app
+tar xzf /tmp/prmarmot-candidate/prmarmot-v0.5.3-macos-arm64.tar.gz -C /tmp/prmarmot-app
+codesign --verify --deep --strict --verbose=2 /tmp/prmarmot-app/prmarmot.app
+xcrun stapler validate /tmp/prmarmot-app/prmarmot.app
+spctl --assess --type execute --verbose=2 /tmp/prmarmot-app/prmarmot.app
 ```
 
-Requires `[package.metadata.bundle]` in `Cargo.toml` (name, `identifier =
-"dev.oliverkriska.prboard"`, icon, `category = "public.app-category.developer-tools"`)
-— not added yet.
+Do not submit from local scripts during routine verification; candidate CI is
+the controlled Apple submission path.
 
-## 3. Codesign with Developer ID 🔒
+## Publishing a release
 
-Ad-hoc (`-s -`) is NOT sufficient for distribution. Sign with the Developer ID
-cert and the **hardened runtime** (mandatory for notarization):
+Publishing has no manual-dispatch path. It happens only when an exact
+`vMAJOR.MINOR.PATCH` tag is pushed. The tag must equal the root package version
+in `Cargo.toml` or the workflow stops. Obtain explicit human approval before
+changing the version or pushing a tag.
 
-```bash
-codesign --deep --force --timestamp --options runtime \
-  --entitlements packaging/prboard.entitlements \
-  -s "Developer ID Application: Oliver Kriška (TEAMID)" \
-  target/release/bundle/osx/prboard.app -v
+```sh
+git tag v<approved-new-version>
+git push origin v<approved-new-version>
 ```
 
-A minimal entitlements plist is fine — prboard talks to the network only via
-the `gh` subprocess and needs no special entitlements.
+Version `0.5.3` and its historical assets already exist. Do not recreate or
+replace them. The first signed PR Marmot publication therefore requires a later,
+separately authorized version bump; this preparation intentionally leaves the
+package at `0.5.3`.
 
-## 4. Notarize 🔒
+`.github/workflows/release.yml` then:
 
-```bash
-xcrun notarytool store-credentials "notarytool-profile" \
-  --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_SPECIFIC_PWD"
-ditto -c -k --keepParent prboard.app prboard-notarize.zip
-xcrun notarytool submit prboard-notarize.zip \
-  --keychain-profile "notarytool-profile" --wait
+1. rejects malformed/mismatched tags and any existing GitHub release;
+2. runs `make verify` and a locked release build;
+3. signs, notarizes, staples, and passes `codesign`, `stapler validate`, and
+   Gatekeeper `spctl` checks;
+4. creates and verifies the tarball checksum;
+5. publishes the immutable GitHub release and checksum asset;
+6. updates `oliver-kriska/homebrew-tap` using the verified checksum.
+
+If the cask already has the version and checksum, the update script exits
+successfully without a commit. If tap publication fails after the GitHub release
+exists, do not rerun the release workflow (it refuses to overwrite assets);
+repair or run the idempotent cask update separately from a trusted checkout.
+
+## First-release acceptance
+
+After the first signed release and cask update, a person must verify both a
+clean install and an upgrade on a second Apple-silicon Mac:
+
+```sh
+brew install --cask oliver-kriska/tap/prmarmot
+brew upgrade --cask prmarmot
 ```
 
-`--wait` blocks until Apple returns `Accepted` (usually minutes). On
-`Invalid`, run `xcrun notarytool log <submission-id>` for the reasons.
+Confirm the app opens without a Gatekeeper warning, appears as **PR Marmot**,
+finds the `prmarmot` binary and new config/state locations, can authenticate via
+`gh`, and preserves/migrates prior prboard settings as implemented by the app.
+Also test the curl installer. Remove the old `prboard.app` only after the new
+app and storage migration are verified; automation intentionally does not
+delete historical installations or user data.
 
-## 5. Staple 🔒
-
-```bash
-xcrun stapler staple prboard.app
-```
-
-Staples the notarization ticket into the bundle so Gatekeeper passes offline.
-
-## 6. Zip the distributable 🔒
-
-```bash
-ditto -c -k --keepParent prboard.app prboard-<version>-universal.zip
-shasum -a 256 prboard-<version>-universal.zip   # needed for the cask
-```
-
-Zip the **stapled** app (step 5 first, then zip). A `.dmg` is optional polish
-for later; casks handle both.
-
-## 7. GitHub release 🔒 (mechanics work today, artifact is blocked)
-
-```bash
-git tag v<version> && git push origin v<version>
-gh release create v<version> prboard-<version>-universal.zip \
-  --title "prboard v<version>" --generate-notes
-```
-
-## 8. Update the cask in the tap 🔒
-
-In `oliver-kriska/homebrew-tap`, edit `Casks/prboard.rb`: bump `version`,
-paste the new `sha256` from step 6, commit, push. (CI later: a ~15-line
-release.yml step computes the sha and commits to the tap; `livecheck` keeps
-brew aware of new versions.)
-
-## 9. Install / upgrade ✅ (once a release exists)
-
-```bash
-brew install --cask oliver-kriska/tap/prboard
-brew upgrade --cask prboard
-```
-
-Acceptance test: on a **colleague's** Mac, the app must open with **no
-Gatekeeper warning**. That is the whole point of steps 3–5.
-
----
-
-## Caveats
-
-- **gh CLI is a hard runtime dependency.** prboard shells out to `gh` for all
-  GitHub access; the cask declares `depends_on formula: "gh"`, but users still
-  need `gh auth login` once. Document this in the release notes / README.
-- **Launch context:** Spotlight launches provide no shell env and `cwd=/`.
-  The app resolves its repo from CLI args → `PRBOARD_REPO` → 
-  `~/.config/prboard/config.toml` → `gh repo view` in cwd. A config file is
-  effectively required for Spotlight launches.
-- **CI pipeline:** hand-rolled `release.yml`, not cargo-dist — cargo-dist
-  cannot produce a `.app` or a cask (research doc §2). Espanso's GitHub
-  Actions recipe is the template for the keychain/signing steps (§3.3).
-- **Linux** is a separate path (tarball + .desktop; Vulkan runtime required) —
-  research doc §5. Not covered by this runbook.
+The app shells out to `gh`; the cask declares that dependency, but each user
+still needs `gh auth login` once.

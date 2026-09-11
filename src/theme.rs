@@ -13,9 +13,9 @@ pub enum ThemePref {
 }
 
 impl ThemePref {
-    /// `PRBOARD_THEME` > config-file `theme` > system.
+    /// `PRMARMOT_THEME` > config-file `theme` > system.
     pub fn resolve(config_theme: Option<&str>) -> Self {
-        let pref = std::env::var("PRBOARD_THEME")
+        let pref = std::env::var("PRMARMOT_THEME")
             .ok()
             .or_else(|| config_theme.map(str::to_string));
         match pref.as_deref() {
@@ -49,7 +49,7 @@ impl ThemePref {
             ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
         // Every change/sync above resets colors to the built-in palette;
-        // re-apply prboard's own tokens on top.
+        // re-apply PR Marmot's own tokens on top.
         crate::design::refine_theme(cx);
     }
 }

@@ -110,11 +110,23 @@ impl Default for GhCliTransport {
 
 impl GithubTransport for GhCliTransport {
     fn graphql(&self, query: &str, variables: &[(&str, &str)]) -> Result<Value, GhError> {
+        self.graphql_with_ids(query, variables, &[])
+    }
+
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+        ids: &[String],
+    ) -> Result<Value, GhError> {
         let mut cmd = Command::new(&self.gh_path);
         cmd.args(["api", "graphql", "-f"])
             .arg(format!("query={query}"));
         for (k, v) in variables {
             cmd.arg("-f").arg(format!("{k}={v}"));
+        }
+        for id in ids {
+            cmd.arg("-F").arg(format!("tracked[]={id}"));
         }
         let out = output_with_timeout(&mut cmd, GRAPHQL_TIMEOUT)?;
 

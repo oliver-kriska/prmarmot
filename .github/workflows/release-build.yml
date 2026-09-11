@@ -1,12 +1,8 @@
-name: Release build
+name: Signed release candidate
 
-# Builds the ad-hoc-signed Apple-silicon archive without publishing it. Release
-# publication stays a separate, human-approved step in the cut-release flow.
+# Manual, publish-nothing path. It exercises the real Developer ID,
+# notarization, staple, Gatekeeper, and archive steps at an exact ref.
 on:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.toml
   workflow_dispatch:
     inputs:
       ref:
@@ -18,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-build-${{ inputs.ref || github.sha }}
+  group: signed-candidate-${{ inputs.ref }}
   cancel-in-progress: false
 
 env:
@@ -26,43 +22,53 @@ env:
 
 jobs:
   macos-arm64:
-    name: macOS arm64 artifact
+    name: Signed macOS arm64 candidate (no publish)
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          ref: ${{ inputs.ref }}
 
       - name: Require an Apple-silicon runner
         run: test "$(uname -m)" = arm64
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
-      - name: Build release binary
-        run: cargo build --release --locked
-
-      - name: Bundle, clean, and verify app
-        shell: bash
+      - name: Verify and build release binary
         run: |
-          set -euo pipefail
+          make verify
+          cargo build --release --locked
+
+      - name: Import Apple credentials
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: scripts/import-apple-signing-ci.sh
+
+      - name: Bundle, sign, notarize, staple, and verify
+        env:
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
           scripts/bundle-app.sh --stage-only
-          xattr -cr target/bundle/prboard.app 2>/dev/null || true
-          codesign --force --deep -s - target/bundle/prboard.app
-          codesign --verify --deep --strict --verbose=2 target/bundle/prboard.app
-          test "$(lipo -archs target/bundle/prboard.app/Contents/MacOS/prboard)" = arm64
+          scripts/sign-notarize-macos.sh target/bundle/prmarmot.app
+          test "$(lipo -archs target/bundle/prmarmot.app/Contents/MacOS/prmarmot)" = arm64
 
-      - name: Package artifact without Mac metadata
+      - name: Package candidate
         id: package
-        shell: bash
         run: |
-          set -euo pipefail
           version=$(awk -F'"' '
             /^\[package\]/ { in_package = 1; next }
             /^\[/ { in_package = 0 }
@@ -70,20 +76,26 @@ jobs:
           ' Cargo.toml)
           test -n "$version"
           mkdir -p dist
-          asset="prboard-v${version}-macos-arm64.tar.gz"
-          COPYFILE_DISABLE=1 tar czf "dist/$asset" -C target/bundle prboard.app
+          asset="prmarmot-v${version}-macos-arm64.tar.gz"
+          COPYFILE_DISABLE=1 tar czf "dist/$asset" -C target/bundle prmarmot.app
           if tar tzf "dist/$asset" | grep -Eq '(^|/)\._'; then
             echo "AppleDouble metadata found in $asset" >&2
             exit 1
           fi
-          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          (cd dist && shasum -a 256 "$asset" >"$asset.sha256")
+          (cd dist && shasum -a 256 -c "$asset.sha256")
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
-      - name: Upload release candidate
+      - name: Upload signed candidate (never a release)
         uses: actions/upload-artifact@v7
         with:
-          name: prboard-v${{ steps.package.outputs.version }}-macos-arm64
+          name: prmarmot-v${{ steps.package.outputs.version }}-macos-arm64-signed-candidate
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+
+      - name: Remove temporary Apple credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/prmarmot-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/prmarmot-signing.p12" "$RUNNER_TEMP/AuthKey.p8"

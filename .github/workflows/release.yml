@@ -1,0 +1,170 @@
+name: Release
+
+# Publishing is possible only through an intentional semver tag push. There is
+# deliberately no workflow_dispatch publishing path.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos-arm64:
+    name: Sign and publish macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Guard tag, package version, and existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "oliver-kriska/prmarmot" || {
+            echo "rename the GitHub repository before publishing PR Marmot" >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "release tags must be exact vMAJOR.MINOR.PATCH semver" >&2
+            exit 1
+          }
+          test -n "$HOMEBREW_TAP_GITHUB_TOKEN" || {
+            echo "missing required repository secret: HOMEBREW_TAP_GITHUB_TOKEN" >&2
+            exit 1
+          }
+          version=$(awk -F'"' '
+            /^\[package\]/ { in_package = 1; next }
+            /^\[/ { in_package = 0 }
+            in_package && /^version[[:space:]]*=/ { print $2; exit }
+          ' Cargo.toml)
+          test -n "$version"
+          test "$GITHUB_REF_NAME" = "v$version" || {
+            echo "tag $GITHUB_REF_NAME does not equal Cargo package version v$version" >&2
+            exit 1
+          }
+          release_check="$RUNNER_TEMP/release-check.txt"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" >"$release_check" 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; refusing to replace its assets" >&2
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$release_check"; then
+            echo "could not safely establish that release $GITHUB_REF_NAME is absent" >&2
+            cat "$release_check" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+
+      - name: Require an Apple-silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Verify and build release binary
+        run: |
+          make verify
+          cargo build --release --locked
+
+      - name: Import Apple credentials
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: scripts/import-apple-signing-ci.sh
+
+      - name: Bundle, sign, notarize, staple, and verify
+        env:
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          scripts/bundle-app.sh --stage-only
+          scripts/sign-notarize-macos.sh target/bundle/prmarmot.app
+          test "$(lipo -archs target/bundle/prmarmot.app/Contents/MacOS/prmarmot)" = arm64
+
+      - name: Package and verify checksum
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          asset="prmarmot-v${VERSION}-macos-arm64.tar.gz"
+          COPYFILE_DISABLE=1 tar czf "dist/$asset" -C target/bundle prmarmot.app
+          if tar tzf "dist/$asset" | grep -Eq '(^|/)\._'; then
+            echo "AppleDouble metadata found in $asset" >&2
+            exit 1
+          fi
+          (cd dist && shasum -a 256 "$asset" >"$asset.sha256")
+          (cd dist && shasum -a 256 -c "$asset.sha256")
+          echo "ASSET=$asset" >>"$GITHUB_ENV"
+          echo "ASSET_SHA256=$(shasum -a 256 "dist/$asset" | awk '{print $1}')" >>"$GITHUB_ENV"
+
+      # This is the first externally visible step. All tests and Apple checks
+      # above must pass before the release can exist.
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/$ASSET" "dist/$ASSET.sha256" \
+            --verify-tag \
+            --latest \
+            --title "PR Marmot $GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Verify published release asset before updating cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/published-release"
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "$ASSET" \
+            --dir "$RUNNER_TEMP/published-release"
+          published_sha=$(shasum -a 256 "$RUNNER_TEMP/published-release/$ASSET" | awk '{print $1}')
+          test "$published_sha" = "$ASSET_SHA256" || {
+            echo "published release checksum differs from verified local artifact" >&2
+            exit 1
+          }
+
+      - name: Update Homebrew cask after release
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HOMEBREW_TAP_GITHUB_TOKEN" || {
+            echo "missing required repository secret: HOMEBREW_TAP_GITHUB_TOKEN" >&2
+            exit 1
+          }
+          tap="$RUNNER_TEMP/homebrew-tap"
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/oliver-kriska/homebrew-tap.git" "$tap"
+          git -C "$tap" config user.name "github-actions[bot]"
+          git -C "$tap" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          scripts/update-homebrew-cask.sh "$VERSION" "$ASSET_SHA256" "$tap"
+
+      - name: Remove temporary Apple credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/prmarmot-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/prmarmot-signing.p12" "$RUNNER_TEMP/AuthKey.p8"

@@ -1,18 +1,19 @@
-<img src="assets/branding/icon-256.png" alt="prboard logo" width="96" height="96">
+<img src="assets/branding/icon-256.png" alt="PR Marmot logo" width="96" height="96">
 
-# prboard
+# PR Marmot
 
 **A native desktop dashboard for deciding what to do next on GitHub pull
-requests.** prboard turns CI, review requests, completed reviews, unresolved
+requests.** PR Marmot turns CI, review requests, completed reviews, unresolved
 threads, conflicts, labels, linked issues, and GitHub stacks into two focused
 queues with a plain-language **Note** on every row.
 
-- **My PRs** puts approved PRs first, followed by needs action, awaiting review,
-  and drafts. Approved PRs with action blockers lead needs action, with stack
-  layers kept together in dependency order. Drafts stay in drafts.
+- **Involving me** is the zero-config, all-repositories default. Your own PRs
+  keep actionable Notes; other authors' PRs use ownership-aware status Notes.
+  Selecting one repository changes this queue to **My PRs** with the existing
+  authored behavior.
 - **Review queue** separates PRs that request your review from PRs with no
   reviewer requested that are available for someone to pick up.
-- **Read-only by design:** prboard can open a PR or linked issue and copy its
+- **Read-only by design:** PR Marmot can open a PR or linked issue and copy its
   URL, but it never assigns reviewers, comments, merges, or changes GitHub.
 - **Uses your existing GitHub CLI login:** API access goes through an
   authenticated [`gh`](https://cli.github.com) installation.
@@ -38,14 +39,17 @@ pretending GitHub assigned it to you.
 
 ### Requirements
 
-Install and authenticate the GitHub CLI first:
+PR Marmot checks the GitHub CLI after its window opens. If it is missing or not
+authenticated, the setup screen provides installation guidance, a copyable
+login command, and Retry. You can also prepare it first:
 
 ```sh
 gh auth login
 ```
 
-prboard currently provides a prebuilt release for **Apple-silicon macOS only**.
-Linux and Intel Mac users must build from source for now.
+PR Marmot's prepared release target is **Apple-silicon macOS only**. Until the
+first signed PR Marmot release is published, build from source. Linux and Intel
+Mac users must build from source for now.
 
 ### Apple-silicon macOS
 
@@ -54,20 +58,31 @@ repository, or pass the initial repository explicitly:
 
 ```sh
 # Detect the repository from the current checkout
-curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install.sh | sh
 
 # Or configure a repository explicitly (recommended for scripted installs)
-curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install.sh \
   | sh -s -- --repo owner/name
 ```
 
-The installer downloads the latest macOS arm64 release, installs
-`~/Applications/prboard.app`, and creates the config file only when it can
-resolve an accessible repository. It never overwrites an existing config. Early
-releases are ad-hoc signed on the destination Mac and are not yet notarized;
-Homebrew installation is therefore not available yet.
+Once a signed release exists, the installer downloads the latest macOS arm64 release, installs
+`~/Applications/prmarmot.app`, verifies the published checksum, Developer ID
+signature, notarization ticket, and Gatekeeper acceptance, and creates the
+config file only when it can resolve an accessible repository. It never
+overwrites an existing config.
+
+Homebrew will use the same signed artifact after the first cask is published:
+
+```sh
+brew install --cask oliver-kriska/tap/prmarmot
+```
 
 **Updating? Quit the installed app before running the installer again.**
+
+The former app was named `prboard`. PR Marmot uses new app, binary, config, and
+state names. Keep the old installation and data until the first PR Marmot
+launch confirms the app's one-time storage migration; see
+[`packaging/RELEASING.md`](packaging/RELEASING.md).
 
 ### Build from source
 
@@ -77,28 +92,23 @@ needs a working Vulkan stack plus fontconfig, xkbcommon, and the normal X11 or
 Wayland development/runtime libraries.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prboard/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install.sh \
   | sh -s -- --from-source --repo owner/name
 ```
 
-On macOS this installs `~/Applications/prboard.app`; on Linux it installs the
-`prboard` binary to `~/.local/bin` by default. There are no prebuilt Linux
+On macOS this installs `~/Applications/prmarmot.app`; on Linux it installs the
+`prmarmot` binary to `~/.local/bin` by default. There are no prebuilt Linux
 packages yet.
 
 ## First run
 
-1. Confirm `gh auth status` succeeds and that your account can access the
-   repository.
-2. Launch **prboard** from Spotlight/Finder on macOS, or run `prboard` on Linux.
-3. Pick another accessible repository from the searchable repository control
-   if needed. Discovery includes owned, collaborator, and organization repos
-   visible to the current `gh` account.
-4. Switch between **My PRs** and **Review queue** in the title bar.
-
-Spotlight and Finder launches have no useful repository working directory, so
-they require `repo` in the config file. If the installer could not create it,
-create the file described below before launching. Running the binary directly
-from a checkout can instead detect that checkout's GitHub remote.
+1. Launch **PR Marmot** from Spotlight/Finder on macOS, or run `prmarmot` on Linux.
+2. If prompted, install/authenticate `gh`, copy `gh auth login`, complete it in
+   Terminal, and click **Retry**. Credentials never appear in PR Marmot.
+3. The default **All repositories** scope shows open PRs involving your resolved
+   GitHub login. Pick a specific repository for its complete scoped result.
+4. Switch between **Involving me** (or **My PRs** in one repo) and **Review
+   queue** in the title bar.
 
 Click **Settings** in the bottom-right corner to edit reviewer suggestions,
 the refresh interval, and the theme directly—no file editing required.
@@ -119,19 +129,26 @@ are disabled and labeled; saving other settings leaves their file values alone.*
 
 The config file is:
 
-- `$XDG_CONFIG_HOME/prboard/config.toml` when `XDG_CONFIG_HOME` is an absolute
+- `$XDG_CONFIG_HOME/prmarmot/config.toml` when `XDG_CONFIG_HOME` is an absolute
   path;
-- otherwise `~/.config/prboard/config.toml`.
+- otherwise `~/.config/prmarmot/config.toml`.
 
-Every setting is optional, but app-bundle launches need `repo`:
+Every setting is optional. With no scope or repository, the app opens all
+repositories:
 
 ```toml
-repo = "acme/widgets"                    # repository opened at startup
+scope = "all"                            # all | repo; clean default is all
+repo = "acme/widgets"                    # remembered specific repository
 repos = ["acme/widgets", "acme/api"]    # extra repo-picker entries
 pinned_repos = ["acme/widgets"]          # toolbar shortcuts, maximum 12
 refresh_secs = 300                       # default 300; hard floor 30
 theme = "system"                         # system | light | dark
 view = "authored"                        # authored | review
+notifications = true                    # transition alerts while app runs
+notification_sound = true
+notify_all_needs_action = false         # watched PRs still notify
+dock_badge = true                       # macOS; no-op on Linux
+automatic_update_checks = true          # latest stable release, at most daily
 
 # Static, global suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]
@@ -149,7 +166,7 @@ height = 860
 
 `default_reviewers` is a static global hint. When one of **your** non-draft PRs
 has no pending reviewer request and no qualifying completed review, its Note
-can say, for example, “assign alice + bob.” prboard does **not** assign those people, validate that they are suitable
+can say, for example, “assign alice + bob.” PR Marmot does **not** assign those people, validate that they are suitable
 for the repository, read or implement `CODEOWNERS`, or infer GitHub ownership.
 The same list is suggested for every repository. Leave it empty if a global
 suggestion would be misleading.
@@ -158,43 +175,68 @@ Issue links are optional and tracker-agnostic. `{id}` in `url_template` is
 replaced with the first identifier matched by `pattern`; no tracker or project
 prefix is built in.
 
-Environment variables override the config file, and `--repo` overrides both:
+CLI options override environment variables, which override the config file:
 
-- `PRBOARD_REPO`
-- `PRBOARD_REFRESH_SECS`
-- `PRBOARD_THEME`
-- `PRBOARD_DEFAULT_REVIEWERS` (comma-separated)
-- `PRBOARD_ISSUE_PATTERN` and `PRBOARD_ISSUE_URL_TEMPLATE` (use together)
+- `PRMARMOT_REPO`
+- `PRMARMOT_SCOPE` (`all` or `repo`)
+- `PRMARMOT_REFRESH_SECS`
+- `PRMARMOT_THEME`
+- `PRMARMOT_DEFAULT_REVIEWERS` (comma-separated)
+- `PRMARMOT_ISSUE_PATTERN` and `PRMARMOT_ISSUE_URL_TEMPLATE` (use together)
 
-The app persists repository, theme, starting view, window size, pinned repos,
+Use `--all-repos` or `--repo owner/name` to choose scope explicitly. The app
+persists scope and the last specific repository independently, plus theme,
+starting view, window size, pinned repos,
 and saved Settings back to valid TOML while preserving comments and unrelated
 settings. It refuses to overwrite an unparseable config. Manual file edits
 require a restart; changes saved in Settings do not.
 
-## Using prboard
+## Using PR Marmot
 
 - **Shortcuts:** the footer opens the full keyboard reference. Character shortcuts
   work from dashboard controls, but never while typing in search, the repo picker,
   or Settings. Arrow keys, Enter, and Space belong to the focused control.
-- **Queues:** click **My PRs** / **Review queue**, press `1` / `2`, or press `v`
-  to toggle.
+- **Queues:** click **Involving me** (or **My PRs**) / **Review queue**,
+  press `1` / `2`, or press `v` to toggle.
 - **Navigate:** `↑` / `↓` selects; `Enter` or `o` opens the PR; `y` copies its
   URL with a brief footer confirmation; double-clicking a row opens it.
 - **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
   Select text in the panel and press `⌘C` (macOS) or `Ctrl+C` (Linux) to copy it.
   The **Copy** menu offers the PR number, title, URL, or all details without selecting text.
+- **Changes:** a blue row marker survives restarts until you actually select the
+  PR. **Changed** filters the loaded rows; a restored selection does not clear it.
+- **Watch:** press `w` on a selected PR. Watches are FIFO-bounded at 50 and are
+  refreshed through one batched GraphQL operation, including watched PRs outside
+  the active search. Notifications are semantic transitions, suppressed for the
+  first successful observation after launch and for the focused selected row.
+- **Snooze:** press `s` for one hour, until tomorrow, waiting on a person, waiting
+  for terminal CI, or review-again-when-changed. Snoozed rows move to a collapsed
+  group and do not contribute attention alerts or counts until they wake.
 - **Search loaded rows:** click **Search** or press `/`. Terms match PR number,
-  title, author, label, issue, and Note, and multiple terms narrow together.
+  repository, title, author, label, issue, and Note; multiple terms narrow
+  together.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.
-- **Repositories:** use the searchable picker; **Pin** adds an in-app shortcut
-  and **Pinned** removes it. Up to 12 pins persist in order. Pins do not fetch in
-  the background.
+- **Updates:** by default PR Marmot checks the latest stable GitHub release on
+  launch and at most once per day. A header banner opens the verified release
+  page for direct installs. Homebrew installs stage a detached helper and quit
+  only after it starts; the helper upgrades the `prmarmot` cask after the app
+  exits, reopens it, and reports failures on the next launch.
+- **Repositories:** **All repositories** is always first in the searchable
+  picker. Choosing a repository performs a fresh repository-scoped request—it
+  never filters the truncated global page and pretends it is complete. **Pin**
+  adds an in-app shortcut and **Pinned** removes it. Up to 12 pins persist in
+  order. Pins do not fetch in the background.
 - **Theme:** `t` cycles system → light → dark.
-- **Quit:** use **prboard → Quit prboard**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
+- **Quit:** use **PR Marmot → Quit PR Marmot**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
   The global shortcut works even in Settings and text inputs. Plain `q` also
   quits when no text input or dialog is active.
+
+Mutable attention state is stored separately from preferences under
+`$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), namespaced by GitHub host
+and account. Writes are bounded, coalesced, and atomic. A corrupt or newer state
+file is preserved and reported in the footer rather than overwritten.
 
 ![Selected stacked pull request with its reviewer, label, and stack-layer details](assets/screenshots/pr-details.png)
 
@@ -209,11 +251,14 @@ limited to 1,000 repositories (10 pages); configured, pinned, and current repos
 remain available if discovery fails. GitHub permissions and organization SSO
 determine what is visible.
 
-Each initial authored search returns up to 60 PRs. Review queue uses one GraphQL
-operation with two search aliases: up to 60 explicitly requested PRs and 60
-other-authored candidates, then keeps available candidates only when they have
-no pending user or team reviewer request. Your own PRs are excluded from the
-review queue. This is based on **review requests**, not issue assignees.
+Each initial involvement/authored search returns up to 60 PRs. In
+all-repositories scope, candidates are limited to PRs involving your resolved
+login; PR Marmot never broadens this to arbitrary other-authored public PRs.
+Review queue uses one GraphQL operation with two search aliases: up to 60
+explicitly requested PRs and 60 other-authored candidates, then keeps available
+candidates only when they have no pending user or team reviewer request. Your
+own PRs are excluded from the review queue. This is based on **review requests**,
+not issue assignees.
 
 A **partial results** notice means GitHub has another page. **Load more** can
 advance each active search to a maximum of five pages: at most 300 authored
@@ -241,7 +286,7 @@ make verify     # full-workspace fmt, clippy, and tests
 make hooks      # install repository git hooks
 ```
 
-`make check` and CI intentionally compile only `prboard-core`, so they do not
+`make check` and CI intentionally compile only `prmarmot-core`, so they do not
 need Metal. `make build`, `make verify`, and the pre-push hook compile the GPUI
 binary and need the platform graphics toolchain. On macOS, if `metal` is
 missing, run:
@@ -274,19 +319,21 @@ cargo build
 scripts/demo.sh             # fictional My PRs
 scripts/demo.sh --review    # fictional Review queue
 scripts/demo.sh --fail-once # exercise the initial error and Retry recovery
+scripts/demo.sh --update-available # show a fictional stable update banner
+scripts/demo.sh --update-failed    # show a fictional prior helper failure
 scripts/demo.sh --self-test # validate the demo fixtures (Python 3 required)
 ```
 
 The demo runs the real UI with a local, fail-closed `gh` stand-in. It requires
 Python 3 but no GitHub login or API requests, uses a temporary config, and never
-reads or modifies your normal prboard settings. Links are synthetic; do not use
+reads or modifies your normal PR Marmot settings. Links are synthetic; do not use
 the demo to act on real PRs. Quit its window when finished.
 
 ### App icon and logo
 
 The vector source is [`assets/branding/icon.svg`](assets/branding/icon.svg).
 Transparent PNGs at 16, 32, 64, 128, 256, 512, and 1024 pixels and the macOS
-`prboard.icns` are included alongside it. The README and app bundle use these
+`prmarmot.icns` are included alongside it. The README and app bundle use these
 same assets. Normal builds need no icon-generation tools.
 
 To regenerate the assets on macOS with `rsvg-convert` (librsvg) installed:

@@ -4,8 +4,8 @@
 //! oracle (scripts/prototype-jq/) over fictional fixtures. If these fail, the port has
 //! drifted from the spec — fix the port, not the golden.
 
-use prboard_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
-use prboard_core::github::query::parse_search_response;
+use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
+use prmarmot_core::github::query::parse_search_response;
 use serde_json::{json, Value};
 
 const REPO: &str = "acme/widgets";
@@ -124,7 +124,7 @@ fn graphql_rate_limit_error_is_classified() {
     let err = parse_search_response(&body).unwrap_err();
     assert!(matches!(
         err,
-        prboard_core::github::GhError::RateLimited { .. }
+        prmarmot_core::github::GhError::RateLimited { .. }
     ));
 }
 
@@ -137,6 +137,6 @@ fn graphql_partial_data_errors_are_not_silent_success() {
     let err = parse_search_response(&body).unwrap_err();
     assert_eq!(
         err,
-        prboard_core::github::GhError::GraphqlErrors(vec!["field resolution failed".into()])
+        prmarmot_core::github::GhError::GraphqlErrors(vec!["field resolution failed".into()])
     );
 }

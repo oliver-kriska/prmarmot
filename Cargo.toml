@@ -2,15 +2,17 @@
 members = ["core"]
 
 [package]
-name = "prboard"
+name = "prmarmot"
 version = "0.5.3"
 edition = "2021"
 rust-version = "1.92"
 license = "MIT"
 description = "GitHub PR review dashboard — a native desktop app"
+repository = "https://github.com/oliver-kriska/prmarmot"
+homepage = "https://github.com/oliver-kriska/prmarmot"
 
 [dependencies]
-prboard-core = { path = "core" }
+prmarmot-core = { path = "core" }
 # GPUI Kit 0.6 uses the published gpui-pre runtime and platform split.
 gpui = { package = "gpui-pre", version = "=0.3.4" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.4", features = ["font-kit", "wayland", "x11"] }
@@ -24,6 +26,13 @@ toml = "1.1"
 toml_edit = "0.25"
 dirs = "7"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify-rust = { version = "=4.18.0", features = ["preview-macos-un"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSString"] }
 # No tokio, no reqwest — transport is a `gh` subprocess on GPUI's background executor.
 # No `open` crate — gpui's cx.open_url covers open-in-browser.
 

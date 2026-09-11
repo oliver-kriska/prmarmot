@@ -8,10 +8,10 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 use crate::github::query::{
-    available_search_string, page_info, parse_alias_response, parse_review_response,
-    parse_search_response, RawPr, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY,
-    REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
-    REVIEW_SEARCH_QUERY,
+    available_search_string, global_available_search_string, global_search_string, page_info,
+    parse_alias_response, parse_review_response, parse_search_response, with_tracked_nodes, RawPr,
+    PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
+    REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
 use crate::github::{GhError, GithubTransport};
@@ -22,6 +22,30 @@ pub enum Mode {
     Authored,
     /// PRs awaiting the user's review — the incoming queue.
     Review,
+}
+
+/// Repository coverage is independent from the queue mode.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BoardScope {
+    AllRepositories,
+    Repository(String),
+}
+
+impl BoardScope {
+    pub fn repository(&self) -> Option<&str> {
+        match self {
+            Self::AllRepositories => None,
+            Self::Repository(repo) => Some(repo),
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, Self::AllRepositories)
+    }
+
+    fn fallback_repo(&self) -> &str {
+        self.repository().unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +131,7 @@ impl ReviewState {
 pub struct ReviewSummary {
     pub login: Option<String>,
     pub state: String,
+    pub submitted_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +218,13 @@ impl Default for BoardConfig {
 /// `my_review` are review-mode).
 #[derive(Debug, Clone)]
 pub struct BoardRow {
+    /// GitHub node id (canonical URL for legacy prototype fixtures).
+    pub id: String,
+    pub repo: String,
+    pub updated_at: Option<String>,
+    pub head_oid: Option<String>,
+    pub reviewed_oid: Option<String>,
+    pub reviewed_at: Option<String>,
     pub number: u64,
     pub url: String,
     pub title: String,
@@ -302,6 +334,22 @@ pub struct BoardFetch {
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
     pub pagination: BoardPagination,
+    pub tracked: Vec<TrackedPr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackedPr {
+    pub pr_id: String,
+    pub status: TrackedPrStatus,
+    pub row: Option<BoardRow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackedPrStatus {
+    Open,
+    Closed,
+    Merged,
+    Inaccessible,
 }
 
 /// Fetch a complete board flow. Authored mode preserves the legacy single
@@ -314,10 +362,46 @@ pub fn fetch_board(
     me: &str,
     cfg: &BoardConfig,
 ) -> Result<BoardFetch, GhError> {
+    fetch_board_scoped(
+        transport,
+        mode,
+        &BoardScope::Repository(repo.to_owned()),
+        me,
+        cfg,
+    )
+}
+
+/// Fetch a queue for either one repository or every repository involving the
+/// authenticated user. Both variants retain the same one-operation contract.
+pub fn fetch_board_scoped(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+) -> Result<BoardFetch, GhError> {
+    fetch_board_scoped_with_tracked(transport, mode, scope, me, cfg, &[])
+}
+
+pub fn fetch_board_scoped_with_tracked(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    tracked_ids: &[String],
+) -> Result<BoardFetch, GhError> {
+    let repo = scope.fallback_repo();
     match mode {
         Mode::Authored => {
-            let search = crate::github::query::search_string(mode, repo, me);
-            let body = transport.graphql(PR_SEARCH_QUERY, &[("q", &search)])?;
+            let search = scope_search_string(scope, mode, me);
+            let query = if tracked_ids.is_empty() {
+                PR_SEARCH_QUERY.to_owned()
+            } else {
+                with_tracked_nodes(PR_SEARCH_QUERY)?
+            };
+            let body =
+                transport.graphql_with_ids(&query, &[("q", &search), ("who", me)], tracked_ids)?;
             let truncated = body
                 .pointer("/data/search/pageInfo/hasNextPage")
                 .and_then(serde_json::Value::as_bool)
@@ -328,28 +412,40 @@ pub fn fetch_board(
                 ..Default::default()
             };
             Ok(BoardFetch {
-                rows: derive_rows(&prs, mode, repo, me, cfg),
+                rows: if scope.is_all() {
+                    derive_involving_rows(&prs, repo, me, cfg)
+                } else {
+                    derive_rows(&prs, mode, repo, me, cfg)
+                },
                 rate,
                 truncated,
                 pagination,
+                tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
             })
         }
         Mode::Review => {
-            let requested_search = crate::github::query::search_string(mode, repo, me);
-            let available_search = available_search_string(repo, me);
-            let body = transport.graphql(
-                REVIEW_SEARCH_QUERY,
+            let requested_search = scope_search_string(scope, mode, me);
+            let available_search = scope_available_search_string(scope, me);
+            let query = if tracked_ids.is_empty() {
+                REVIEW_SEARCH_QUERY.to_owned()
+            } else {
+                with_tracked_nodes(REVIEW_SEARCH_QUERY)?
+            };
+            let body = transport.graphql_with_ids(
+                &query,
                 &[
                     ("requested", &requested_search),
                     ("available", &available_search),
+                    ("who", me),
                 ],
+                tracked_ids,
             )?;
             let parsed = parse_review_response(&body)?;
             let mut seen = HashSet::new();
             let mut rows = Vec::new();
 
             for pr in parsed.requested.iter().filter(|pr| !is_own_pr(pr, me)) {
-                if seen.insert(pr.number) {
+                if seen.insert(pr_identity(pr, repo)) {
                     rows.push(derive_review_row(
                         pr,
                         repo,
@@ -364,7 +460,7 @@ pub fn fetch_board(
                 .iter()
                 .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
             {
-                if seen.insert(pr.number) {
+                if seen.insert(pr_identity(pr, repo)) {
                     rows.push(derive_review_row(
                         pr,
                         repo,
@@ -386,9 +482,53 @@ pub fn fetch_board(
                     available: AliasCursor::from_page(parsed.available_page),
                     ..Default::default()
                 },
+                tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
             })
         }
     }
+}
+
+fn derive_tracked(
+    body: &serde_json::Value,
+    requested_ids: &[String],
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+) -> Vec<TrackedPr> {
+    let nodes = body
+        .pointer("/data/tracked")
+        .and_then(serde_json::Value::as_array);
+    requested_ids
+        .iter()
+        .enumerate()
+        .map(|(index, requested_id)| {
+            let raw = nodes
+                .and_then(|nodes| nodes.get(index))
+                .filter(|value| !value.is_null())
+                .and_then(|value| serde_json::from_value::<RawPr>(value.clone()).ok());
+            match raw {
+                None => TrackedPr {
+                    pr_id: requested_id.clone(),
+                    status: TrackedPrStatus::Inaccessible,
+                    row: None,
+                },
+                Some(raw) => {
+                    let status = if raw.merged {
+                        TrackedPrStatus::Merged
+                    } else if raw.state.as_deref() == Some("CLOSED") {
+                        TrackedPrStatus::Closed
+                    } else {
+                        TrackedPrStatus::Open
+                    };
+                    TrackedPr {
+                        pr_id: pr_identity(&raw, repo),
+                        status,
+                        row: Some(derive_row(&raw, Mode::Authored, repo, me, cfg)),
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 /// Fetch one user-requested page for each alias that still has a usable cursor.
@@ -402,19 +542,44 @@ pub fn fetch_more_board(
     cfg: &BoardConfig,
     current: &BoardFetch,
 ) -> Result<BoardFetch, GhError> {
+    fetch_more_board_scoped(
+        transport,
+        mode,
+        &BoardScope::Repository(repo.to_owned()),
+        me,
+        cfg,
+        current,
+    )
+}
+
+pub fn fetch_more_board_scoped(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    current: &BoardFetch,
+) -> Result<BoardFetch, GhError> {
+    let repo = scope.fallback_repo();
     let mut next = current.clone();
     match mode {
         Mode::Authored => {
             if !next.pagination.authored.can_load() {
                 return Ok(next);
             }
-            let search = crate::github::query::search_string(mode, repo, me);
+            let search = scope_search_string(scope, mode, me);
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let body =
-                transport.graphql(PR_SEARCH_PAGE_QUERY, &[("q", &search), ("after", &cursor)])?;
+            let body = transport.graphql(
+                PR_SEARCH_PAGE_QUERY,
+                &[("q", &search), ("after", &cursor), ("who", me)],
+            )?;
             let (prs, rate) = parse_search_response(&body)?;
             next.pagination.authored.update(page_info(&body, "search"));
-            merge_authored(&mut next.rows, &prs, repo, me, cfg);
+            if scope.is_all() {
+                merge_involving(&mut next.rows, &prs, repo, me, cfg);
+            } else {
+                merge_authored(&mut next.rows, &prs, repo, me, cfg);
+            }
             next.rate = rate;
         }
         Mode::Review => {
@@ -423,8 +588,8 @@ pub fn fetch_more_board(
             if !requested && !available {
                 return Ok(next);
             }
-            let requested_search = crate::github::query::search_string(mode, repo, me);
-            let available_search = available_search_string(repo, me);
+            let requested_search = scope_search_string(scope, mode, me);
+            let available_search = scope_available_search_string(scope, me);
             let mut requested_prs = Vec::new();
             let mut available_prs = Vec::new();
             if requested && available {
@@ -437,6 +602,7 @@ pub fn fetch_more_board(
                         ("requestedAfter", &rc),
                         ("available", &available_search),
                         ("availableAfter", &ac),
+                        ("who", me),
                     ],
                 )?;
                 let parsed = parse_review_response(&body)?;
@@ -461,7 +627,8 @@ pub fn fetch_more_board(
                         next.pagination.available.end_cursor.clone().unwrap(),
                     )
                 };
-                let body = transport.graphql(query, &[(alias, search), ("after", &cursor)])?;
+                let body = transport
+                    .graphql(query, &[(alias, search), ("after", &cursor), ("who", me)])?;
                 let (prs, page, rate) = parse_alias_response(&body, alias)?;
                 if requested {
                     requested_prs = prs;
@@ -486,6 +653,20 @@ pub fn fetch_more_board(
     Ok(next)
 }
 
+fn scope_search_string(scope: &BoardScope, mode: Mode, me: &str) -> String {
+    match scope {
+        BoardScope::AllRepositories => global_search_string(mode, me),
+        BoardScope::Repository(repo) => crate::github::query::search_string(mode, repo, me),
+    }
+}
+
+fn scope_available_search_string(scope: &BoardScope, me: &str) -> String {
+    match scope {
+        BoardScope::AllRepositories => global_available_search_string(me),
+        BoardScope::Repository(repo) => available_search_string(repo, me),
+    }
+}
+
 fn merge_authored(
     rows: &mut Vec<BoardRow>,
     prs: &[RawPr],
@@ -493,12 +674,46 @@ fn merge_authored(
     me: &str,
     cfg: &BoardConfig,
 ) {
-    let mut by_number: HashMap<u64, BoardRow> = rows.drain(..).map(|r| (r.number, r)).collect();
+    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
     for pr in prs {
-        by_number.insert(pr.number, derive_row(pr, Mode::Authored, repo, me, cfg));
+        by_id.insert(
+            pr_identity(pr, repo),
+            derive_row(pr, Mode::Authored, repo, me, cfg),
+        );
     }
-    *rows = by_number.into_values().collect();
-    rows.sort_by_key(|r| (r.category.rank(), std::cmp::Reverse(r.number)));
+    *rows = by_id.into_values().collect();
+    rows.sort_by(|a, b| {
+        (a.category.rank(), std::cmp::Reverse(a.number), &a.id).cmp(&(
+            b.category.rank(),
+            std::cmp::Reverse(b.number),
+            &b.id,
+        ))
+    });
+    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
+}
+
+fn merge_involving(
+    rows: &mut Vec<BoardRow>,
+    prs: &[RawPr],
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+) {
+    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
+    for pr in prs {
+        by_id.insert(
+            pr_identity(pr, repo),
+            derive_involving_row(pr, repo, me, cfg),
+        );
+    }
+    *rows = by_id.into_values().collect();
+    rows.sort_by(|a, b| {
+        (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
+            b.category.rank(),
+            std::cmp::Reverse(&b.updated_at),
+            &b.id,
+        ))
+    });
     rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
 }
 
@@ -510,29 +725,35 @@ fn merge_review(
     me: &str,
     cfg: &BoardConfig,
 ) {
-    let mut by_number: HashMap<u64, BoardRow> = rows.drain(..).map(|r| (r.number, r)).collect();
+    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
     for pr in available
         .iter()
         .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
     {
-        by_number
-            .entry(pr.number)
+        by_id
+            .entry(pr_identity(pr, repo))
             .or_insert_with(|| derive_review_row(pr, repo, me, cfg, QueueProvenance::Available));
     }
     // Requested provenance wins even when the broad alias produced it earlier.
     for pr in requested.iter().filter(|pr| !is_own_pr(pr, me)) {
-        by_number.insert(
-            pr.number,
+        by_id.insert(
+            pr_identity(pr, repo),
             derive_review_row(pr, repo, me, cfg, QueueProvenance::Requested),
         );
     }
-    *rows = by_number.into_values().collect();
-    rows.sort_by_key(|r| (r.category.rank(), r.number));
+    *rows = by_id.into_values().collect();
+    rows.sort_by(|a, b| {
+        (a.category.rank(), a.number, &a.id).cmp(&(b.category.rank(), b.number, &b.id))
+    });
     rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize * 2);
 }
 
 fn is_own_pr(pr: &RawPr, me: &str) -> bool {
     pr.author.as_ref().and_then(|a| a.login.as_deref()) == Some(me)
+}
+
+fn pr_identity(pr: &RawPr, repo: &str) -> String {
+    pr.id.clone().unwrap_or_else(|| pr.canonical_url(repo))
 }
 
 /// Derive and sort the full board. `me` must be the resolved login.
@@ -557,6 +778,71 @@ pub fn derive_rows(
     rows
 }
 
+fn derive_involving_rows(prs: &[RawPr], repo: &str, me: &str, cfg: &BoardConfig) -> Vec<BoardRow> {
+    let mut rows: Vec<_> = prs
+        .iter()
+        .take(MAX_BOARD_ROWS)
+        .map(|pr| derive_involving_row(pr, repo, me, cfg))
+        .collect();
+    rows.sort_by(|a, b| {
+        (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
+            b.category.rank(),
+            std::cmp::Reverse(&b.updated_at),
+            &b.id,
+        ))
+    });
+    rows
+}
+
+fn derive_involving_row(pr: &RawPr, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
+    if is_own_pr(pr, me) {
+        return derive_row(pr, Mode::Authored, repo, me, cfg);
+    }
+
+    let mut row = derive_row(pr, Mode::Authored, repo, me, cfg);
+    row.blockers.clear();
+    let author = row.author.as_deref().unwrap_or("Unknown author").to_owned();
+    if row.draft {
+        row.category = Category::Draft;
+        row.note = format!("draft by {author}");
+        return row;
+    }
+
+    let mut facts = Vec::new();
+    if row.conflict {
+        facts.push("merge conflict".to_owned());
+    }
+    if row.ci == Ci::Fail {
+        facts.push("CI failing".to_owned());
+    }
+    if row.review_decision.as_deref() == Some("CHANGES_REQUESTED") {
+        facts.push("changes requested".to_owned());
+    }
+    if row.unresolved > 0 {
+        facts.push(format!(
+            "{} unresolved comment{}",
+            row.unresolved,
+            if row.unresolved == 1 { "" } else { "s" }
+        ));
+    }
+    row.category = if facts.is_empty() {
+        Category::Await
+    } else {
+        Category::Action
+    };
+    row.note = if facts.is_empty() {
+        match row.review_state {
+            ReviewState::Approved => format!("{author}'s PR · approved"),
+            ReviewState::Commented => format!("{author}'s PR · review comments received"),
+            ReviewState::Waiting => format!("{author}'s PR · awaiting review"),
+            ReviewState::None | ReviewState::Changes => format!("{author}'s PR · open"),
+        }
+    } else {
+        format!("{author}'s PR · {}", facts.join(" · "))
+    };
+    row
+}
+
 fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
     let labels: Vec<String> = pr.labels.nodes.iter().map(|l| l.name.clone()).collect();
     let bug = labels.iter().any(|l| l == "bug");
@@ -569,9 +855,17 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     let ci = derive_ci(pr);
     let conflict = pr.mergeable.as_deref() == Some("CONFLICTING");
     let (issue, issue_url, title) = derive_title(&pr.title, cfg);
-    let url = format!("https://github.com/{repo}/pull/{}", pr.number);
+    let url = pr.canonical_url(repo);
 
     let mut row = BoardRow {
+        id: pr_identity(pr, repo),
+        repo: pr.repository_name(repo).to_owned(),
+        updated_at: pr.updated_at.clone(),
+        head_oid: pr.head_ref_oid.clone(),
+        reviewed_oid: latest_review_evidence(pr)
+            .and_then(|review| review.commit.as_ref())
+            .map(|commit| commit.oid.clone()),
+        reviewed_at: latest_review_evidence(pr).and_then(|review| review.submitted_at.clone()),
         number: pr.number,
         url,
         title,
@@ -729,11 +1023,19 @@ fn latest_reviews_excluding(pr: &RawPr, me: &str, bots: &[String]) -> Vec<Review
     latest.sort_by(|a, b| a.0.cmp(&b.0));
     latest
         .into_iter()
-        .map(|(login, state, _)| ReviewSummary {
+        .map(|(login, state, submitted_at)| ReviewSummary {
             login,
             state: state.to_string(),
+            submitted_at: submitted_at.map(str::to_owned),
         })
         .collect()
+}
+
+fn latest_review_evidence(pr: &RawPr) -> Option<&crate::github::query::LatestReview> {
+    pr.latest_review
+        .nodes
+        .first()
+        .filter(|review| review.state != "DISMISSED")
 }
 
 /// The user's own latest review state, or "NONE" — the prototype's `$mine`.
@@ -850,7 +1152,7 @@ fn authored_note(row: &BoardRow) -> String {
 
 /// Mode B Note (SKILL.md).
 fn review_note(row: &BoardRow) -> String {
-    match row.category {
+    let note = match row.category {
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
                 "⚠️ CI red — maybe wait for green".to_string()
@@ -870,6 +1172,15 @@ fn review_note(row: &BoardRow) -> String {
         },
         Category::Draft => "· draft (not ready)".to_string(),
         _ => String::new(),
+    };
+    if row.reviewed_oid.is_some()
+        && row.head_oid.is_some()
+        && row.reviewed_oid != row.head_oid
+        && !note.is_empty()
+    {
+        format!("new commits since your review · {note}")
+    } else {
+        note
     }
 }
 
@@ -889,7 +1200,8 @@ mod tests {
             variables: &[(&str, &str)],
         ) -> Result<serde_json::Value, GhError> {
             assert_eq!(query, REVIEW_SEARCH_QUERY);
-            assert_eq!(variables.len(), 2);
+            assert_eq!(variables.len(), 3);
+            assert!(variables.contains(&("who", "me")));
             Ok(self.0.clone())
         }
     }
@@ -909,6 +1221,27 @@ mod tests {
             _variables: &[(&str, &str)],
         ) -> Result<serde_json::Value, GhError> {
             self.0.lock().unwrap().pop_front().unwrap()
+        }
+    }
+
+    struct GlobalReviewTransport;
+
+    impl GithubTransport for GlobalReviewTransport {
+        fn graphql(
+            &self,
+            query: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            assert_eq!(query, REVIEW_SEARCH_QUERY);
+            assert!(
+                variables.contains(&("requested", "is:pr is:open review-requested:me -author:me"))
+            );
+            assert!(variables.contains(&("available", "is:pr is:open involves:me -author:me")));
+            Ok(json!({"data": {
+                "requested": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
+                "available": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
+                "rateLimit": null
+            }}))
         }
     }
 
@@ -1133,7 +1466,8 @@ mod tests {
             row.reviews,
             vec![ReviewSummary {
                 login: Some("eve".into()),
-                state: "APPROVED".into()
+                state: "APPROVED".into(),
+                submitted_at: Some("2026-07-22T09:00:00Z".into()),
             }]
         );
         assert_eq!(row.review_state, ReviewState::Approved);
@@ -1387,6 +1721,20 @@ mod tests {
     }
 
     #[test]
+    fn global_review_keeps_available_candidates_involvement_scoped() {
+        let fetched = fetch_board_scoped(
+            &GlobalReviewTransport,
+            Mode::Review,
+            &BoardScope::AllRepositories,
+            "me",
+            &cfg(),
+        )
+        .unwrap();
+        assert!(fetched.rows.is_empty());
+        assert!(!fetched.truncated);
+    }
+
+    #[test]
     fn paginated_review_deduplicates_with_requested_priority_and_skips_exhausted_alias() {
         let mut available_duplicate = base(20);
         available_duplicate["author"] = json!({"login": "alice"});
@@ -1580,6 +1928,157 @@ mod tests {
         );
         assert_eq!(row.category, Category::Available);
         assert_eq!(row.note, "⚠️ has conflicts");
+    }
+
+    #[test]
+    fn semantic_observation_is_stable_across_scope_and_queue_derivations() {
+        let mut value = base(120);
+        value["id"] = json!("PR_shared");
+        value["url"] = json!("https://github.com/acme/widgets/pull/120");
+        value["repository"] = json!({"nameWithOwner": "acme/widgets"});
+        value["author"] = json!({"login": "alice"});
+        value["updatedAt"] = json!("2026-09-11T10:00:00Z");
+        value["headRefOid"] = json!("head-2");
+        value["reviewRequests"] = json!({
+            "totalCount": 1,
+            "nodes": [{"requestedReviewer": {"__typename": "User", "login": "me"}}]
+        });
+        value["reviews"]["nodes"] = json!([
+            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z"},
+            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-09-09T10:00:00Z"}
+        ]);
+        value["latestReview"] = json!({"nodes": [{
+            "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z", "commit": {"oid": "head-1"}
+        }]});
+        let raw: RawPr = serde_json::from_value(value).unwrap();
+        let involving = derive_involving_row(&raw, "", "me", &cfg());
+        let review = derive_review_row(
+            &raw,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            QueueProvenance::Requested,
+        );
+        assert_ne!(involving.category, review.category);
+        assert_eq!(
+            crate::attention::Observation::from_row(&involving),
+            crate::attention::Observation::from_row(&review)
+        );
+    }
+
+    #[test]
+    fn review_note_reports_new_head_without_fabricating_commit_count() {
+        let mut value = base(121);
+        value["author"] = json!({"login": "alice"});
+        value["headRefOid"] = json!("current-head");
+        value["latestReview"] = json!({"nodes": [{
+            "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z", "commit": {"oid": "reviewed-head"}
+        }]});
+        value["reviews"]["nodes"] = json!([
+            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z"}
+        ]);
+        let row = derive_one(value, Mode::Review);
+        assert_eq!(row.note, "new commits since your review · ✅ you approved");
+        assert!(!row.note.chars().any(|character| character.is_ascii_digit()));
+    }
+
+    #[test]
+    fn repository_identity_survives_alias_dedup_and_page_merges() {
+        let make = |repo: &str, id: &str| {
+            let mut v = base(42);
+            v["id"] = json!(id);
+            v["repository"] = json!({"nameWithOwner": repo});
+            v["url"] = json!(format!("https://github.com/{repo}/pull/42"));
+            v["author"] = json!({"login": "alice"});
+            v["reviewRequests"] = json!({"totalCount":0,"nodes":[]});
+            v
+        };
+        let a = make("acme/one", "PR_a");
+        let b = make("acme/two", "PR_b");
+        let body = json!({"data": {
+            "requested": {"nodes": [a.clone()]},
+            "available": {"nodes": [a.clone(), b.clone()]}
+        }});
+        let fetched = fetch_board(
+            &FakeTransport(body),
+            Mode::Review,
+            "ignored/repo",
+            "me",
+            &cfg(),
+        )
+        .unwrap();
+        assert_eq!(fetched.rows.len(), 2);
+        assert_eq!(fetched.rows[0].repo, "acme/one");
+        assert_eq!(fetched.rows[1].url, "https://github.com/acme/two/pull/42");
+        let a: RawPr = serde_json::from_value(a).unwrap();
+        let mut b: RawPr = serde_json::from_value(b).unwrap();
+        let mut authored = derive_rows(
+            std::slice::from_ref(&a),
+            Mode::Authored,
+            "ignored/repo",
+            "me",
+            &cfg(),
+        );
+        merge_authored(&mut authored, &[b.clone()], "ignored/repo", "me", &cfg());
+        assert_eq!(authored.len(), 2);
+        b.title = "changed title".into();
+        merge_authored(&mut authored, &[b.clone()], "ignored/repo", "me", &cfg());
+        assert_eq!(authored.len(), 2);
+        assert_eq!(
+            authored.iter().find(|r| r.id == "PR_b").unwrap().title,
+            "changed title"
+        );
+        let mut review = fetched.rows;
+        merge_review(&mut review, &[b], &[a], "ignored/repo", "me", &cfg());
+        assert_eq!(review.len(), 2);
+        assert!(review
+            .iter()
+            .all(|r| r.queue_provenance == Some(QueueProvenance::Requested)));
+    }
+
+    #[test]
+    fn observation_fields_use_canonical_data_and_latest_review_alias() {
+        let mut v = base(42);
+        v["id"] = json!("PR_42");
+        v["repository"] = json!({"nameWithOwner": "acme/actual"});
+        v["updatedAt"] = json!("2026-09-11T10:00:00Z");
+        v["headRefOid"] = json!("new-head");
+        v["latestReview"] = json!({"nodes": [{"state":"APPROVED", "submittedAt":"2026-09-10T10:00:00Z", "commit":{"oid":"reviewed-head"}}]});
+        let row = derive_one(v.clone(), Mode::Review);
+        assert_eq!(row.repo, "acme/actual");
+        assert_eq!(row.url, "https://github.com/acme/actual/pull/42");
+        assert_eq!(row.updated_at.as_deref(), Some("2026-09-11T10:00:00Z"));
+        assert_eq!(row.head_oid.as_deref(), Some("new-head"));
+        assert_eq!(row.reviewed_oid.as_deref(), Some("reviewed-head"));
+        assert_eq!(row.reviewed_at.as_deref(), Some("2026-09-10T10:00:00Z"));
+        v["latestReview"]["nodes"][0]["commit"] = json!(null);
+        assert_eq!(derive_one(v.clone(), Mode::Review).reviewed_oid, None);
+        v["latestReview"]["nodes"][0]["commit"] = json!({"oid":"dismissed-head"});
+        v["latestReview"]["nodes"][0]["state"] = json!("DISMISSED");
+        assert_eq!(derive_one(v, Mode::Review).reviewed_oid, None);
+    }
+
+    #[test]
+    fn global_involving_rows_keep_own_notes_and_describe_other_authors() {
+        let mut mine = base(1);
+        mine["id"] = json!("mine");
+        mine["repository"] = json!({"nameWithOwner":"acme/one"});
+        let mut theirs = base(2);
+        theirs["id"] = json!("theirs");
+        theirs["repository"] = json!({"nameWithOwner":"acme/two"});
+        theirs["author"] = json!({"login":"alice"});
+        theirs["mergeable"] = json!("CONFLICTING");
+        theirs["commits"]["nodes"] = json!([{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]);
+
+        let rows =
+            derive_involving_rows(&[pr(mine), pr(theirs)], "", "me", &BoardConfig::default());
+        let mine = rows.iter().find(|row| row.id == "mine").unwrap();
+        assert_eq!(mine.note, "⚠️ no reviewers");
+        let theirs = rows.iter().find(|row| row.id == "theirs").unwrap();
+        assert_eq!(theirs.repo, "acme/two");
+        assert_eq!(theirs.note, "alice's PR · merge conflict · CI failing");
+        assert!(!theirs.note.contains("rebase"));
+        assert!(theirs.blockers.is_empty());
     }
 
     #[test]

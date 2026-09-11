@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-"""Offline, fail-closed gh stand-in for prboard screenshot fixtures."""
+#!/usr/bin/python3
+"""Offline, fail-closed gh stand-in for PR Marmot screenshot fixtures."""
 
 import json
 import os
@@ -10,7 +10,7 @@ import unittest
 
 def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
        mergeable="MERGEABLE", labels=(), requested=(), reviews=(), unresolved=0,
-       ci="SUCCESS", stack=None):
+       ci="SUCCESS", stack=None, repo="demo-labs/atlas"):
     request_nodes = [
         {"requestedReviewer": {"__typename": "User", "login": login}}
         for login in requested
@@ -21,6 +21,14 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
         for day, (login, state) in enumerate(reviews, 1)
     ]
     node = {
+        "id": f"PR_demo_{repo.replace('/', '_')}_{number}",
+        "url": f"https://github.com/{repo}/pull/{number}",
+        "repository": {"nameWithOwner": repo},
+        "updatedAt": f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
+        "headRefOid": f"head-{repo}-{number}",
+        "state": "OPEN",
+        "merged": False,
+        "latestReview": {"nodes": []},
         "number": number,
         "title": title,
         "isDraft": draft,
@@ -52,7 +60,8 @@ AUTHORED = [
        requested=("alex",), unresolved=2, ci="FAILURE"),
     pr(417, "Resolve atlas navigation conflicts", mergeable="CONFLICTING",
        labels=("feature",), requested=("sam",)),
-    pr(416, "Add compact device activity cards", labels=("mobile",)),
+    pr(416, "Add compact device activity cards", labels=("mobile",),
+       repo="demo-labs/mobile"),
     pr(415, "[DEMO-415] Introduce workspace search", labels=("feature",),
        decision="APPROVED", reviews=(("alex", "APPROVED"),), unresolved=1),
     pr(414, "Atlas stack: define event envelope", labels=("feature",), stack=(72, 1)),
@@ -60,6 +69,8 @@ AUTHORED = [
        stack=(72, 2)),
     pr(412, "Atlas stack: render delivery timeline", labels=("mobile",),
        stack=(72, 3)),
+    pr(611, "Document mobile release health", author="river", labels=("docs",),
+       requested=("demo-user",), repo="demo-labs/mobile"),
     pr(410, "Publish export schema", labels=("docs",), requested=("sam",)),
     pr(409, "Reduce startup queries", labels=("performance",), decision="APPROVED",
        reviews=(("alex", "APPROVED"),)),
@@ -100,15 +111,33 @@ def graphql(args):
     fields = dict(arg.split("=", 1) for i, arg in enumerate(args)
                   if i and args[i - 1] == "-f" and "=" in arg)
     query = fields.get("query", "")
+    tracked_ids = [
+        arg.split("=", 1)[1]
+        for i, arg in enumerate(args)
+        if i and args[i - 1] == "-F" and arg.startswith("tracked[]=")
+    ]
+    all_nodes = AUTHORED + REQUESTED + AVAILABLE
+    tracked = [next((node for node in all_nodes if node["id"] == tracked_id), None)
+               for tracked_id in tracked_ids]
+    search = fields.get("q", fields.get("requested", ""))
+    selected_repo = next((part[5:] for part in search.split() if part.startswith("repo:")), None)
+    def scoped(nodes):
+        return [node for node in nodes
+                if selected_repo is None or node["repository"]["nameWithOwner"] == selected_repo]
     if "requested:" in query or "requested: search" in query:
         data = {"rateLimit": rate(5)}
         if "$requested" in query:
-            data["requested"] = page(REQUESTED)
+            data["requested"] = page(scoped(REQUESTED))
         if "$available" in query:
-            data["available"] = page(AVAILABLE)
+            data["available"] = page(scoped(AVAILABLE))
+        if "$tracked" in query:
+            data["tracked"] = tracked
         return {"data": data}
     if "search(query:$q" in query:
-        return {"data": {"search": page(AUTHORED), "rateLimit": rate(3)}}
+        data = {"search": page(scoped(AUTHORED)), "rateLimit": rate(3)}
+        if "$tracked" in query:
+            data["tracked"] = tracked
+        return {"data": data}
     raise ValueError("unrecognized GraphQL operation")
 
 
@@ -116,7 +145,7 @@ class FixtureTests(unittest.TestCase):
     def test_numbers_are_unique_and_views_are_distinct(self):
         authored = {item["number"] for item in AUTHORED}
         review = {item["number"] for item in REQUESTED + AVAILABLE}
-        self.assertEqual(len(authored), 10)
+        self.assertEqual(len(authored), 11)
         self.assertTrue(authored.isdisjoint(review))
 
     def test_native_stack_has_three_ordered_layers(self):
@@ -134,6 +163,18 @@ class FixtureTests(unittest.TestCase):
                 self.assertIn("totalCount", node["reviewRequests"])
                 self.assertIn("statusCheckRollup", node["commits"]["nodes"][0]["commit"])
 
+    def test_release_fixture_is_stable_and_repository_bound(self):
+        tag = "v99.0.0"
+        self.assertEqual(
+            release_line(tag),
+            f"{tag}\thttps://github.com/oliver-kriska/prmarmot/releases/tag/{tag}\tfalse\tfalse",
+        )
+
+
+def release_line(tag):
+    return (f"{tag}\thttps://github.com/oliver-kriska/prmarmot/releases/tag/{tag}"
+            "\tfalse\tfalse")
+
 
 def main():
     args = sys.argv[1:]
@@ -142,10 +183,21 @@ def main():
         return
     try:
         if args == ["api", "user", "--jq", ".login"]:
+            root = Path(os.environ["XDG_CONFIG_HOME"])
+            if (root / "unauthenticated").exists():
+                print("not logged in; run gh auth login", file=sys.stderr)
+                raise SystemExit(1)
+            if (root / "login-network-error").exists():
+                print("network unreachable", file=sys.stderr)
+                raise SystemExit(1)
             print("demo-user")
         elif len(args) >= 3 and args[:3] == ["api", "--method", "GET"] and "user/repos" in args:
             print(json.dumps([{"full_name": "demo-labs/atlas"},
                               {"full_name": "demo-labs/mobile"}]))
+        elif (len(args) >= 4 and args[:3] == ["api", "--method", "GET"]
+              and args[3] == "repos/oliver-kriska/prmarmot/releases/latest"):
+            tag = "v99.0.0" if os.environ.get("PRMARMOT_DEMO_UPDATE_AVAILABLE") else "v0.0.0"
+            print(release_line(tag))
         elif len(args) >= 2 and args[:2] == ["api", "graphql"]:
             marker = Path(os.environ["XDG_CONFIG_HOME"]) / "fail-next-graphql"
             if marker.exists():

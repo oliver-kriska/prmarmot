@@ -1,19 +1,19 @@
 #!/bin/sh
-# prboard pre-push hook — the thorough gate CI can't run.
+# PR Marmot pre-push hook — the thorough gate CI can't run.
 #
-# CI only compiles prboard-core (no GPUI/Metal), so app-layer breakage never
+# CI only compiles prmarmot-core (no GPUI/Metal), so app-layer breakage never
 # shows up there. This hook builds and lints the WHOLE workspace including the
 # GPUI app binary, catching it locally before it reaches main. It's slower than
 # pre-commit because it compiles the app — but a push is the right moment to pay
 # for that, and it's the only automated check the app binary ever gets.
 #
-# Skip:  git push --no-verify   |   PRBOARD_SKIP_HOOKS=1 git push …
+# Skip:  git push --no-verify   |   PRMARMOT_SKIP_HOOKS=1 git push …
 # Install: make hooks
 
 set -eu
 
-if [ -n "${PRBOARD_SKIP_HOOKS:-}" ]; then
-  echo "pre-push: skipped (PRBOARD_SKIP_HOOKS set)"
+if [ -n "${PRMARMOT_SKIP_HOOKS:-}" ]; then
+  echo "pre-push: skipped (PRMARMOT_SKIP_HOOKS set)"
   exit 0
 fi
 

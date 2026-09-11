@@ -1,6 +1,6 @@
-# prboard — Project Handoff
+# PR Marmot — Project Handoff
 
-**Working name:** prboard (rename-friendly — see below). **Owner:** Oliver Kriška. **License:** MIT (intended), public, open source. **Platforms:** macOS + Linux. **Created from research on:** 2026-07-24.
+**Name:** PR Marmot (`prmarmot`). **Owner:** Oliver Kriška. **License:** MIT, public, open source. **Platforms:** macOS + Linux. **Created from research on:** 2026-07-24. The project was called `prboard` through v0.5.3; historical entries below retain that name where it records what existed then.
 
 > **Read this first.** It's the executive summary of a research spike for a new project: an open-source **GitHub PR-review dashboard in Rust**. It distills five detailed research files (linked at the bottom) into a recommendation, a risk list, a v1 scope cut, and a build roadmap. A fresh session should be able to start building from this file alone. The deeper docs are there when you need the evidence behind a claim.
 >
@@ -8,7 +8,24 @@
 
 ---
 
-## Current update — 2026-09-08
+## Current update — 2026-09-11
+
+**FACT:** The product identity is now **PR Marmot**: repository
+`oliver-kriska/prmarmot`, binary/package `prmarmot`, core package
+`prmarmot-core`, app `prmarmot.app`, bundle identifier
+`dev.oliverkriska.prmarmot`, environment prefix `PRMARMOT_`, and cask
+`oliver-kriska/tap/prmarmot`. The GitHub repository rename is complete and the
+existing shared Homebrew tap is confirmed. Release credentials remain pending;
+Scribe's GitHub secrets cannot be read back through the API.
+
+**FACT:** macOS release preparation is arm64-only and fail-closed. The manual
+candidate workflow publishes nothing; tag publication requires an exact package
+version match and completes tests, Developer ID signing, notarization acceptance,
+stapling, `codesign`/`spctl` verification, and checksum verification before the
+release is created. The cask is updated afterward without replacing historical
+assets. See `packaging/RELEASING.md`.
+
+### Prior implementation update — 2026-09-08
 
 **FACT:** At Oliver's request, the app now uses published gpui-component **0.6.0**
 with gpui-pre/gpui-pre-platform **0.3.4**, platform bootstrap, component `Root`, and
@@ -39,7 +56,7 @@ establish that the gate passed or unblock the remaining roadmap automatically.
 
 A dashboard of GitHub pull requests you keep open all day. A dense table — PR number/link, draft/ready, CI state, requested reviewers, completed reviews, unresolved-thread count, merge-conflict flag, bug label, linked issue, and a computed **"Note"** saying what to do next / what it's blocked on. **Three views:** (1) all open PRs in a repo with filters; (2) *my authored PRs*, triaged action → awaiting-review → drafts; (3) *my review queue*. **Multiple named tabs**, each a repo or group of repos. **Auto-refresh** (default 5 min). **Read-only + open-in-browser only** — no AI, no reviewer-assignment, no merging in v1. Installable via **Homebrew**.
 
-There is a **working shell prototype** (`~/.claude/skills/pr-board/`) that already does the data + categorization + note logic in one GitHub GraphQL call. **prboard v1 = port that prototype to Rust behind a refreshing UI.** The prototype is the behavioral spec; it's transcribed in full in the data-layer doc.
+There is a **working shell prototype** (`~/.claude/skills/pr-board/`) that already does the data + categorization + note logic in one GitHub GraphQL call. **PR Marmot v1 = port that prototype to Rust behind a refreshing UI.** The prototype is the behavioral spec; it's transcribed in full in the data-layer doc.
 
 ---
 
@@ -96,7 +113,7 @@ There is a **working shell prototype** (`~/.claude/skills/pr-board/`) that alrea
 - Filters (author/CI/review-state/draft/label), client-side, persisted per tab.
 - Full mouse support + keyboard shortcuts (`?` help); open PR / linked issue in browser; copy PR URL.
 - Bounded caches from line one (explicit `MAX_*` + FIFO — the #1 lesson from PRFlow).
-- Config in TOML at `$XDG_CONFIG_HOME/prboard/config.toml`.
+- Config in TOML at `$XDG_CONFIG_HOME/prmarmot/config.toml`.
 - Distribution: macOS signed + notarized `.app` via own brew tap + direct download; Linux tarball / shell installer / brew formula; CI with clippy `-D warnings` (clean first).
 
 **Explicitly NOT in v1:** AI/summaries; reviewer assignment / dismiss / merge / submit-review (any write action beyond open-in-browser); custom keybindings; shell-out custom actions (gh-dash-style); self-updating binary; OAuth Device Flow; homebrew-core; Windows.

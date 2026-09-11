@@ -17,10 +17,12 @@ use gpui::{
     IntoElement, MouseButton, ParentElement, Pixels, Stateful, StatefulInteractiveElement, Styled,
     Window,
 };
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme};
-use prboard_core::board::{Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use prmarmot_core::board::{Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use std::collections::HashSet;
 
 use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 
@@ -64,7 +66,7 @@ impl TableWidthClass {
 }
 
 // Bounded fixed-column widths (px). Title and Note share the elastic remainder.
-const PR_W: f32 = 92.0;
+const PR_W: f32 = 116.0;
 const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 52.0;
 const LABELS_W: f32 = 96.0;
@@ -72,6 +74,8 @@ const REVIEW_W_COMPACT: f32 = 160.0;
 const REVIEW_W: f32 = 190.0;
 const AUTHOR_W_COMPACT: f32 = 96.0;
 const AUTHOR_W: f32 = 116.0;
+const REPO_W_COMPACT: f32 = 120.0;
+const REPO_W: f32 = 168.0;
 /// Title and Note never shrink below these; at the 900px floor the total still
 /// fits without pushing Note offscreen.
 const TITLE_MIN: f32 = 240.0;
@@ -157,21 +161,46 @@ fn elide(window: &mut Window, text: &str, max_width: Pixels) -> String {
 /// bounded widths; Title and Note split the remaining viewport with Note kept
 /// at least as wide as Title. Labels drop out in Compact. Pure — no GPUI
 /// context — so the layout is unit-tested directly.
-pub fn columns_for(mode: Mode, class: TableWidthClass, viewport_width: f32) -> Vec<Column> {
+pub fn columns_for(
+    mode: Mode,
+    class: TableWidthClass,
+    viewport_width: f32,
+    all_repos: bool,
+) -> Vec<Column> {
     let compact = class == TableWidthClass::Compact;
     let show_labels = !compact;
     let review_w = if compact { REVIEW_W_COMPACT } else { REVIEW_W };
     let author_w = if compact { AUTHOR_W_COMPACT } else { AUTHOR_W };
     let labels_w = if show_labels { LABELS_W } else { 0.0 };
+    let repo_w = if all_repos {
+        if compact {
+            REPO_W_COMPACT
+        } else {
+            REPO_W
+        }
+    } else {
+        0.0
+    };
 
     let fixed_sum = match mode {
-        Mode::Authored => PR_W + CI_W + review_w + labels_w,
-        Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w,
+        Mode::Authored => PR_W + CI_W + review_w + labels_w + repo_w,
+        Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w + repo_w,
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
-    let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(TITLE_MIN + NOTE_MIN);
-    let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM).max(TITLE_MIN);
-    let note_w = (flexible - title_w).max(NOTE_MIN);
+    let title_min = if all_repos && compact {
+        // Reserve room for the always-visible watch control at the 900px floor.
+        168.0
+    } else {
+        TITLE_MIN
+    };
+    let note_min = if all_repos && compact {
+        224.0
+    } else {
+        NOTE_MIN
+    };
+    let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(title_min + note_min);
+    let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM).max(title_min);
+    let note_w = (flexible - title_w).max(note_min);
     if note_w < title_w {
         // Never let Title out-grow Note — Note is the product.
         title_w = note_w;
@@ -180,12 +209,15 @@ pub fn columns_for(mode: Mode, class: TableWidthClass, viewport_width: f32) -> V
     let col = |key: &'static str, name: &'static str, w: f32| Column::new(key, name).width(px(w));
     match mode {
         Mode::Authored => {
-            let mut cols = vec![
-                col("pr", "PR", PR_W),
+            let mut cols = vec![col("pr", "PR", PR_W)];
+            if all_repos {
+                cols.push(col("repo", "Repo", repo_w));
+            }
+            cols.extend([
                 col("title", "Title", title_w),
                 col("ci", "CI", CI_W),
                 col("review", "Review", review_w),
-            ];
+            ]);
             if show_labels {
                 cols.push(col("labels", "Labels", LABELS_W));
             }
@@ -193,13 +225,16 @@ pub fn columns_for(mode: Mode, class: TableWidthClass, viewport_width: f32) -> V
             cols
         }
         Mode::Review => {
-            let mut cols = vec![
-                col("pr", "PR", PR_W),
+            let mut cols = vec![col("pr", "PR", PR_W)];
+            if all_repos {
+                cols.push(col("repo", "Repo", repo_w));
+            }
+            cols.extend([
                 col("title", "Title", title_w),
                 col("ci", "CI", CI_W),
                 col("author", "Author", author_w),
                 col("unresolved", "Unres", UNRESOLVED_W),
-            ];
+            ]);
             if show_labels {
                 cols.push(col("labels", "Labels", LABELS_W));
             }
@@ -213,8 +248,9 @@ pub fn columns_for(mode: Mode, class: TableWidthClass, viewport_width: f32) -> V
 /// Filtering is local; it must not trigger GitHub requests on each keystroke.
 pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
     let text = format!(
-        "#{} {} {} {} {} {}",
+        "#{} {} {} {} {} {} {}",
         row.number,
+        row.repo,
         row.title,
         row.author.as_deref().unwrap_or_default(),
         row.labels.join(" "),
@@ -289,20 +325,69 @@ pub fn detail_text(row: &BoardRow) -> String {
     lines.join("\n")
 }
 
+#[derive(Clone)]
+pub enum RowAction {
+    Open,
+    Copy(String),
+    Details,
+    Watch,
+    Snooze,
+    CancelSnooze,
+}
+
+pub fn row_copy_items(row: &BoardRow) -> Vec<(&'static str, String)> {
+    vec![
+        ("Copy PR URL", row.url.clone()),
+        ("Copy PR number", format!("#{}", row.number)),
+        ("Copy PR reference", format!("{}#{}", row.repo, row.number)),
+        ("Copy title", row.title.clone()),
+        (
+            "Copy all details",
+            format!(
+                "{}#{} {}\n{}\n\n{}",
+                row.repo,
+                row.number,
+                row.title,
+                row.url,
+                detail_text(row)
+            ),
+        ),
+    ]
+}
+
+type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;
+
 pub struct BoardTableDelegate {
     rows: Vec<BoardRow>,
     display: Vec<DisplayRow>,
     columns: Vec<Column>,
     mode: Mode,
+    all_repos: bool,
+    changed: HashSet<String>,
+    watched: HashSet<String>,
+    snoozed: HashSet<String>,
+    show_snoozed: bool,
+    pub on_row_action: Option<RowActionHandler>,
 }
 
 impl BoardTableDelegate {
-    pub fn new(mode: Mode) -> Self {
+    pub fn new(mode: Mode, all_repos: bool) -> Self {
         Self {
             rows: Vec::new(),
             display: Vec::new(),
-            columns: columns_for(mode, TableWidthClass::Medium, DEFAULT_VIEWPORT_WIDTH),
+            columns: columns_for(
+                mode,
+                TableWidthClass::Medium,
+                DEFAULT_VIEWPORT_WIDTH,
+                all_repos,
+            ),
             mode,
+            all_repos,
+            changed: HashSet::new(),
+            watched: HashSet::new(),
+            snoozed: HashSet::new(),
+            show_snoozed: false,
+            on_row_action: None,
         }
     }
 
@@ -311,6 +396,11 @@ impl BoardTableDelegate {
     /// so it calls `set_columns` right after this.
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
+        self.rebuild_display();
+    }
+
+    pub fn set_scope(&mut self, all_repos: bool) {
+        self.all_repos = all_repos;
         self.rebuild_display();
     }
 
@@ -344,12 +434,32 @@ impl BoardTableDelegate {
         self.rebuild_display();
     }
 
+    pub fn set_attention(
+        &mut self,
+        changed: HashSet<String>,
+        watched: HashSet<String>,
+        snoozed: HashSet<String>,
+        show_snoozed: bool,
+    ) {
+        self.changed = changed;
+        self.watched = watched;
+        self.snoozed = snoozed;
+        self.show_snoozed = show_snoozed;
+        self.rebuild_display();
+    }
+
     /// Split approved authored PRs out of Await without changing core categories
     /// or row identities. Prioritize approved Action rows, keeping stack layers
     /// together in dependency order and otherwise preserving stable ordering.
     fn rebuild_display(&mut self) {
-        let mut display = Vec::with_capacity(self.rows.len() + 3);
+        let mut display = Vec::with_capacity(self.rows.len() + 4);
         let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        let snoozed_order: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&ix| self.snoozed.contains(&self.rows[ix].id))
+            .collect();
+        order.retain(|&ix| !self.snoozed.contains(&self.rows[ix].id));
         order.sort_by_key(|&ix| {
             let row = &self.rows[ix];
             let section = match row.category {
@@ -380,7 +490,7 @@ impl BoardTableDelegate {
                 label: if approved {
                     "Approved"
                 } else {
-                    group_label(self.mode, cat)
+                    group_label(self.mode, cat, self.all_repos)
                 }
                 .into(),
                 count: Some(i - start),
@@ -389,17 +499,18 @@ impl BoardTableDelegate {
             let mut emitted = std::collections::HashSet::new();
             for &j in &order[start..i] {
                 if let Some(stack) = &self.rows[j].stack {
-                    if !emitted.insert(stack.number) {
+                    if !emitted.insert((&self.rows[j].repo, stack.number)) {
                         continue;
                     }
                     let mut members: Vec<usize> = order[start..i]
                         .iter()
                         .copied()
                         .filter(|&k| {
-                            self.rows[k]
-                                .stack
-                                .as_ref()
-                                .is_some_and(|s| s.number == stack.number)
+                            self.rows[k].repo == self.rows[j].repo
+                                && self.rows[k]
+                                    .stack
+                                    .as_ref()
+                                    .is_some_and(|s| s.number == stack.number)
                         })
                         .collect();
                     members.sort_by_key(|&k| {
@@ -410,7 +521,11 @@ impl BoardTableDelegate {
                             .unwrap_or(u64::MAX)
                     });
                     display.push(DisplayRow::Header {
-                        label: format!("Stack #{}", stack.number),
+                        label: if self.all_repos {
+                            format!("{} · Stack #{}", self.rows[j].repo, stack.number)
+                        } else {
+                            format!("Stack #{}", stack.number)
+                        },
                         count: None,
                         detail: Some(if members.len() as u64 == stack.size {
                             format!("{} layers", stack.size)
@@ -422,6 +537,20 @@ impl BoardTableDelegate {
                 } else {
                     display.push(DisplayRow::Pr(j));
                 }
+            }
+        }
+        if !snoozed_order.is_empty() {
+            display.push(DisplayRow::Header {
+                label: "Snoozed".into(),
+                count: Some(snoozed_order.len()),
+                detail: Some(if self.show_snoozed {
+                    "shown · use Snoozed to collapse".into()
+                } else {
+                    "collapsed · use Snoozed to show".into()
+                }),
+            });
+            if self.show_snoozed {
+                display.extend(snoozed_order.into_iter().map(DisplayRow::Pr));
             }
         }
         self.display = display;
@@ -436,12 +565,19 @@ impl BoardTableDelegate {
     /// End the tree at the visible section boundary, even if other layers
     /// exist elsewhere. Standalone rows must never look like stack children.
     fn stack_ends_at(&self, display_ix: usize) -> bool {
-        let Some(stack) = self.row(display_ix).and_then(|row| row.stack.as_ref()) else {
+        let Some(row) = self.row(display_ix) else {
             return false;
         };
-        self.row(display_ix + 1)
-            .and_then(|row| row.stack.as_ref())
-            .is_none_or(|next| next.number != stack.number)
+        let Some(stack) = &row.stack else {
+            return false;
+        };
+        self.row(display_ix + 1).is_none_or(|next| {
+            next.repo != row.repo
+                || next
+                    .stack
+                    .as_ref()
+                    .is_none_or(|next_stack| next_stack.number != stack.number)
+        })
     }
 
     /// The `BoardRow` at a display index, or `None` if it is a section header.
@@ -490,14 +626,16 @@ fn review_state_word_aggregate(state: ReviewState) -> &'static str {
 
 /// The section label for a category within a mode. Action/Await differ from
 /// Todo/Done even though they share a sort rank.
-fn group_label(mode: Mode, cat: Category) -> &'static str {
-    match (mode, cat) {
-        (Mode::Authored, Category::Action) => "Needs action",
-        (Mode::Authored, Category::Await) => "Awaiting review",
-        (Mode::Review, Category::Todo) => "Requested from you",
-        (Mode::Review, Category::Available) => "Available to review · no reviewer requested",
-        (Mode::Review, Category::Done) => "Reviewed",
-        (_, Category::Draft) => "Drafts",
+fn group_label(mode: Mode, cat: Category, all_repos: bool) -> &'static str {
+    match (mode, cat, all_repos) {
+        (Mode::Authored, Category::Action, true) => "Needs attention",
+        (Mode::Authored, Category::Await, true) => "In progress",
+        (Mode::Authored, Category::Action, false) => "Needs action",
+        (Mode::Authored, Category::Await, false) => "Awaiting review",
+        (Mode::Review, Category::Todo, _) => "Requested from you",
+        (Mode::Review, Category::Available, _) => "Available to review · no reviewer requested",
+        (Mode::Review, Category::Done, _) => "Reviewed",
+        (_, Category::Draft, _) => "Drafts",
         // Unreachable pairings (Action in Review etc.) — a calm fallback.
         _ => "Other",
     }
@@ -551,7 +689,7 @@ fn review_state_word(state: &str) -> &'static str {
 
 /// The visual tone of a Note cell: it picks the dot color and whether the
 /// primary phrase is alarm-colored. Severity is a *presentation* concern and
-/// lives here, never in core (`prboard_core::board::Blocker` carries only
+/// lives here, never in core (`prmarmot_core::board::Blocker` carries only
 /// facts). See the rendering rules in the note-hierarchy plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoteTone {
@@ -730,6 +868,53 @@ fn note_presentation(row: &BoardRow) -> NotePresentation {
 }
 
 impl TableDelegate for BoardTableDelegate {
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        mut menu: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(row) = self.row(row_ix).cloned() else {
+            return menu;
+        };
+        let Some(handler) = self.on_row_action.clone() else {
+            return menu;
+        };
+        let mut actions = vec![
+            ("Open on GitHub", RowAction::Open),
+            ("Show details", RowAction::Details),
+        ];
+        actions.extend(
+            row_copy_items(&row)
+                .into_iter()
+                .map(|(label, value)| (label, RowAction::Copy(value))),
+        );
+        actions.push((
+            if self.watched.contains(&row.id) {
+                "Unwatch PR"
+            } else {
+                "Watch PR"
+            },
+            RowAction::Watch,
+        ));
+        actions.push(("Snooze…", RowAction::Snooze));
+        if self.snoozed.contains(&row.id) {
+            actions.push(("Cancel snooze", RowAction::CancelSnooze));
+        }
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            if index == 2 || index == 7 {
+                menu = menu.separator();
+            }
+            let row = row.clone();
+            let handler = handler.clone();
+            menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                handler(row.clone(), action.clone(), window, cx);
+            }));
+        }
+        menu
+    }
+
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
     }
@@ -866,7 +1051,65 @@ impl TableDelegate for BoardTableDelegate {
                             cx.open_url(&url);
                         }
                     }));
-                let mut cell = h_flex().gap_1().items_center().child(number);
+                let mut cell = h_flex()
+                    .relative()
+                    .w_full()
+                    .h(px(20.))
+                    .pr(px(24.))
+                    .gap_1()
+                    .items_center();
+                if self.changed.contains(&row.id) {
+                    cell = cell.child(status_dot(theme.link));
+                }
+                cell = cell.child(number);
+                if let Some(handler) = self.on_row_action.clone() {
+                    let watched = self.watched.contains(&row.id);
+                    let watched_row = row.clone();
+                    cell = cell.child(
+                        div()
+                            .id(("watch-pr", row_ix))
+                            .absolute()
+                            .right_0()
+                            .top_0()
+                            .flex_shrink_0()
+                            .size(px(20.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_color(if watched {
+                                theme.foreground
+                            } else {
+                                theme.muted_foreground.opacity(0.55)
+                            })
+                            .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
+                            .child(
+                                gpui::svg()
+                                    .path("icons/binoculars.svg")
+                                    .size(px(15.))
+                                    .text_color(if watched {
+                                        theme.foreground
+                                    } else {
+                                        theme.muted_foreground.opacity(0.55)
+                                    }),
+                            )
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(if watched {
+                                    "Unwatch PR · w"
+                                } else {
+                                    "Watch PR · w"
+                                })
+                                .build(window, cx)
+                            })
+                            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                                cx.stop_propagation();
+                                if event.click_count == 1 {
+                                    handler(watched_row.clone(), RowAction::Watch, window, cx);
+                                }
+                            })
+                            .on_click(|_, _, cx| cx.stop_propagation()),
+                    );
+                }
                 if row.draft {
                     cell = cell.child(
                         div()
@@ -959,6 +1202,7 @@ impl TableDelegate for BoardTableDelegate {
                     .child(div().text_color(muted).child("running")),
                 Ci::None => h_flex().child(div().text_color(muted.opacity(0.5)).child("—")),
             },
+            "repo" => div().text_color(muted).child(row.repo.clone()),
             "author" => div().child(row.author.clone().unwrap_or_else(|| "?".into())),
             "unresolved" => {
                 if row.unresolved > 0 {
@@ -1230,6 +1474,7 @@ impl TableDelegate for BoardTableDelegate {
         // PRs. Text only — the default empty view pulls an SVG from an asset
         // bundle this app does not ship.
         let msg = match self.mode {
+            Mode::Authored if self.all_repos => "No open pull requests involve you",
             Mode::Authored => "You have no open PRs",
             Mode::Review => "No requested or available reviews in this result set",
         };
@@ -1249,8 +1494,28 @@ mod tests {
     //! fast core-only `make check`.
     use super::*;
 
+    #[test]
+    fn copied_reference_distinguishes_same_number_in_different_repositories() {
+        let first = row(418, Category::Action);
+        let mut second = first.clone();
+        second.repo = "other/mobile".into();
+        second.url = "https://github.com/other/mobile/pull/418".into();
+        let copies = row_copy_items(&second);
+        assert_eq!(copies[0].1, "https://github.com/other/mobile/pull/418");
+        assert_eq!(copies[1].1, "#418");
+        assert_eq!(copies[2].1, "other/mobile#418");
+        assert_ne!(row_copy_items(&first)[2].1, copies[2].1);
+        assert!(copies[4].1.starts_with("other/mobile#418 "));
+    }
+
     fn row(number: u64, category: Category) -> BoardRow {
         BoardRow {
+            id: format!("https://github.com/acme/widgets/pull/{number}"),
+            repo: "acme/widgets".into(),
+            updated_at: None,
+            head_oid: None,
+            reviewed_oid: None,
+            reviewed_at: None,
             number,
             url: format!("https://github.com/acme/widgets/pull/{number}"),
             title: format!("PR {number}"),
@@ -1416,8 +1681,47 @@ mod tests {
     }
 
     #[test]
+    fn stacks_with_the_same_number_in_different_repositories_stay_separate() {
+        let mut a = row(42, Category::Action);
+        a.stack = Some(prmarmot_core::board::StackInfo {
+            number: 7,
+            size: 1,
+            base_ref_name: "main".into(),
+            position: Some(1),
+        });
+        let mut b = a.clone();
+        b.repo = "other/widgets".into();
+        b.url = "https://github.com/other/widgets/pull/42".into();
+        b.id = b.url.clone();
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![a, b]);
+        let identities: Vec<_> = (0..d.display_len())
+            .filter_map(|i| d.row(i))
+            .map(|r| r.repo.as_str())
+            .collect();
+        assert_eq!(identities, ["acme/widgets", "other/widgets"]);
+        assert_eq!(d.display_len(), 5); // category + two stack headers + two PRs
+        assert!(d.stack_ends_at(2));
+        assert!(d.stack_ends_at(4));
+        assert_eq!(
+            d.display_index_of_url("https://github.com/other/widgets/pull/42"),
+            Some(4)
+        );
+
+        d.set_scope(true);
+        assert!(matches!(
+            &d.display[1],
+            DisplayRow::Header { label, .. } if label == "acme/widgets · Stack #7"
+        ));
+        assert!(matches!(
+            &d.display[3],
+            DisplayRow::Header { label, .. } if label == "other/widgets · Stack #7"
+        ));
+    }
+
+    #[test]
     fn headers_group_contiguous_categories_with_counts() {
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![
             row(1, Category::Action),
             row(2, Category::Action),
@@ -1439,13 +1743,36 @@ mod tests {
     }
 
     #[test]
+    fn snoozed_rows_are_collapsed_until_explicitly_shown() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        delegate.set_rows(vec![row(1, Category::Action), row(2, Category::Await)]);
+        delegate.set_attention(
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
+            false,
+        );
+        assert!(delegate
+            .display_index_of_url("https://github.com/acme/widgets/pull/1")
+            .is_none());
+        assert!(delegate
+            .display_index_of_url("https://github.com/acme/widgets/pull/2")
+            .is_some());
+        delegate.show_snoozed = true;
+        delegate.rebuild_display();
+        assert!(delegate
+            .display_index_of_url("https://github.com/acme/widgets/pull/1")
+            .is_some());
+    }
+
+    #[test]
     fn approved_section_separates_interleaved_approvals_but_keeps_blockers_and_drafts() {
         let approved = |number, category| {
             let mut r = row(number, category);
             r.review_state = ReviewState::Approved;
             r
         };
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![
             approved(10, Category::Action),
             row(20, Category::Await),
@@ -1482,7 +1809,7 @@ mod tests {
             30
         );
 
-        let mut review = BoardTableDelegate::new(Mode::Review);
+        let mut review = BoardTableDelegate::new(Mode::Review, false);
         review.set_rows(vec![approved(30, Category::Done)]);
         assert!(
             matches!(&review.display[0], DisplayRow::Header { label, .. } if label == "Reviewed")
@@ -1505,7 +1832,7 @@ mod tests {
             row(3, Category::Action),
             conflict,
         ];
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(rows.clone());
         assert!(
             matches!(&d.display[0], DisplayRow::Header { label, count, .. }
@@ -1521,7 +1848,7 @@ mod tests {
         assert_eq!(d.row(2).unwrap().blockers, rows[3].blockers);
         assert_eq!(d.display_index_of_url(&rows[0].url), Some(3));
 
-        let mut review = BoardTableDelegate::new(Mode::Review);
+        let mut review = BoardTableDelegate::new(Mode::Review, false);
         review.set_rows(
             rows.into_iter()
                 .map(|mut r| {
@@ -1541,7 +1868,7 @@ mod tests {
     #[test]
     fn approved_action_promotes_its_stack_but_preserves_layer_order() {
         let mut base = row(2, Category::Action);
-        base.stack = Some(prboard_core::board::StackInfo {
+        base.stack = Some(prmarmot_core::board::StackInfo {
             number: 70,
             size: 2,
             base_ref_name: "main".into(),
@@ -1549,11 +1876,11 @@ mod tests {
         });
         let mut top = row(4, Category::Action);
         top.review_state = ReviewState::Approved;
-        top.stack = Some(prboard_core::board::StackInfo {
+        top.stack = Some(prmarmot_core::board::StackInfo {
             position: Some(2),
             ..base.stack.clone().unwrap()
         });
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![
             row(1, Category::Action),
             base,
@@ -1571,7 +1898,7 @@ mod tests {
 
     #[test]
     fn empty_groups_emit_no_header() {
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![row(1, Category::Await)]);
         // Only "Awaiting review" — no empty Action/Draft headers.
         assert_eq!(d.display_len(), 2);
@@ -1582,7 +1909,7 @@ mod tests {
     fn stacks_keep_layer_order_without_mixing_action_sections() {
         let stacked = |number, position, category| {
             let mut r = row(number, category);
-            r.stack = Some(prboard_core::board::StackInfo {
+            r.stack = Some(prmarmot_core::board::StackInfo {
                 number: 70,
                 size: 3,
                 base_ref_name: "main".into(),
@@ -1590,7 +1917,7 @@ mod tests {
             });
             r
         };
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![
             stacked(9, 3, Category::Action),
             row(8, Category::Action),
@@ -1637,7 +1964,7 @@ mod tests {
         ] {
             let mut upper = row(42, category);
             upper.labels = vec!["backend".into(), "bug".into()];
-            upper.stack = Some(prboard_core::board::StackInfo {
+            upper.stack = Some(prmarmot_core::board::StackInfo {
                 number: 70,
                 size: 3,
                 base_ref_name: "main".into(),
@@ -1645,11 +1972,11 @@ mod tests {
             });
             let mut lower = row(57, category);
             lower.labels = vec!["frontend".into()];
-            lower.stack = Some(prboard_core::board::StackInfo {
+            lower.stack = Some(prmarmot_core::board::StackInfo {
                 position: Some(1),
                 ..upper.stack.clone().unwrap()
             });
-            let mut d = BoardTableDelegate::new(mode);
+            let mut d = BoardTableDelegate::new(mode, false);
             d.set_rows(vec![upper, lower]);
             // Layer order must win over input order and PR-number order.
             assert_eq!(d.row(2).unwrap().number, 57);
@@ -1671,8 +1998,8 @@ mod tests {
     #[test]
     fn available_reviews_have_a_distinct_section_and_calm_note() {
         assert_ne!(
-            group_label(Mode::Review, Category::Todo),
-            group_label(Mode::Review, Category::Available)
+            group_label(Mode::Review, Category::Todo, false),
+            group_label(Mode::Review, Category::Available, false)
         );
         let mut r = row(1, Category::Available);
         r.note = "available for review".into();
@@ -1695,11 +2022,12 @@ mod tests {
     fn details_include_unelided_notes_and_deleted_reviewers() {
         let mut r = row(42, Category::Action);
         r.note = "merge conflict — rebase · CI failing · 3 unresolved".into();
-        r.reviews = vec![prboard_core::board::ReviewSummary {
+        r.reviews = vec![prmarmot_core::board::ReviewSummary {
             login: None,
             state: "APPROVED".into(),
+            submitted_at: None,
         }];
-        r.stack = Some(prboard_core::board::StackInfo {
+        r.stack = Some(prmarmot_core::board::StackInfo {
             number: 50,
             size: 3,
             position: Some(2),
@@ -1713,7 +2041,7 @@ mod tests {
 
     #[test]
     fn selection_resolves_by_url_across_reorder() {
-        let mut d = BoardTableDelegate::new(Mode::Authored);
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![row(1, Category::Action), row(2, Category::Action)]);
         let url2 = "https://github.com/acme/widgets/pull/2";
         let ix = d.display_index_of_url(url2).unwrap();
@@ -1772,7 +2100,7 @@ mod tests {
         for &w in &[900.0_f32, 1100.0, 1440.0, 1920.0] {
             let class = TableWidthClass::from_width(w);
             for mode in [Mode::Authored, Mode::Review] {
-                let cols = columns_for(mode, class, w);
+                let cols = columns_for(mode, class, w, false);
                 // Column widths + scrollbar margin must stay within the viewport;
                 // Note is last, so overflow would push it offscreen.
                 assert!(
@@ -1789,20 +2117,22 @@ mod tests {
         for mode in [Mode::Authored, Mode::Review] {
             assert!(
                 width_of(
-                    &columns_for(mode, TableWidthClass::Compact, 1000.0),
+                    &columns_for(mode, TableWidthClass::Compact, 1000.0, false),
                     "labels"
                 )
                 .is_none(),
                 "{mode:?}: Labels should drop in Compact"
             );
             assert!(width_of(
-                &columns_for(mode, TableWidthClass::Medium, 1200.0),
+                &columns_for(mode, TableWidthClass::Medium, 1200.0, false),
                 "labels"
             )
             .is_some());
-            assert!(
-                width_of(&columns_for(mode, TableWidthClass::Wide, 1440.0), "labels").is_some()
-            );
+            assert!(width_of(
+                &columns_for(mode, TableWidthClass::Wide, 1440.0, false),
+                "labels"
+            )
+            .is_some());
         }
     }
 
@@ -1816,7 +2146,7 @@ mod tests {
         };
         for &class in &ALL_CLASSES {
             for mode in [Mode::Authored, Mode::Review] {
-                let cols = columns_for(mode, class, 900.0);
+                let cols = columns_for(mode, class, 900.0, false);
                 for key in required(mode) {
                     assert!(
                         width_of(&cols, key).is_some(),
@@ -1832,7 +2162,7 @@ mod tests {
         for &w in &[900.0_f32, 1000.0, 1120.0, 1200.0, 1360.0, 1440.0, 1920.0] {
             let class = TableWidthClass::from_width(w);
             for mode in [Mode::Authored, Mode::Review] {
-                let cols = columns_for(mode, class, w);
+                let cols = columns_for(mode, class, w, false);
                 let title = width_of(&cols, "title").unwrap();
                 let note = width_of(&cols, "note").unwrap();
                 assert!(
@@ -1847,8 +2177,13 @@ mod tests {
 
     #[test]
     fn manual_widths_apply_only_when_count_matches() {
-        let mut d = BoardTableDelegate::new(Mode::Authored);
-        d.set_columns(columns_for(Mode::Authored, TableWidthClass::Wide, 1440.0));
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_columns(columns_for(
+            Mode::Authored,
+            TableWidthClass::Wide,
+            1440.0,
+            false,
+        ));
         let n = d.column_widths().len();
 
         // A width vector of the wrong length (a mode-switch race) is rejected.
@@ -1863,22 +2198,41 @@ mod tests {
     }
 
     #[test]
+    fn all_repositories_adds_repo_without_hiding_note_at_minimum_width() {
+        for mode in [Mode::Authored, Mode::Review] {
+            let cols = columns_for(mode, TableWidthClass::Compact, 900.0, true);
+            assert!(width_of(&cols, "repo").is_some());
+            assert!(width_of(&cols, "note").unwrap() >= 224.0);
+            assert!(total_width(&cols) + SCROLLBAR_MARGIN <= 900.0 + 1.0);
+        }
+    }
+
+    #[test]
     fn override_storage_is_bounded_and_independent() {
         use std::collections::HashMap;
-        let mut overrides: HashMap<(Mode, TableWidthClass), Vec<Pixels>> = HashMap::new();
+        let mut overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>> = HashMap::new();
         for mode in [Mode::Authored, Mode::Review] {
             for &class in &ALL_CLASSES {
-                overrides.insert((mode, class), vec![px(mode as u8 as f32), px(1.0)]);
+                for all_repos in [false, true] {
+                    overrides.insert(
+                        (mode, class, all_repos),
+                        vec![px(mode as u8 as f32), px(1.0)],
+                    );
+                }
             }
         }
-        // 2 modes × 3 classes — the map can never hold more.
-        assert_eq!(overrides.len(), 6);
-        overrides.insert((Mode::Authored, TableWidthClass::Wide), vec![px(9.0)]);
-        assert_eq!(overrides.len(), 6);
-        // Each (mode, class) layout is stored independently.
+        // 2 modes × 3 classes × 2 scopes — the map can never hold more.
+        assert_eq!(overrides.len(), 12);
+        overrides.insert((Mode::Authored, TableWidthClass::Wide, true), vec![px(9.0)]);
+        assert_eq!(overrides.len(), 12);
+        // Each (mode, class, scope) layout is stored independently.
         assert_ne!(
-            overrides[&(Mode::Authored, TableWidthClass::Compact)],
-            overrides[&(Mode::Review, TableWidthClass::Compact)]
+            overrides[&(Mode::Authored, TableWidthClass::Compact, false)],
+            overrides[&(Mode::Review, TableWidthClass::Compact, false)]
+        );
+        assert_ne!(
+            overrides[&(Mode::Authored, TableWidthClass::Wide, false)],
+            overrides[&(Mode::Authored, TableWidthClass::Wide, true)]
         );
     }
 }

@@ -58,6 +58,24 @@ pub trait GithubTransport: Send + Sync {
         query: &str,
         variables: &[(&str, &str)],
     ) -> Result<serde_json::Value, GhError>;
+
+    /// Execute one operation with an additional bounded `[ID!]!` variable.
+    /// The default keeps test/custom transports source-compatible when no ids
+    /// are requested; production `gh` uses typed `-F tracked[]=...` fields.
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+        ids: &[String],
+    ) -> Result<serde_json::Value, GhError> {
+        if ids.is_empty() {
+            self.graphql(query, variables)
+        } else {
+            Err(GhError::Parse(
+                "transport does not support batched node ids".into(),
+            ))
+        }
+    }
 }
 
 /// Where the API token comes from. The v1 `GhCliTransport` never touches a

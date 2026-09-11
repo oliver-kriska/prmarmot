@@ -10,7 +10,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IconName, Selectable, Sizable, WindowExt,
 };
-use prboard_core::board::IssueLinkRule;
+use prmarmot_core::board::IssueLinkRule;
 
 use crate::config::{self, SettingsUpdate};
 use crate::theme::ThemePref;
@@ -30,16 +30,16 @@ struct EnvOverrides {
 
 impl EnvOverrides {
     fn current() -> Self {
-        let reviewers = std::env::var("PRBOARD_DEFAULT_REVIEWERS")
+        let reviewers = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
             .ok()
             .filter(|value| !value.is_empty());
-        let refresh = std::env::var("PRBOARD_REFRESH_SECS")
+        let refresh = std::env::var("PRMARMOT_REFRESH_SECS")
             .ok()
             .and_then(|value| value.parse().ok());
-        let theme = std::env::var("PRBOARD_THEME").ok();
+        let theme = std::env::var("PRMARMOT_THEME").ok();
         let issue_link = match (
-            std::env::var("PRBOARD_ISSUE_PATTERN"),
-            std::env::var("PRBOARD_ISSUE_URL_TEMPLATE"),
+            std::env::var("PRMARMOT_ISSUE_PATTERN"),
+            std::env::var("PRMARMOT_ISSUE_URL_TEMPLATE"),
         ) {
             (Ok(pattern), Ok(template)) => Some((pattern, template)),
             _ => None,
@@ -59,6 +59,11 @@ pub struct SettingsView {
     issue_pattern: Entity<InputState>,
     issue_url: Entity<InputState>,
     theme: ThemePref,
+    notifications: bool,
+    notification_sound: bool,
+    notify_all_needs_action: bool,
+    dock_badge: bool,
+    automatic_update_checks: bool,
     advanced: bool,
     error: Option<String>,
     error_field: Option<&'static str>,
@@ -104,6 +109,11 @@ impl SettingsView {
                     .default_value(url)
             }),
             theme,
+            notifications: file.notifications,
+            notification_sound: file.notification_sound,
+            notify_all_needs_action: file.notify_all_needs_action,
+            dock_badge: file.dock_badge,
+            automatic_update_checks: file.automatic_update_checks,
             advanced: false,
             error: None,
             error_field: None,
@@ -178,6 +188,11 @@ impl SettingsView {
                 .is_none()
                 .then(|| self.theme.label().to_owned()),
             issue_link: self.env.issue_link.is_none().then_some(issue_link),
+            notifications: Some(self.notifications),
+            notification_sound: Some(self.notification_sound),
+            notify_all_needs_action: Some(self.notify_all_needs_action),
+            dock_badge: Some(self.dock_badge),
+            automatic_update_checks: Some(self.automatic_update_checks),
         };
         match config::save_settings(&update) {
             Ok(()) => {
@@ -274,7 +289,7 @@ impl Render for SettingsView {
             .env
             .issue_link
             .as_ref()
-            .map(|_| "PRBOARD_ISSUE_PATTERN + PRBOARD_ISSUE_URL_TEMPLATE");
+            .map(|_| "PRMARMOT_ISSUE_PATTERN + PRMARMOT_ISSUE_URL_TEMPLATE");
         v_flex()
             .max_h((window.viewport_size().height - px(190.)).min(px(500.)))
             .text_size(px(13.))
@@ -293,7 +308,7 @@ impl Render for SettingsView {
                             self.env
                                 .reviewers
                                 .as_ref()
-                                .map(|_| "PRBOARD_DEFAULT_REVIEWERS"),
+                                .map(|_| "PRMARMOT_DEFAULT_REVIEWERS"),
                             cx,
                         ),
                     )
@@ -302,7 +317,7 @@ impl Render for SettingsView {
                     .child(self.field(
                         "Refresh interval",
                         &self.refresh,
-                        self.env.refresh.map(|_| "PRBOARD_REFRESH_SECS"),
+                        self.env.refresh.map(|_| "PRMARMOT_REFRESH_SECS"),
                         cx,
                     ))
                     .child(
@@ -315,7 +330,7 @@ impl Render for SettingsView {
                                         div()
                                             .text_size(px(11.))
                                             .text_color(cx.theme().muted_foreground)
-                                            .child("Controlled by PRBOARD_THEME"),
+                                            .child("Controlled by PRMARMOT_THEME"),
                                     )
                                 },
                             ))
@@ -350,6 +365,68 @@ impl Render for SettingsView {
                             ),
                     )
                     .child(
+                        h_flex()
+                            .justify_between()
+                            .child("Desktop notifications")
+                            .child(
+                                Button::new("settings-notifications")
+                                    .small()
+                                    .selected(self.notifications)
+                                    .label(if self.notifications { "On" } else { "Off" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.notifications = !this.notifications;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child("Notification sound")
+                            .child(
+                                Button::new("settings-notification-sound")
+                                    .small()
+                                    .disabled(!self.notifications)
+                                    .selected(self.notification_sound)
+                                    .label(if self.notification_sound { "On" } else { "Off" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.notification_sound = !this.notification_sound;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child("Dock attention badge")
+                            .child(
+                                Button::new("settings-dock-badge")
+                                    .small()
+                                    .selected(self.dock_badge)
+                                    .label(if self.dock_badge { "On" } else { "Off" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dock_badge = !this.dock_badge;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child("Check for updates automatically")
+                            .child(
+                                Button::new("settings-automatic-update-checks")
+                                    .small()
+                                    .selected(self.automatic_update_checks)
+                                    .label(if self.automatic_update_checks { "On" } else { "Off" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.automatic_update_checks =
+                                            !this.automatic_update_checks;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
                         h_flex().child(Button::new("settings-advanced")
                             .small()
                             .ghost()
@@ -365,7 +442,29 @@ impl Render for SettingsView {
                             }))),
                     )
                     .when(self.advanced, |form| {
-                        form.child(self.field(
+                        form.child(
+                            h_flex()
+                                .justify_between()
+                                .child("Notify for every PR entering Needs action")
+                                .child(
+                                    Button::new("settings-notify-all")
+                                        .small()
+                                        .selected(self.notify_all_needs_action)
+                                        .label(if self.notify_all_needs_action {
+                                            "On"
+                                        } else {
+                                            "Off"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.notify_all_needs_action =
+                                                !this.notify_all_needs_action;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                                .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                                    .child("Off by default. Watches remain independent."))
+                                .child(self.field(
                                     "Issue ID regular expression",
                                     &self.issue_pattern,
                                     issue_env,

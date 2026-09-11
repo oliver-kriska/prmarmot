@@ -1,10 +1,10 @@
 [package]
-name = "prboard-core"
+name = "prmarmot-core"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-description = "Framework-independent core for prboard: GitHub transport, categorization, note logic"
+description = "Framework-independent core for PR Marmot: GitHub transport, categorization, note logic"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

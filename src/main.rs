@@ -1,27 +1,35 @@
-//! prboard — a GitHub PR review dashboard as a native desktop app.
+//! PR Marmot — a GitHub PR review dashboard as a native desktop app.
 //! Step-0 walking skeleton: one window, one repo, the authored view.
 
 mod app;
 mod assets;
+mod attention_state;
 mod config;
 mod design;
+mod notification_help;
+mod platform;
 mod settings;
 mod state;
 mod table;
 mod theme;
+pub mod updates;
 
 use std::sync::Arc;
 
 use gpui::{
     px, size, App, AppContext, KeyBinding, Menu, MenuItem, WindowBounds, WindowKind, WindowOptions,
 };
-use prboard_core::board::{BoardConfig, IssueLinkRule, Mode};
-use prboard_core::github::gh_cli::{current_login, detect_repo, GhCliTransport};
+use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule, Mode};
+use prmarmot_core::github::gh_cli::GhCliTransport;
 
 use crate::app::RootView;
-use crate::state::AppState;
+use crate::state::{AppState, AttentionPreferences, GhLoginResolver};
 
-gpui::actions!(prboard, [Quit]);
+const RELEASE_REPO: &str = "oliver-kriska/prmarmot";
+const CASK_TOKEN: &str = "prmarmot";
+const APPLICATION_NAME: &str = "prmarmot";
+
+gpui::actions!(prmarmot, [Quit]);
 
 fn install_app_menu(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(
@@ -41,42 +49,55 @@ fn install_app_menu(cx: &mut App) {
         cx.quit();
     });
     cx.set_menus(vec![Menu {
-        name: "prboard".into(),
-        items: vec![MenuItem::action("Quit prboard", Quit)],
+        name: "PR Marmot".into(),
+        items: vec![MenuItem::action("Quit PR Marmot", Quit)],
         disabled: false,
     }]);
 }
 
-const USAGE: &str = "usage: prboard [--repo owner/name] [--review]
+const USAGE: &str = "usage: prmarmot [--repo owner/name | --all-repos] [--review]
 
-Repo resolution: --repo, else $PRBOARD_REPO, else `repo` in
-~/.config/prboard/config.toml, else the git remote of the current directory
-(via `gh repo view`). Requires an authenticated `gh`.
+Scope resolution: CLI, then $PRMARMOT_REPO/$PRMARMOT_SCOPE, then `scope` + `repo`
+in ~/.config/prmarmot/config.toml. A clean config opens All repositories.
+Authentication is checked inside the window; setup failures are retryable.
 
-Config file (~/.config/prboard/config.toml): repo, repos = [..] for the
+Config file (~/.config/prmarmot/config.toml): repo, repos = [..] for the
 repo picker, refresh_secs, theme, view, default_reviewers, [issue_link],
-[window]. Repo/theme/view/window-size changes made in-app are saved back.
+[window], automatic_update_checks. Repo/theme/view/window-size changes made
+in-app are saved back.
 Env vars override the file:
-  PRBOARD_REPO                 owner/name
-  PRBOARD_REFRESH_SECS         refresh interval (default 300, floor 30)
-  PRBOARD_THEME                system | light | dark (default system; `t` cycles)
-  PRBOARD_ISSUE_PATTERN        e.g. PROJ-[0-9]+
-  PRBOARD_ISSUE_URL_TEMPLATE   e.g. https://tracker.example.com/issues/{id}
-  PRBOARD_DEFAULT_REVIEWERS    comma-separated logins for the no-reviewer note";
+  PRMARMOT_REPO                owner/name
+  PRMARMOT_SCOPE               all | repo
+  PRMARMOT_REFRESH_SECS        refresh interval (default 300, floor 30)
+  PRMARMOT_THEME               system | light | dark (default system; `t` cycles)
+  PRMARMOT_ISSUE_PATTERN       e.g. PROJ-[0-9]+
+  PRMARMOT_ISSUE_URL_TEMPLATE  e.g. https://tracker.example.com/issues/{id}
+  PRMARMOT_DEFAULT_REVIEWERS   comma-separated logins for the no-reviewer note";
 
-fn parse_args() -> Result<(Option<String>, Option<Mode>), String> {
-    let mut repo = None;
+fn parse_args() -> Result<(Option<BoardScope>, Option<Mode>), String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(
+    args: impl IntoIterator<Item = String>,
+) -> Result<(Option<BoardScope>, Option<Mode>), String> {
+    let mut scope = None;
     let mut mode = None;
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--repo" => repo = Some(args.next().ok_or("--repo needs owner/name")?),
+            "--repo" => {
+                scope = Some(BoardScope::Repository(
+                    args.next().ok_or("--repo needs owner/name")?,
+                ))
+            }
+            "--all-repos" => scope = Some(BoardScope::AllRepositories),
             "--review" => mode = Some(Mode::Review),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown arg: {other}\n\n{USAGE}")),
         }
     }
-    Ok((repo, mode))
+    Ok((scope, mode))
 }
 
 fn board_config(file: &config::FileConfig) -> BoardConfig {
@@ -84,15 +105,15 @@ fn board_config(file: &config::FileConfig) -> BoardConfig {
     if !file.default_reviewers.is_empty() {
         config.default_reviewers = file.default_reviewers.clone();
     }
-    if let Some(reviewers) = std::env::var("PRBOARD_DEFAULT_REVIEWERS")
+    if let Some(reviewers) = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
         .ok()
         .filter(|v| !v.is_empty())
     {
         config.default_reviewers = reviewers.split(',').map(|s| s.trim().to_string()).collect();
     }
     let issue_rule = match (
-        std::env::var("PRBOARD_ISSUE_PATTERN"),
-        std::env::var("PRBOARD_ISSUE_URL_TEMPLATE"),
+        std::env::var("PRMARMOT_ISSUE_PATTERN"),
+        std::env::var("PRMARMOT_ISSUE_URL_TEMPLATE"),
     ) {
         (Ok(pattern), Ok(template)) => Some((pattern, template)),
         _ => file
@@ -103,14 +124,35 @@ fn board_config(file: &config::FileConfig) -> BoardConfig {
     if let Some((pattern, template)) = issue_rule {
         match IssueLinkRule::new(&pattern, &template) {
             Ok(rule) => config.issue_link = Some(rule),
-            Err(e) => eprintln!("prboard: ignoring bad issue-link pattern: {e}"),
+            Err(e) => eprintln!("prmarmot: ignoring bad issue-link pattern: {e}"),
         }
     }
     config
 }
 
 fn main() {
-    let (repo_arg, mode_arg) = match parse_args() {
+    // The staged helper is this same executable. Dispatch its fixed protocol
+    // before normal CLI parsing or any GPUI/platform initialization.
+    match updates::HelperInvocation::parse_cli_args(std::env::args_os().skip(1)) {
+        Ok(Some(invocation)) => {
+            if let Err(error) = updates::run_upgrade_helper(
+                &invocation,
+                &updates::SystemCommandRunner,
+                &updates::SystemParentWaiter,
+            ) {
+                eprintln!("prmarmot update helper: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("prmarmot update helper: {error}");
+            std::process::exit(2);
+        }
+    }
+
+    let (scope_arg, mode_arg) = match parse_args() {
         Ok(parsed) => parsed,
         Err(msg) => {
             eprintln!("{msg}");
@@ -118,6 +160,10 @@ fn main() {
         }
     };
 
+    if let Err(error) = config::migrate_legacy_data() {
+        eprintln!("prmarmot: could not migrate existing data: {error}");
+        std::process::exit(1);
+    }
     let file = config::load();
     // --review > persisted `view` in config > authored.
     let mode = mode_arg.unwrap_or(match file.view.as_deref() {
@@ -125,35 +171,12 @@ fn main() {
         _ => Mode::Authored,
     });
 
-    // Resolve repo + login up front (CLI phase, before any window exists) so
-    // auth/setup problems surface as plain terminal messages.
-    let repo = repo_arg
-        .or_else(|| std::env::var("PRBOARD_REPO").ok().filter(|v| !v.is_empty()))
-        .or_else(|| file.repo.clone())
-        .map(Ok)
-        .unwrap_or_else(|| {
-            detect_repo(&std::env::current_dir().expect("cwd")).map_err(|e| {
-                format!(
-                    "no repo configured and none detectable from the current directory ({e}); \
-                     pass --repo owner/name or set `repo` in {}",
-                    config::config_path().display()
-                )
-            })
-        });
-    let repo = match repo {
-        Ok(repo) => repo,
-        Err(msg) => {
-            eprintln!("prboard: {msg}");
-            std::process::exit(1);
-        }
-    };
-    let me = match current_login() {
-        Ok(login) => login,
-        Err(e) => {
-            eprintln!("prboard: {e}");
-            std::process::exit(1);
-        }
-    };
+    let scope = config::resolve_scope(
+        scope_arg,
+        std::env::var("PRMARMOT_REPO").ok(),
+        std::env::var("PRMARMOT_SCOPE").ok().as_deref(),
+        &file,
+    );
     let config = board_config(&file);
 
     // Repo-picker entries: config list with the active repo always present.
@@ -164,14 +187,26 @@ fn main() {
             repos.push(pin.clone());
         }
     }
-    if !repos.contains(&repo) {
-        repos.insert(0, repo.clone());
+    if let BoardScope::Repository(repo) = &scope {
+        if !repos.contains(repo) {
+            repos.insert(0, repo.clone());
+        }
     }
+    let update_paths = config::update_paths();
     let launch = app::Launch {
         theme: crate::theme::ThemePref::resolve(file.theme.as_deref()),
         refresh: crate::state::refresh_interval(file.refresh_secs),
         repos,
         pinned_repos,
+        automatic_update_checks: file.automatic_update_checks,
+        update_failure: consume_update_failure(&update_paths),
+        update_paths,
+    };
+    let attention_preferences = AttentionPreferences {
+        notifications: file.notifications,
+        notification_sound: file.notification_sound,
+        notify_all_needs_action: file.notify_all_needs_action,
+        dock_badge: file.dock_badge,
     };
     let window_pref = file.window;
 
@@ -196,17 +231,97 @@ fn main() {
                 titlebar: Some(gpui_component::TitleBar::title_bar_options()),
                 window_min_size: Some(size(px(900.), px(560.))),
                 kind: WindowKind::Normal,
-                app_id: Some("dev.oliverkriska.prboard".into()),
+                app_id: Some("dev.oliverkriska.prmarmot".into()),
                 ..Default::default()
             };
 
             cx.open_window(options, |window, cx| {
                 let state = cx.new(|_| {
-                    AppState::new(repo, me, mode, config, Arc::new(GhCliTransport::new()))
+                    AppState::new(
+                        scope,
+                        mode,
+                        config,
+                        Arc::new(GhCliTransport::new()),
+                        Arc::new(GhLoginResolver),
+                        attention_preferences,
+                    )
                 });
                 let view = cx.new(|cx| RootView::new(state, launch, window, cx));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
             .expect("failed to open window");
         });
+}
+
+fn consume_update_failure(paths: &config::UpdatePaths) -> Option<String> {
+    let receipt = match updates::load_upgrade_receipt(&paths.upgrade_receipt) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("prmarmot: could not read update receipt: {error}");
+            None
+        }
+    };
+    if let Err(error) = std::fs::remove_file(&paths.upgrade_receipt) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("prmarmot: could not consume update receipt: {error}");
+        }
+    }
+    receipt
+        .filter(|receipt| !receipt.upgrade_succeeded || !receipt.reopen_succeeded)
+        .map(|receipt| receipt.message)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn cli_scope_is_explicit_and_last_flag_wins() {
+        assert_eq!(
+            parse_args_from(["--all-repos".to_owned()]).unwrap().0,
+            Some(BoardScope::AllRepositories)
+        );
+        assert_eq!(
+            parse_args_from([
+                "--all-repos".to_owned(),
+                "--repo".to_owned(),
+                "acme/widgets".to_owned(),
+            ])
+            .unwrap()
+            .0,
+            Some(BoardScope::Repository("acme/widgets".into()))
+        );
+    }
+
+    #[test]
+    fn update_receipts_are_consumed_and_only_failures_are_shown() {
+        let root =
+            std::env::temp_dir().join(format!("prmarmot-receipt-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = config::UpdatePaths {
+            check_state: root.join("updates.toml"),
+            upgrade_receipt: root.join("receipt.toml"),
+            helper_lock: root.join("helper.lock"),
+        };
+
+        std::fs::write(
+            &paths.upgrade_receipt,
+            "completed_at_unix = 1\nupgrade_succeeded = true\nreopen_succeeded = true\nmessage = 'done'\n",
+        )
+        .unwrap();
+        assert_eq!(consume_update_failure(&paths), None);
+        assert!(!paths.upgrade_receipt.exists());
+
+        std::fs::write(
+            &paths.upgrade_receipt,
+            "completed_at_unix = 2\nupgrade_succeeded = false\nreopen_succeeded = true\nmessage = 'brew failed'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            consume_update_failure(&paths).as_deref(),
+            Some("brew failed")
+        );
+        assert!(!paths.upgrade_receipt.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

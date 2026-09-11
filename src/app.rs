@@ -1,10 +1,11 @@
 //! Root view: header (repo, counts, sync + rate-limit status) over the board
 //! table, the auto-refresh loop, and the keyboard/mouse actions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
@@ -22,13 +23,31 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
-use prboard_core::board::Mode;
+use prmarmot_core::board::{BoardScope, Mode};
 
-use crate::state::{relative, AppState};
+use crate::state::{relative, AppState, SetupStatus};
 use crate::table::{columns_for, detail_text, matches_filter, BoardTableDelegate, TableWidthClass};
 use crate::theme::ThemePref;
+use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
 
-gpui::actions!(prboard, [CloseDetails]);
+gpui::actions!(prmarmot, [CloseDetails]);
+
+const ALL_REPOS_LABEL: &str = "All repositories";
+
+fn scope_label(scope: &BoardScope) -> String {
+    match scope {
+        BoardScope::AllRepositories => ALL_REPOS_LABEL.to_owned(),
+        BoardScope::Repository(repo) => repo.clone(),
+    }
+}
+
+fn scope_from_label(label: &str) -> BoardScope {
+    if label == ALL_REPOS_LABEL {
+        BoardScope::AllRepositories
+    } else {
+        BoardScope::Repository(label.to_owned())
+    }
+}
 
 /// Startup decisions resolved in `main` (CLI + env + config file).
 pub struct Launch {
@@ -37,6 +56,16 @@ pub struct Launch {
     /// Repo-picker entries; the active repo is always among them.
     pub repos: Vec<String>,
     pub pinned_repos: Vec<String>,
+    pub automatic_update_checks: bool,
+    pub update_paths: crate::config::UpdatePaths,
+    pub update_failure: Option<String>,
+}
+
+#[derive(Clone)]
+struct AvailableUpdate {
+    version: StableVersion,
+    page_url: String,
+    channel: InstallChannel,
 }
 
 /// Persist the current window size so the next launch opens the same way.
@@ -87,8 +116,21 @@ pub struct RootView {
     viewport_width: f32,
     /// Manually-resized column widths, remembered per (queue, width class) so a
     /// background refresh or a same-class window resize can't reset a layout the
-    /// user dragged. Bounded by construction: 2 modes × 3 classes = 6 entries.
-    col_overrides: HashMap<(Mode, TableWidthClass), Vec<Pixels>>,
+    /// user dragged. Bounded by construction: 2 modes × 3 classes × 2 scopes
+    /// = 12 entries.
+    col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
+    changed_only: bool,
+    snoozed_expanded: bool,
+    suppress_ack_for: Option<String>,
+    pending_notification_pr: Option<String>,
+    automatic_update_checks: bool,
+    update_paths: crate::config::UpdatePaths,
+    available_update: Option<AvailableUpdate>,
+    update_error: Option<String>,
+    update_check_pending: bool,
+    update_starting: bool,
+    update_check_task: Option<gpui::Task<()>>,
+    notification_help_shown: bool,
 }
 
 impl RootView {
@@ -102,16 +144,21 @@ impl RootView {
         cx.bind_keys([KeyBinding::new(
             "escape",
             CloseDetails,
-            Some("PrboardDetails > DataTable"),
+            Some("PrmarmotDetails > DataTable"),
         )]);
         let mode = state.read(cx).mode;
+        let all_repos = state.read(cx).scope.is_all();
         // Size the columns to the window the moment we open, so the first frame
         // is already responsive (no default-width flash).
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
+        let view = cx.entity().downgrade();
         let table = cx.new(|cx| {
-            let mut delegate = BoardTableDelegate::new(mode);
-            delegate.set_columns(columns_for(mode, initial_class, initial_width));
+            let mut delegate = BoardTableDelegate::new(mode, all_repos);
+            delegate.on_row_action = Some(std::rc::Rc::new(move |row, action, window, cx| {
+                let _ = view.update(cx, |this, cx| this.row_action(row, action, window, cx));
+            }));
+            delegate.set_columns(columns_for(mode, initial_class, initial_width, all_repos));
             TableState::new(delegate, window, cx)
                 .sortable(false)
                 .col_movable(false)
@@ -120,20 +167,17 @@ impl RootView {
         });
 
         let repo_select = {
-            let current = state.read(cx).repo.clone();
-            let selected = launch
-                .repos
+            let current = scope_label(&state.read(cx).scope);
+            let mut picker_items = launch.repos.clone();
+            picker_items.retain(|repo| !repo.eq_ignore_ascii_case(ALL_REPOS_LABEL));
+            picker_items.insert(0, ALL_REPOS_LABEL.to_owned());
+            let selected = picker_items
                 .iter()
                 .position(|r| *r == current)
                 .map(IndexPath::new);
             let select = cx.new(|cx| {
-                SelectState::new(
-                    SearchableVec::new(launch.repos.clone()),
-                    selected,
-                    window,
-                    cx,
-                )
-                .searchable(true)
+                SelectState::new(SearchableVec::new(picker_items), selected, window, cx)
+                    .searchable(true)
             });
             cx.subscribe(
                 &select,
@@ -141,7 +185,7 @@ impl RootView {
                     let SelectEvent::Confirm(Some(repo)) = event else {
                         return;
                     };
-                    this.select_repo(repo.clone(), cx);
+                    this.select_scope(scope_from_label(repo), cx);
                 },
             )
             .detach();
@@ -235,12 +279,57 @@ impl RootView {
         // tick it can claim "just now" for a whole refresh interval. One
         // frame a minute; nothing animates.
         let ticker = cx.entity().downgrade();
-        cx.spawn(async move |_this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_secs(60))
-                .await;
+        cx.spawn_in(window, async move |_this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
             let Some(view) = ticker.upgrade() else { break };
-            view.update(cx, |_, cx| cx.notify());
+            let _ = view.update_in(cx, |this, window, cx| {
+                let selected = this.selected_row_id(cx);
+                this.state.update(cx, |state, cx| {
+                    state.set_focused_selection(selected, window.is_window_active());
+                    state.wake_timed_snoozes(cx);
+                });
+                if let Some(event) = this.state.read(cx).take_platform_event() {
+                    match event {
+                        crate::platform::PlatformEvent::Clicked(pr_id) => {
+                            window.activate_window();
+                            this.select_notification_pr(pr_id, cx);
+                        }
+                        crate::platform::PlatformEvent::NotificationError(error) => {
+                            this.state
+                                .update(cx, |state, _| state.notification_error = Some(error));
+                        }
+                        crate::platform::PlatformEvent::NotificationPermissionChanged(
+                            permission,
+                        ) => {
+                            #[cfg(target_os = "macos")]
+                            if permission == crate::platform::NotificationPermission::Allowed {
+                                this.state
+                                    .update(cx, |state, _| state.notification_error = None);
+                                this.show_feedback("Notifications are allowed", cx);
+                                return;
+                            }
+                            this.state.update(cx, |state, _| {
+                                state.notification_error =
+                                    Some("Notifications need attention".into());
+                            });
+                            if !this.notification_help_shown {
+                                this.notification_help_shown = true;
+                                this.show_notification_help(permission, window, cx);
+                            }
+                        }
+                        crate::platform::PlatformEvent::NotificationPermissionError {
+                            operation,
+                            message,
+                        } => {
+                            this.state.update(cx, |state, _| {
+                                state.notification_error =
+                                    Some(format!("{operation:?}: {message}"));
+                            });
+                        }
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
 
@@ -270,21 +359,57 @@ impl RootView {
             width_class: initial_class,
             viewport_width: initial_width,
             col_overrides: HashMap::new(),
+            changed_only: false,
+            snoozed_expanded: false,
+            suppress_ack_for: None,
+            pending_notification_pr: None,
+            automatic_update_checks: launch.automatic_update_checks,
+            update_paths: launch.update_paths,
+            available_update: None,
+            update_error: launch.update_failure,
+            update_check_pending: false,
+            update_starting: false,
+            update_check_task: None,
+            notification_help_shown: false,
         };
-        this.state.update(cx, |state, cx| state.refresh(cx));
+        if this.state.read(cx).attention_preferences.notifications {
+            this.state.read(cx).check_notification_permission();
+        }
+        this.state.update(cx, |state, cx| state.validate_setup(cx));
         this.start_refresh_loop(cx);
         this.discover_repos(window, cx);
+        this.check_for_updates(cx);
+        this.start_update_check_loop(cx);
         this
     }
 
     fn sync_table(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
         let rows: Vec<_> = self
             .state
             .read(cx)
             .rows
             .iter()
-            .filter(|row| matches_filter(row, &self.filter_text))
+            .filter(|row| {
+                matches_filter(row, &self.filter_text)
+                    && (!self.changed_only || state.is_changed(&row.id))
+            })
             .cloned()
+            .collect();
+        let changed: HashSet<_> = rows
+            .iter()
+            .filter(|row| state.is_changed(&row.id))
+            .map(|row| row.id.clone())
+            .collect();
+        let watched: HashSet<_> = rows
+            .iter()
+            .filter(|row| state.is_watched(&row.id))
+            .map(|row| row.id.clone())
+            .collect();
+        let snoozed: HashSet<_> = rows
+            .iter()
+            .filter(|row| state.snooze_description(&row.id).is_some())
+            .map(|row| row.id.clone())
             .collect();
         self.visible_count = rows.len();
         let switching = self.pending_restore.take();
@@ -294,8 +419,12 @@ impl RootView {
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_rows(rows);
+            table
+                .delegate_mut()
+                .set_attention(changed, watched, snoozed, self.snoozed_expanded);
             table.refresh(cx);
             if let Some(ix) = target_url.and_then(|u| table.delegate().display_index_of_url(&u)) {
+                self.suppress_ack_for = table.delegate().row(ix).map(|row| row.id.clone());
                 table.set_selected_row(ix, cx);
                 if switching.is_some() {
                     table.scroll_to_row(ix, cx);
@@ -310,20 +439,30 @@ impl RootView {
         cx.notify();
     }
 
-    fn select_repo(&mut self, repo: String, cx: &mut Context<Self>) {
-        if self.state.read(cx).repo.eq_ignore_ascii_case(&repo) {
+    fn select_scope(&mut self, scope: BoardScope, cx: &mut Context<Self>) {
+        if self.state.read(cx).scope == scope {
             return;
         }
-        crate::config::persist_str("repo", &repo);
+        crate::config::persist_scope(&scope);
         self.selections.clear();
         self.pending_restore = None;
         self.last_selected = 0;
         self.details_open = false;
-        self.state.update(cx, |s, cx| s.switch_repo(repo, cx));
+        let all_repos = scope.is_all();
+        self.state.update(cx, |s, cx| s.switch_scope(scope, cx));
+        let mode = self.state.read(cx).mode;
+        let cols = self.columns_for_current(mode, cx);
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_scope(all_repos);
+            table.delegate_mut().set_columns(cols);
+            table.refresh(cx);
+        });
     }
 
     fn toggle_pin(&mut self, cx: &mut Context<Self>) {
-        let repo = self.state.read(cx).repo.clone();
+        let Some(repo) = self.state.read(cx).scope.repository().map(str::to_owned) else {
+            return;
+        };
         if let Some(ix) = self
             .pinned_repos
             .iter()
@@ -344,6 +483,8 @@ impl RootView {
             window,
             |this, _, _: &crate::settings::SettingsSaved, window, cx| {
                 let file = crate::config::load();
+                let was_enabled = this.automatic_update_checks;
+                this.automatic_update_checks = file.automatic_update_checks;
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
                 this.theme_pref.apply(window, cx);
                 let refresh = crate::state::refresh_interval(file.refresh_secs);
@@ -352,11 +493,26 @@ impl RootView {
                     this.start_refresh_loop(cx);
                 }
                 this.state.update(cx, |state, cx| {
+                    state.apply_attention_preferences(crate::state::AttentionPreferences {
+                        notifications: file.notifications,
+                        notification_sound: file.notification_sound,
+                        notify_all_needs_action: file.notify_all_needs_action,
+                        dock_badge: file.dock_badge,
+                    });
                     state.apply_config(crate::board_config(&file), cx)
                 });
                 window.close_dialog(cx);
                 this.table.focus_handle(cx).focus(window, cx);
                 this.show_feedback("Settings saved", cx);
+                if file.notifications {
+                    this.notification_help_shown = false;
+                    this.state.read(cx).check_notification_permission();
+                }
+                if !was_enabled && this.automatic_update_checks {
+                    // The checker owns the persisted daily gate. Re-enabling
+                    // evaluates it immediately without bypassing that limit.
+                    this.check_for_updates(cx);
+                }
             },
         )
         .detach();
@@ -392,18 +548,21 @@ impl RootView {
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async { prboard_core::github::gh_cli::list_repos() })
+                .spawn(async { prmarmot_core::github::gh_cli::list_repos() })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.discovering_repos = false;
                 match result {
                     Ok(discovery) => {
-                        let current = this.state.read(cx).repo.clone();
+                        let current = scope_label(&this.state.read(cx).scope);
                         let mut repos = this.configured_repos.clone();
                         repos.extend(discovery.repos);
-                        repos.push(current.clone());
+                        if current != ALL_REPOS_LABEL {
+                            repos.push(current.clone());
+                        }
                         repos.sort_unstable_by_key(|r| r.to_lowercase());
                         repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                        repos.insert(0, ALL_REPOS_LABEL.to_owned());
                         this.repo_status = format!(
                             "{} repositories{}",
                             repos.len(),
@@ -445,10 +604,174 @@ impl RootView {
         }));
     }
 
+    fn start_update_check_loop(&mut self, cx: &mut Context<Self>) {
+        self.update_check_task = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(crate::updates::AUTOMATIC_CHECK_INTERVAL)
+                .await;
+            if this
+                .update(cx, |this, cx| this.check_for_updates(cx))
+                .is_err()
+            {
+                break;
+            }
+        }));
+    }
+
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if !self.automatic_update_checks || self.update_check_pending {
+            return;
+        }
+        self.update_check_pending = true;
+        let state_path = self.update_paths.check_state.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let identity = crate::updates::ReleaseIdentity::new(crate::RELEASE_REPO)?;
+                    let source = crate::updates::GhReleaseSource::new(
+                        prmarmot_core::github::gh_cli::resolve_gh_path(),
+                    );
+                    let checker = crate::updates::UpdateChecker::new(state_path, source);
+                    let checked = checker.automatic_check(
+                        true,
+                        unix_now(),
+                        env!("CARGO_PKG_VERSION"),
+                        &identity,
+                    )?;
+                    let channel = if check_result(&checked)
+                        .is_some_and(|result| matches!(result, CheckResult::Available { .. }))
+                    {
+                        #[cfg(target_os = "macos")]
+                        {
+                            Some(crate::updates::detect_current_install_channel(
+                                crate::CASK_TOKEN,
+                                &crate::updates::SystemCommandRunner,
+                            )?)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Some(InstallChannel::Direct)
+                        }
+                    } else {
+                        None
+                    };
+                    Ok::<_, crate::updates::UpdateError>((checked, channel))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_check_pending = false;
+                match outcome {
+                    Ok((checked, channel)) => {
+                        if let Some(CheckResult::Available {
+                            version, page_url, ..
+                        }) = check_result(&checked)
+                        {
+                            this.available_update = Some(AvailableUpdate {
+                                version: *version,
+                                page_url: page_url.clone(),
+                                channel: channel.unwrap_or(InstallChannel::Direct),
+                            });
+                        } else if matches!(
+                            check_result(&checked),
+                            Some(CheckResult::UpToDate { .. })
+                        ) {
+                            this.available_update = None;
+                        }
+                    }
+                    Err(error) => eprintln!("prmarmot: automatic update check failed: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn begin_update(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(available) = self.available_update.clone() else {
+            return;
+        };
+        match available.channel {
+            InstallChannel::Direct => cx.open_url(&available.page_url),
+            InstallChannel::Homebrew { brew_path, .. } => {
+                if self.update_starting {
+                    return;
+                }
+                self.update_starting = true;
+                self.update_error = None;
+                let invocation = match crate::updates::UpgradeIdentity::new(
+                    crate::CASK_TOKEN,
+                    crate::APPLICATION_NAME,
+                ) {
+                    Ok(identity) => crate::updates::HelperInvocation {
+                        parent_pid: std::process::id(),
+                        brew_path,
+                        identity,
+                        receipt_path: self.update_paths.upgrade_receipt.clone(),
+                        lock_path: self.update_paths.helper_lock.clone(),
+                        open_path: PathBuf::from("/usr/bin/open"),
+                    },
+                    Err(error) => {
+                        self.update_starting = false;
+                        self.update_error = Some(error.to_string());
+                        cx.notify();
+                        return;
+                    }
+                };
+                let executable = match std::env::current_exe() {
+                    Ok(executable) => executable,
+                    Err(error) => {
+                        self.update_starting = false;
+                        self.update_error = Some(format!("Could not start update: {error}"));
+                        cx.notify();
+                        return;
+                    }
+                };
+                let window_size = window.window_bounds();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            crate::updates::spawn_upgrade_helper(&executable, &invocation)
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| match result {
+                        Ok(_) => {
+                            let (gpui::WindowBounds::Windowed(bounds)
+                            | gpui::WindowBounds::Maximized(bounds)
+                            | gpui::WindowBounds::Fullscreen(bounds)) = window_size;
+                            crate::config::persist_window(
+                                bounds.size.width.into(),
+                                bounds.size.height.into(),
+                            );
+                            // The detached copy is alive and waiting for this
+                            // PID. Quit only after that spawn succeeds.
+                            cx.quit();
+                        }
+                        Err(error) => {
+                            this.update_starting = false;
+                            this.update_error = Some(format!("Could not start update: {error}"));
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
     fn selected_row_url(&self, cx: &App) -> Option<String> {
         let table = self.table.read(cx);
         let row_ix = table.selected_row()?;
         table.delegate().row(row_ix).map(|r| r.url.clone())
+    }
+
+    fn selected_row_id(&self, cx: &App) -> Option<String> {
+        let table = self.table.read(cx);
+        table
+            .selected_row()
+            .and_then(|row_ix| table.delegate().row(row_ix))
+            .map(|row| row.id.clone())
     }
 
     fn open_row(&self, row_ix: usize, cx: &mut Context<Self>) {
@@ -485,7 +808,7 @@ impl RootView {
         // The delegate no longer owns column widths (they track the live window
         // width); rebuild them here for the new queue, honoring any manual
         // override stored for this (queue, width class).
-        let cols = self.columns_for_current(mode);
+        let cols = self.columns_for_current(mode, cx);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_mode(mode);
             table.delegate_mut().set_columns(cols);
@@ -503,9 +826,10 @@ impl RootView {
     /// The columns for `mode` at the current width class: a stored manual
     /// override if one is present (and still matches the column count), else the
     /// responsive default for this window width.
-    fn columns_for_current(&self, mode: Mode) -> Vec<Column> {
-        let mut cols = columns_for(mode, self.width_class, self.viewport_width);
-        if let Some(widths) = self.col_overrides.get(&(mode, self.width_class)) {
+    fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
+        let all_repos = self.state.read(cx).scope.is_all();
+        let mut cols = columns_for(mode, self.width_class, self.viewport_width, all_repos);
+        if let Some(widths) = self.col_overrides.get(&(mode, self.width_class, all_repos)) {
             if widths.len() == cols.len() {
                 for (col, w) in cols.iter_mut().zip(widths) {
                     col.width = *w;
@@ -527,10 +851,15 @@ impl RootView {
         self.width_class = new_class;
         self.viewport_width = width;
         let mode = self.state.read(cx).mode;
-        if !class_changed && self.col_overrides.contains_key(&(mode, new_class)) {
+        let all_repos = self.state.read(cx).scope.is_all();
+        if !class_changed
+            && self
+                .col_overrides
+                .contains_key(&(mode, new_class, all_repos))
+        {
             return; // manual layout stands within its width class
         }
-        let cols = self.columns_for_current(mode);
+        let cols = self.columns_for_current(mode, cx);
         let next_widths: Vec<Pixels> = cols.iter().map(|c| c.width).collect();
         self.table.update(cx, |table, cx| {
             if table.delegate().column_widths() == next_widths {
@@ -551,7 +880,9 @@ impl RootView {
             table.delegate_mut().set_column_widths(&widths)
         });
         if applied {
-            self.col_overrides.insert((mode, self.width_class), widths);
+            let all_repos = self.state.read(cx).scope.is_all();
+            self.col_overrides
+                .insert((mode, self.width_class, all_repos), widths);
         }
     }
 
@@ -564,6 +895,20 @@ impl RootView {
             |i: usize, this: &Self, cx: &Context<Self>| this.table.read(cx).delegate().is_header(i);
         if !delegate_is_header(row_ix, self, cx) {
             self.last_selected = row_ix;
+            if let Some(pr_id) = self
+                .table
+                .read(cx)
+                .delegate()
+                .row(row_ix)
+                .map(|row| row.id.clone())
+            {
+                if self.suppress_ack_for.as_deref() == Some(&pr_id) {
+                    self.suppress_ack_for = None;
+                } else {
+                    self.state
+                        .update(cx, |state, cx| state.acknowledge(&pr_id, cx));
+                }
+            }
             cx.notify();
             return;
         }
@@ -624,7 +969,13 @@ impl RootView {
                 save_window_size(window);
                 cx.quit();
             }
-            "r" => self.state.update(cx, |s, cx| s.refresh(cx)),
+            "r" => self.state.update(cx, |s, cx| {
+                if s.setup == SetupStatus::Ready {
+                    s.refresh(cx)
+                } else {
+                    s.validate_setup(cx)
+                }
+            }),
             "v" if !platform => {
                 let mode = match self.state.read(cx).mode {
                     Mode::Authored => Mode::Review,
@@ -656,7 +1007,224 @@ impl RootView {
                     self.show_feedback("PR URL copied", cx);
                 }
             }
+            "w" if !platform && table_focused => self.toggle_watch(cx),
+            "s" if !platform && table_focused => self.show_snooze_menu(window, cx),
             _ => {}
+        }
+    }
+
+    fn show_notification_help(
+        &self,
+        permission: crate::platform::NotificationPermission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        crate::notification_help::open_notification_help(
+            window,
+            cx,
+            permission,
+            move |permission, _, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.notification_help_shown = false;
+                    #[cfg(target_os = "macos")]
+                    if permission == crate::platform::NotificationPermission::NotDetermined {
+                        this.state.read(cx).request_notification_permission();
+                        return;
+                    }
+                    let _ = permission;
+                    this.state.read(cx).check_notification_permission();
+                });
+            },
+        );
+    }
+
+    fn row_action(
+        &mut self,
+        row: prmarmot_core::board::BoardRow,
+        action: crate::table::RowAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::table::RowAction;
+        match action {
+            RowAction::Open => cx.open_url(&row.url),
+            RowAction::Copy(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.show_feedback("Copied to clipboard", cx);
+            }
+            RowAction::Watch => self.watch_row(&row, cx),
+            RowAction::Snooze => self.snooze_row(row, window, cx),
+            RowAction::CancelSnooze => self
+                .state
+                .update(cx, |state, cx| state.cancel_snooze(&row.id, cx)),
+            RowAction::Details => {
+                let index = self
+                    .table
+                    .read(cx)
+                    .delegate()
+                    .display_index_of_url(&row.url);
+                if let Some(index) = index {
+                    self.table
+                        .update(cx, |table, cx| table.set_selected_row(index, cx));
+                    self.details_open = true;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn selected_row(&self, cx: &App) -> Option<prmarmot_core::board::BoardRow> {
+        let table = self.table.read(cx);
+        table
+            .selected_row()
+            .and_then(|index| table.delegate().row(index))
+            .cloned()
+    }
+
+    fn toggle_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(row) = self.selected_row(cx) else {
+            return;
+        };
+        self.watch_row(&row, cx);
+    }
+
+    fn watch_row(&mut self, row: &prmarmot_core::board::BoardRow, cx: &mut Context<Self>) {
+        if let Some(message) = self
+            .state
+            .update(cx, |state, cx| state.toggle_watch(row, cx))
+        {
+            self.show_feedback_owned(message, cx);
+            self.sync_table(cx);
+        }
+    }
+
+    fn show_feedback_owned(&mut self, message: String, cx: &mut Context<Self>) {
+        self.feedback = None;
+        self.repo_status = message;
+        cx.notify();
+    }
+
+    fn show_snooze_menu(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.selected_row(cx) else {
+            return;
+        };
+        self.snooze_row(row, window, cx);
+    }
+
+    fn snooze_row(
+        &self,
+        row: prmarmot_core::board::BoardRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let focus = self.table.focus_handle(cx);
+        let already = state.read(cx).snooze_description(&row.id).is_some();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let _ = cx;
+            let mut options = v_flex().gap_2();
+            let choices = [
+                (
+                    "One hour",
+                    crate::attention_state::SnoozeCondition::Until {
+                        deadline: Utc::now() + ChronoDuration::hours(1),
+                    },
+                ),
+                (
+                    "Until tomorrow",
+                    crate::attention_state::SnoozeCondition::Until {
+                        deadline: Utc::now() + ChronoDuration::hours(24),
+                    },
+                ),
+                (
+                    "Waiting for CI",
+                    crate::attention_state::AttentionState::waiting_ci(&row),
+                ),
+                (
+                    "Review again when changed",
+                    crate::attention_state::AttentionState::review_again(&row),
+                ),
+            ];
+            for (index, (label, condition)) in choices.into_iter().enumerate() {
+                let state = state.clone();
+                let row = row.clone();
+                options =
+                    options.child(Button::new(("snooze-choice", index)).label(label).on_click(
+                        move |_, window, cx| {
+                            state.update(cx, |state, cx| {
+                                state.set_snooze(&row, condition.clone(), cx)
+                            });
+                            window.close_dialog(cx);
+                        },
+                    ));
+            }
+            if let Some(author) = row.author.clone() {
+                let state = state.clone();
+                let waiting =
+                    crate::attention_state::AttentionState::waiting_person(&row, author.clone());
+                let row = row.clone();
+                options = options.child(
+                    Button::new("snooze-person")
+                        .label(format!("Waiting on {author}"))
+                        .on_click(move |_, window, cx| {
+                            state.update(cx, |state, cx| {
+                                state.set_snooze(&row, waiting.clone(), cx)
+                            });
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            if already {
+                let state = state.clone();
+                let id = row.id.clone();
+                options = options.child(
+                    Button::new("cancel-snooze")
+                        .label("Cancel snooze")
+                        .on_click(move |_, window, cx| {
+                            state.update(cx, |state, cx| state.cancel_snooze(&id, cx));
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            let focus = focus.clone();
+            dialog
+                .title(format!("Snooze #{}", row.number))
+                .w(px(360.))
+                .close_button(true)
+                .child(options)
+                .on_close(move |_, window, cx| focus.focus(window, cx))
+        });
+    }
+
+    fn select_notification_pr(&mut self, pr_id: String, cx: &mut Context<Self>) {
+        let current = self
+            .state
+            .read(cx)
+            .rows
+            .iter()
+            .find(|row| row.id == pr_id)
+            .cloned();
+        if let Some(row) = current {
+            self.sync_table(cx);
+            if let Some(index) = self
+                .table
+                .read(cx)
+                .delegate()
+                .display_index_of_url(&row.url)
+            {
+                self.table.update(cx, |table, cx| {
+                    table.set_selected_row(index, cx);
+                    table.scroll_to_row(index, cx);
+                });
+            }
+        } else {
+            if let Some((url, status)) = self.state.read(cx).watched_fallback(&pr_id) {
+                cx.open_url(&url);
+                self.show_feedback_owned(format!("Watched PR opened · {status}"), cx);
+            } else {
+                self.pending_notification_pr = Some(pr_id);
+            }
         }
     }
 
@@ -682,10 +1250,11 @@ impl RootView {
 
     fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
+        let current_repo = state.scope.repository();
         let pinned = self
             .pinned_repos
             .iter()
-            .any(|pin| pin.eq_ignore_ascii_case(&state.repo));
+            .any(|pin| current_repo.is_some_and(|repo| pin.eq_ignore_ascii_case(repo)));
         h_flex()
             .px(px(16.))
             .py(px(6.))
@@ -713,13 +1282,17 @@ impl RootView {
                             Button::new(("pinned-repo", ix))
                                 .small()
                                 .child(div().max_w(px(160.)).truncate().child(repo.clone()))
-                                .when(repo.eq_ignore_ascii_case(&state.repo), |button| {
-                                    button
-                                        .bg(cx.theme().accent)
-                                        .text_color(cx.theme().accent_foreground)
-                                })
+                                .when(
+                                    current_repo
+                                        .is_some_and(|current| repo.eq_ignore_ascii_case(current)),
+                                    |button| {
+                                        button
+                                            .bg(cx.theme().accent)
+                                            .text_color(cx.theme().accent_foreground)
+                                    },
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_repo(target.clone(), cx);
+                                    this.select_scope(BoardScope::Repository(target.clone()), cx);
                                     this.repo_select.update(cx, |select, cx| {
                                         select.set_selected_value(&target, window, cx);
                                     });
@@ -741,7 +1314,9 @@ impl RootView {
                             "Pin this repository"
                         })
                         .disabled(
-                            !pinned && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS,
+                            current_repo.is_none()
+                                || (!pinned
+                                    && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS),
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_pin(cx))),
                 )
@@ -792,6 +1367,33 @@ impl RootView {
                         )),
                 )
             })
+            .child(
+                Button::new("changed-filter")
+                    .small()
+                    .label(if self.changed_only {
+                        "Changed ✓"
+                    } else {
+                        "Changed"
+                    })
+                    .when(self.changed_only, |button| button.bg(cx.theme().secondary))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.changed_only = !this.changed_only;
+                        this.sync_table(cx);
+                    })),
+            )
+            .child(
+                Button::new("snoozed-toggle")
+                    .small()
+                    .label(if self.snoozed_expanded {
+                        "Snoozed · hide"
+                    } else {
+                        "Snoozed"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.snoozed_expanded = !this.snoozed_expanded;
+                        this.sync_table(cx);
+                    })),
+            )
             .when(self.search_open, |bar| bar.child(div().flex_1()))
             .when(state.truncated, |bar| {
                 bar.child(
@@ -863,21 +1465,7 @@ impl RootView {
                                 .label("Copy")
                                 .dropdown_caret(true)
                                 .dropdown_menu(move |mut menu, _, _| {
-                                    for (label, text) in [
-                                        ("Copy PR number", format!("#{}", copy_row.number)),
-                                        ("Copy title", copy_row.title.clone()),
-                                        ("Copy URL", copy_row.url.clone()),
-                                        (
-                                            "Copy all details",
-                                            format!(
-                                                "#{} {}\n{}\n\n{}",
-                                                copy_row.number,
-                                                copy_row.title,
-                                                copy_row.url,
-                                                detail_text(&copy_row)
-                                            ),
-                                        ),
-                                    ] {
+                                    for (label, text) in crate::table::row_copy_items(&copy_row) {
                                         let view = view.clone();
                                         menu = menu.item(PopupMenuItem::new(label).on_click(
                                             move |_, _, cx| {
@@ -928,11 +1516,30 @@ impl RootView {
                                     format!("#{}  {}", row.number, row.title),
                                 ),
                             ))
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .child(SelectableText::new("detail-body", detail_text(&row))),
-                            ),
+                            .child(div().text_size(px(13.)).child(SelectableText::new(
+                                "detail-body",
+                                {
+                                    let mut text = detail_text(&row);
+                                    let state = self.state.read(cx);
+                                    text.push_str(&format!(
+                                        "\nAttention: {} · {}",
+                                        if state.is_changed(&row.id) {
+                                            "changed"
+                                        } else {
+                                            "acknowledged"
+                                        },
+                                        if state.is_watched(&row.id) {
+                                            "watched"
+                                        } else {
+                                            "not watched"
+                                        }
+                                    ));
+                                    if let Some(snooze) = state.snooze_description(&row.id) {
+                                        text.push_str(&format!("\n{snooze}"));
+                                    }
+                                    text
+                                },
+                            ))),
                         None => content.child("Select a PR to inspect its details."),
                     }),
             )
@@ -946,19 +1553,31 @@ impl RootView {
         // redundant and truncates at narrow widths (design review). This frees
         // titlebar room for the future `/` search field.
         let counts = format!(
-            "{} shown{}",
+            "{} shown{} · {} attention{} · tracked {}/{}",
             state.rows.len(),
             if state.truncated {
                 " · partial results"
             } else {
                 ""
-            }
+            },
+            state.badge_count,
+            if state.badge_coverage_complete {
+                " known"
+            } else {
+                " loaded"
+            },
+            state.tracked_loaded,
+            state.tracked_total,
         );
         // Status priority: a hard error wins; then a rate-limit back-off (so a
         // switch into a paused window shows "paused", not a permanent
         // "Loading…"); otherwise the queue-specific sync line. Static text only
         // — a spinner would defeat the idle-GPU half of the spike gate.
-        let (status_text, status_color) = if let Some(err) = state.error.clone() {
+        let (status_text, status_color) = if state.setup == SetupStatus::Checking {
+            ("Checking GitHub CLI…".to_owned(), theme.muted_foreground)
+        } else if state.setup != SetupStatus::Ready {
+            ("GitHub setup required".to_owned(), theme.warning)
+        } else if let Some(err) = state.error.clone() {
             (err, theme.danger)
         } else if let Some(secs) = state.backoff_remaining() {
             (
@@ -967,7 +1586,12 @@ impl RootView {
             )
         } else {
             (
-                queue_sync_text(state.mode, state.syncing, state.last_synced),
+                queue_sync_text(
+                    state.mode,
+                    state.scope.is_all(),
+                    state.syncing,
+                    state.last_synced,
+                ),
                 theme.muted_foreground,
             )
         };
@@ -987,13 +1611,20 @@ impl RootView {
             .small()
             .segmented()
             .selected_index(selected_mode)
-            .child(Tab::new().label("My PRs").w(px(104.)).font_weight(
-                if state.mode == Mode::Authored {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                },
-            ))
+            .child(
+                Tab::new()
+                    .label(if state.scope.is_all() {
+                        "Involving me"
+                    } else {
+                        "My PRs"
+                    })
+                    .w(px(104.))
+                    .font_weight(if state.mode == Mode::Authored {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    }),
+            )
             .child(Tab::new().label("Review queue").w(px(104.)).font_weight(
                 if state.mode == Mode::Review {
                     FontWeight::SEMIBOLD
@@ -1068,11 +1699,88 @@ impl RootView {
             )
     }
 
+    fn render_update_banners(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        v_flex()
+            .flex_shrink_0()
+            .when_some(self.update_error.clone(), |banners, error| {
+                let tooltip = error.clone();
+                banners.child(
+                    h_flex()
+                        .px(px(crate::design::HEADER_PAD_X))
+                        .py_1()
+                        .gap_2()
+                        .bg(theme.muted)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("update-error-message")
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(theme.danger)
+                                .child(format!("Update failed — {error}"))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("dismiss-update-error")
+                                .small()
+                                .ghost()
+                                .label("Dismiss")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.update_error = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when_some(self.available_update.clone(), |banners, update| {
+                banners.child(
+                    h_flex()
+                        .px(px(crate::design::HEADER_PAD_X))
+                        .py_1()
+                        .gap_2()
+                        .bg(theme.secondary)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(format!("v{} available", update.version)),
+                        )
+                        .child(
+                            Button::new("install-update")
+                                .small()
+                                .primary()
+                                .label(if self.update_starting {
+                                    "Starting update…"
+                                } else {
+                                    "Update"
+                                })
+                                .disabled(self.update_starting)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.begin_update(window, cx)
+                                    }),
+                                ),
+                        ),
+                )
+            })
+    }
+
     fn render_footer(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let hints: Vec<(&str, String)> = vec![
             ("↑↓", "select".into()),
             ("⏎", "open".into()),
+            ("w", "watch".into()),
+            ("s", "snooze".into()),
             ("r", "refresh".into()),
         ];
         // Keycap legend (spec §6): reference material lives at the bottom,
@@ -1127,6 +1835,40 @@ impl RootView {
                     .child(message),
             )
         })
+        .when_some(
+            self.state
+                .read(cx)
+                .attention
+                .as_ref()
+                .and_then(|attention| attention.storage_error.clone()),
+            |bar, error| {
+                bar.child(
+                    div()
+                        .id("attention-storage-error")
+                        .max_w(px(260.))
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(theme.warning)
+                        .child(error.clone())
+                        .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx)),
+                )
+            },
+        )
+        .when_some(
+            self.state.read(cx).notification_error.clone(),
+            |bar, error| {
+                bar.child(
+                    Button::new("notification-help")
+                        .small()
+                        .label("Enable notifications…")
+                        .tooltip(error)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.notification_help_shown = false;
+                            this.state.read(cx).check_notification_permission();
+                        })),
+                )
+            },
+        )
         .child(
             div()
                 .min_w_0()
@@ -1160,6 +1902,8 @@ impl RootView {
                 ("Select a PR", "↑ / ↓"),
                 ("Open selected PR", "Enter / o"),
                 ("Copy selected PR URL", "y"),
+                ("Watch / unwatch selected PR", "w"),
+                ("Snooze selected PR", "s"),
                 ("My PRs / Review queue", "1 / 2"),
                 ("Switch queue", "v"),
                 ("Refresh", "r"),
@@ -1188,17 +1932,24 @@ impl RootView {
 /// The header's right-side status line, specific to the active queue. Keeps
 /// the "synced Xm ago" anchor visible during a background refresh so switching
 /// feels like navigation, not a command re-run.
-fn queue_sync_text(mode: Mode, syncing: bool, last_synced: Option<DateTime<Local>>) -> String {
-    let loading = match mode {
-        Mode::Authored => "Loading your open PRs…",
-        Mode::Review => "Loading review queue…",
+fn queue_sync_text(
+    mode: Mode,
+    all_repos: bool,
+    syncing: bool,
+    last_synced: Option<DateTime<Local>>,
+) -> String {
+    let loading = match (mode, all_repos) {
+        (Mode::Authored, true) => "Loading pull requests involving you…",
+        (Mode::Authored, false) => "Loading your open PRs…",
+        (Mode::Review, _) => "Loading review queue…",
     };
     match (syncing, last_synced) {
         (true, None) | (false, None) => loading.to_string(),
         (true, Some(t)) => {
-            let verb = match mode {
-                Mode::Authored => "Updating your PRs…",
-                Mode::Review => "Updating review queue…",
+            let verb = match (mode, all_repos) {
+                (Mode::Authored, true) => "Updating involving PRs…",
+                (Mode::Authored, false) => "Updating your PRs…",
+                (Mode::Review, _) => "Updating review queue…",
             };
             format!("{verb} · synced {}", relative(t))
         }
@@ -1207,10 +1958,11 @@ fn queue_sync_text(mode: Mode, syncing: bool, last_synced: Option<DateTime<Local
 }
 
 /// The centered body copy shown before a queue's first rows ever arrive.
-fn queue_loading_text(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Authored => "Loading your open PRs…",
-        Mode::Review => "Loading review queue…",
+fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
+    match (mode, all_repos) {
+        (Mode::Authored, true) => "Loading pull requests involving you…",
+        (Mode::Authored, false) => "Loading your open PRs…",
+        (Mode::Review, _) => "Loading review queue…",
     }
 }
 
@@ -1219,9 +1971,116 @@ fn queue_loading_text(mode: Mode) -> &'static str {
 /// first-fetch failure never renders a contradictory "empty" or "Loading…".
 enum BodyState {
     Loaded,
+    Setup(SetupStatus),
     Loading(String),
     Paused(String),
     Failed(String),
+}
+
+fn check_result(check: &AutomaticCheck) -> Option<&CheckResult> {
+    match check {
+        AutomaticCheck::NotDue(result) => result.as_ref(),
+        AutomaticCheck::Completed { result, .. } => Some(result),
+        AutomaticCheck::Disabled | AutomaticCheck::InProgressElsewhere => None,
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64)
+}
+
+impl RootView {
+    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (title, detail, show_auth_command) = match &setup {
+            SetupStatus::Checking => (
+                "Checking GitHub CLI…".to_owned(),
+                "PR Marmot uses your existing GitHub CLI session. No credentials are stored by the app."
+                    .to_owned(),
+                false,
+            ),
+            SetupStatus::MissingGh => (
+                "Install the GitHub CLI".to_owned(),
+                "The `gh` command was not found. Install it with `brew install gh` or from cli.github.com, then authenticate."
+                    .to_owned(),
+                true,
+            ),
+            SetupStatus::NotAuthenticated => (
+                "Sign in with GitHub CLI".to_owned(),
+                "Run the command below in Terminal, complete GitHub's sign-in flow, then retry. PR Marmot never displays or stores your token."
+                    .to_owned(),
+                true,
+            ),
+            SetupStatus::Network(_) => (
+                "GitHub could not be reached".to_owned(),
+                "Check your connection and GitHub CLI access, then retry.".to_owned(),
+                false,
+            ),
+            SetupStatus::Failed(message) => (
+                "GitHub setup failed".to_owned(),
+                message.clone(),
+                false,
+            ),
+            SetupStatus::Ready => (String::new(), String::new(), false),
+        };
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .px_4()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(18.))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .max_w(px(560.))
+                    .text_color(theme.muted_foreground)
+                    .child(detail),
+            )
+            .when(show_auth_command, |view| {
+                view.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded(px(5.))
+                                .bg(theme.muted)
+                                .font_family("monospace")
+                                .child("gh auth login"),
+                        )
+                        .child(
+                            Button::new("copy-gh-auth")
+                                .small()
+                                .label("Copy command")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        "gh auth login".to_owned(),
+                                    ));
+                                    this.show_feedback("Command copied", cx);
+                                })),
+                        ),
+                )
+            })
+            .when(setup != SetupStatus::Checking, |view| {
+                view.child(
+                    Button::new("retry-setup")
+                        .primary()
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.validate_setup(cx));
+                        })),
+                )
+            })
+    }
 }
 
 /// "45s" / "3m" / "1h 5m" — compact, for the back-off retry countdown.
@@ -1254,14 +2113,16 @@ impl Render for RootView {
         // a premature "empty" over a fetch in flight (critique #6).
         let body = {
             let s = self.state.read(cx);
-            if s.last_synced.is_some() {
+            if s.setup != SetupStatus::Ready {
+                BodyState::Setup(s.setup.clone())
+            } else if s.last_synced.is_some() {
                 BodyState::Loaded
             } else if let Some(secs) = s.backoff_remaining() {
                 BodyState::Paused(format!("Paused — retrying in {}", human_duration(secs)))
             } else if let Some(err) = s.error.clone() {
                 BodyState::Failed(format!("Couldn't load — {err}"))
             } else {
-                BodyState::Loading(queue_loading_text(s.mode).to_string())
+                BodyState::Loading(queue_loading_text(s.mode, s.scope.is_all()).to_string())
             }
         };
 
@@ -1270,7 +2131,9 @@ impl Render for RootView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .track_focus(&self.focus_handle)
-            .when(self.details_open, |view| view.key_context("PrboardDetails"))
+            .when(self.details_open, |view| {
+                view.key_context("PrmarmotDetails")
+            })
             .on_action(cx.listener(|this, _: &CloseDetails, window, cx| {
                 this.details_open = false;
                 this.table.focus_handle(cx).focus(window, cx);
@@ -1278,6 +2141,7 @@ impl Render for RootView {
             }))
             .on_key_down(cx.listener(Self::handle_key_down))
             .child(TitleBar::new().child(self.render_header(cx)))
+            .child(self.render_update_banners(cx))
             .child(self.render_tools(cx))
             // Full-bleed table (spec §5): the window IS the table; 13 px
             // cells at Size::Small density.
@@ -1312,6 +2176,7 @@ impl Render for RootView {
                                 .stripe(false)
                                 .bordered(false),
                         ),
+                        BodyState::Setup(setup) => this.child(self.render_setup(setup, cx)),
                         BodyState::Loading(text) | BodyState::Paused(text) => this.child(
                             h_flex()
                                 .size_full()

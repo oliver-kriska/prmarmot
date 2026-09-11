@@ -11,6 +11,14 @@ pub struct Assets;
 
 const ICONS: &[(&str, &[u8])] = &[
     (
+        "icons/binoculars.svg",
+        include_bytes!("../assets/icons/binoculars.svg"),
+    ),
+    (
+        "icons/close.svg",
+        include_bytes!("../assets/icons/close.svg"),
+    ),
+    (
         "icons/chevron-down.svg",
         include_bytes!("../assets/icons/chevron-down.svg"),
     ),
@@ -52,6 +60,16 @@ impl AssetSource for Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialog_close_icon_is_embedded_at_the_framework_path() {
+        use gpui_component::{IconName, IconNamed};
+        let bytes = Assets
+            .load(&IconName::Close.path())
+            .unwrap()
+            .expect("missing dialog close icon");
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+    }
 
     #[test]
     fn settings_disclosure_icons_are_embedded() {

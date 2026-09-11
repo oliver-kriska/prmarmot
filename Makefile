@@ -1,4 +1,4 @@
-# prboard developer tasks. `make check` mirrors CI exactly.
+# PR Marmot developer tasks. `make check` mirrors CI exactly.
 #
 # Fast targets (fmt/lint-core/test-core) need no GPU/Metal and are what CI runs.
 # The GPUI binary (build/run/release) compiles Metal shaders and needs the Xcode
@@ -19,11 +19,11 @@ fmt: ## Format the whole workspace
 fmt-check: ## Check formatting (CI mode)
 	cargo fmt --check
 
-lint: ## Clippy on prboard-core, warnings as errors (matches CI)
-	cargo clippy -p prboard-core --all-targets -- -D warnings
+lint: ## Clippy on prmarmot-core, warnings as errors (matches CI)
+	cargo clippy -p prmarmot-core --all-targets -- -D warnings
 
-test: ## Run the prboard-core spec + golden suite (matches CI)
-	cargo test -p prboard-core
+test: ## Run the prmarmot-core spec + golden suite (matches CI)
+	cargo test -p prmarmot-core
 
 check: fmt-check lint test ## Full local gate — run before every commit/push
 
@@ -31,7 +31,7 @@ ci: check ## Alias: simulate CI locally
 
 fix: ## Auto-fix formatting and the clippy lints that are auto-fixable
 	cargo fmt
-	cargo clippy -p prboard-core --fix --allow-dirty --allow-staged
+	cargo clippy -p prmarmot-core --fix --allow-dirty --allow-staged
 
 ## ---- GPUI binary (needs the Metal Toolchain locally) -------------------------
 
@@ -52,9 +52,9 @@ release: ## Release build (LTO) — used for measurements and shipping
 run: ## Run the debug app
 	cargo run
 
-install: ## Release-build and install ~/Applications/prboard.app (refuses if running)
-	@pgrep -f 'prboard.app/Contents/MacOS/prboard' >/dev/null \
-		&& { echo "prboard.app is running — quit it first (macOS SIGKILLs an app whose binary is swapped; this also protects a live memory-gate run)"; exit 1; } \
+install: ## Release-build and install ~/Applications/prmarmot.app (refuses if running)
+	@pgrep -f 'prmarmot.app/Contents/MacOS/prmarmot' >/dev/null \
+		&& { echo "prmarmot.app is running — quit it first (macOS SIGKILLs an app whose binary is swapped; this also protects a live memory-gate run)"; exit 1; } \
 		|| true
 	cargo build --release
 	scripts/bundle-app.sh
