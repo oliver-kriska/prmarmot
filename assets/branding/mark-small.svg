@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>PR Marmot — monochrome small mark</title>
+  <desc>A right-facing upright marmot joined to a low rock. Optical 16-pixel silhouette; uses currentColor for native light and dark contexts.</desc>
+  <path fill="currentColor" d="M2 14 4 11.5 5 11C4.5 8.5 5 6.5 6 4.5L6 3Q5.5 1.5 7 1.5L8 2Q9.5 1.5 10.5 2.5L12.5 3Q13 4.5 11 5L10 6 11.5 8.5Q11.5 9.5 10.5 9L9 7.5Q10 10 9 11.5L11.5 12 14 14Z"/>
+</svg>

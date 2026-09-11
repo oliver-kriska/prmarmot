@@ -331,12 +331,16 @@ the demo to act on real PRs. Quit its window when finished.
 
 ### App icon and logo
 
-The vector source is [`assets/branding/icon.svg`](assets/branding/icon.svg).
-Transparent PNGs at 16, 32, 64, 128, 256, 512, and 1024 pixels and the macOS
-`prmarmot.icns` are included alongside it. The README and app bundle use these
-same assets. Normal builds need no icon-generation tools.
+The amber marmot standing watch on granite is the PR Marmot identity.
+[`icon.svg`](assets/branding/icon.svg) supplies the app icon; a simplified
+[`icon-small.svg`](assets/branding/icon-small.svg) preserves its silhouette
+at 16 and 32 pixels. Transparent PNGs through 1024 pixels and the macOS
+`prmarmot.icns` are included. The README and app bundle use these same assets.
+Light/dark wordmarks and monochrome marks are available in the
+[branding guide](assets/branding/README.md). Normal builds need no
+icon-generation tools.
 
-To regenerate the assets on macOS with `rsvg-convert` (librsvg) installed:
+To regenerate the app icons on macOS with `rsvg-convert` (librsvg) installed:
 
 ```sh
 scripts/generate-icons.sh

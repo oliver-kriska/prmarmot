@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 16 16">
+  <title>PR Marmot — optical small app icon</title>
+  <desc>For 16 and 32 pixel app icons. An enlarged amber marmot, blunt cream muzzle, and single granite base; no eye, paw lines, or rock facets.</desc>
+  <rect x="1" y="1" width="14" height="14" rx="3" fill="#203744"/>
+  <path fill="#E8B951" d="M5 12C4.5 10 5 8 6 6L6.5 4.5Q6 3 7.5 3Q8.5 2.5 9.5 3.5L11.5 4Q12 5.5 10 6L9.5 7 10.5 9 9.5 9Q10 11 9 12Z"/>
+  <path fill="#F5D694" d="M10 3.6 11.5 4Q12 5.5 10 6L9.5 7 9 6Z"/>
+  <path fill="#899AA2" d="M3 13 5 11.5 8 11 11 12 13 13Z"/>
+</svg>

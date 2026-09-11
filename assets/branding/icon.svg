@@ -1,18 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
   <title>PR Marmot</title>
-  <desc>A blue pull-request arrow and three nodes on a rounded navy tile.</desc>
+  <desc>An amber Tatra marmot standing watch on a granite rock, on a slate-blue macOS tile.</desc>
   <defs>
-    <linearGradient id="tile" x2="0" y2="1">
-      <stop stop-color="#202A3B"/>
-      <stop offset="1" stop-color="#182131"/>
+    <linearGradient id="tile" x2="0.75" y2="1">
+      <stop stop-color="#344D5D"/>
+      <stop offset="1" stop-color="#14252F"/>
+    </linearGradient>
+    <linearGradient id="fur" x2="0.8" y2="1">
+      <stop stop-color="#E8B951"/>
+      <stop offset="1" stop-color="#BC802A"/>
+    </linearGradient>
+    <linearGradient id="stone" x2="0" y2="1">
+      <stop stop-color="#687981"/>
+      <stop offset="1" stop-color="#3A4B55"/>
     </linearGradient>
   </defs>
-  <rect x="64" y="64" width="896" height="896" rx="180" fill="url(#tile)"/>
-  <rect x="65" y="65" width="894" height="894" rx="179" fill="none" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="2"/>
-  <g fill="none" stroke="#6AAEFF" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M352 410V610 M690 610V430Q690 340 600 340H510 M565 282L507 340L565 398"/>
-    <circle cx="352" cy="340" r="70"/>
-    <circle cx="352" cy="680" r="70"/>
-    <circle cx="690" cy="680" r="70"/>
-  </g>
+  <rect x="16" y="18" width="224" height="224" rx="49" fill="#101D26" opacity=".16"/>
+  <rect x="16" y="16" width="224" height="224" rx="49" fill="url(#tile)"/>
+  <rect x="17" y="17" width="222" height="222" rx="48" fill="none" stroke="#FFFFFF" stroke-opacity=".16"/>
+  <path fill="url(#fur)" d="M81 192Q85 181 94 177C89 158 94 129 101 110L109 84Q104 80 105 73C106 65 114 62 121 67Q137 60 150 69L171 78Q175 80 173 86Q171 95 155 98L153 109Q160 121 160 132Q168 143 162 151Q158 153 155 148C158 163 153 178 149 188L138 192Z"/>
+  <path fill="#F5D694" d="M159 75 171 78Q175 80 173 86Q171 95 155 98L153 109Q158 117 160 128L145 122 138 106 148 94Z"/>
+  <path fill="#EBC77F" d="M141 136Q149 145 155 146C159 162 153 178 149 188L137 186Q142 164 141 136Z"/>
+  <path fill="#9B6928" d="M112 70Q119 68 119 77L114 84Q107 82 110 75Z"/>
+  <path fill="none" stroke="#966326" stroke-width="3.5" stroke-linecap="round" d="M141 130Q145 145 152 145"/>
+  <ellipse cx="146" cy="79" rx="3.5" ry="2.7" fill="#222F32"/>
+  <path fill="#26353A" d="M169 78 173 80 173 84 169 84Z"/>
+  <path fill="url(#stone)" d="M54 216 83 191 117 181 170 191 202 220 62 220Z"/>
+  <path fill="#91A0A4" d="M83 191 117 181 170 191 182 203 119 187Z"/>
+  <path fill="#31424D" d="M119 187 182 203 202 220 157 220Z"/>
 </svg>

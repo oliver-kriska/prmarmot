@@ -10,7 +10,12 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/prmarmot-icons.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/prmarmot.iconset"
 for size in 16 32 64 128 256 512 1024; do
-  rsvg-convert --width "$size" --height "$size" "$ASSETS/icon.svg" \
+  source="$ASSETS/icon.svg"
+  # Optical micro artwork omits details that disappear at menu/Finder sizes.
+  if (( size <= 32 )); then
+    source="$ASSETS/icon-small.svg"
+  fi
+  rsvg-convert --width "$size" --height "$size" "$source" \
     --output "$ASSETS/icon-$size.png"
 done
 for size in 16 32 128 256 512; do
@@ -18,4 +23,4 @@ for size in 16 32 128 256 512; do
   cp "$ASSETS/icon-$((size * 2)).png" "$WORK/prmarmot.iconset/icon_${size}x${size}@2x.png"
 done
 iconutil -c icns "$WORK/prmarmot.iconset" -o "$ASSETS/prmarmot.icns"
-echo "Generated PNG sizes 16–1024 and prmarmot.icns from assets/branding/icon.svg"
+echo "Generated PNG sizes 16–1024 and prmarmot.icns from the branding SVG sources"
