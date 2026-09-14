@@ -272,6 +272,14 @@ impl AttentionState {
             .is_some_and(|snapshot| snapshot.changed_since_acknowledgement)
     }
 
+    /// What changed since the PR was last acknowledged; empty if unchanged.
+    pub fn change_summary(&self, pr_id: &str) -> Vec<String> {
+        self.snapshots
+            .snapshot(pr_id)
+            .map(|snapshot| snapshot.change_summary())
+            .unwrap_or_default()
+    }
+
     pub fn is_watched(&self, pr_id: &str) -> bool {
         self.watches.iter().any(|watch| watch.pr_id == pr_id)
     }

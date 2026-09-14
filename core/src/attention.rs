@@ -133,6 +133,127 @@ pub struct Snapshot {
     pub semantic_change_since_acknowledgement: bool,
 }
 
+impl Snapshot {
+    /// What differs from the acknowledged observation, as short phrases for
+    /// the changed marker ("New commits", "CI passing → failing", "alice
+    /// approved"). Empty unless the PR is marked changed. Compares the two
+    /// endpoints only; the latched flags cover a change that was reverted.
+    pub fn change_summary(&self) -> Vec<String> {
+        if !self.changed_since_acknowledgement {
+            return Vec::new();
+        }
+        let (old, new) = (&self.acknowledged.semantic, &self.latest.semantic);
+        let mut changes = Vec::new();
+        if old.head_oid != new.head_oid {
+            changes.push("New commits".to_string());
+        }
+        if old.draft != new.draft {
+            changes.push(if new.draft {
+                "Converted to draft".to_string()
+            } else {
+                "Marked ready for review".to_string()
+            });
+        }
+        if old.ci != new.ci {
+            changes.push(format!("CI {} → {}", old.ci.word(), new.ci.word()));
+        }
+        if old.conflict != new.conflict {
+            changes.push(if new.conflict {
+                "Merge conflict".to_string()
+            } else {
+                "Merge conflict resolved".to_string()
+            });
+        }
+        let new_reviews: Vec<&ObservedReview> = new
+            .reviews
+            .iter()
+            .filter(|review| !old.reviews.contains(review))
+            .collect();
+        for review in &new_reviews {
+            let login = review.login.as_deref().unwrap_or("deleted user");
+            changes.push(match review.state.as_str() {
+                "APPROVED" => format!("{login} approved"),
+                "CHANGES_REQUESTED" => format!("{login} requested changes"),
+                "COMMENTED" => format!("{login} commented"),
+                "DISMISSED" => format!("{login}'s review was dismissed"),
+                _ => format!("{login} reviewed"),
+            });
+        }
+        // A new review usually explains a changed decision on its own.
+        if new_reviews.is_empty() && old.review_decision != new.review_decision {
+            changes.push(format!(
+                "Review decision {} → {}",
+                decision_word(old.review_decision.as_deref()),
+                decision_word(new.review_decision.as_deref())
+            ));
+        }
+        let added: Vec<&str> = new
+            .requested
+            .iter()
+            .filter(|login| !old.requested.contains(login))
+            .map(String::as_str)
+            .collect();
+        if !added.is_empty() {
+            changes.push(format!("Review requested from {}", added.join(", ")));
+        }
+        // A request that disappears because the reviewer reviewed is already
+        // described by their review.
+        let removed: Vec<&str> = old
+            .requested
+            .iter()
+            .filter(|login| {
+                !new.requested.contains(login)
+                    && !new_reviews
+                        .iter()
+                        .any(|review| review.login.as_deref() == Some(login.as_str()))
+            })
+            .map(String::as_str)
+            .collect();
+        if !removed.is_empty() {
+            changes.push(format!("Review request removed: {}", removed.join(", ")));
+        }
+        if old.unresolved != new.unresolved {
+            changes.push(format!(
+                "Unresolved threads {} → {}",
+                old.unresolved, new.unresolved
+            ));
+        }
+        if new_reviews.is_empty() && new.reviewed_at.is_some() && old.reviewed_at != new.reviewed_at
+        {
+            changes.push("You reviewed".to_string());
+        }
+        if changes.is_empty() {
+            changes.push(if self.semantic_change_since_acknowledgement {
+                "Changed on GitHub, then changed back".to_string()
+            } else {
+                "Updated on GitHub (a comment, edit, or label)".to_string()
+            });
+        }
+        changes
+    }
+}
+
+impl ObservedCi {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pass => "passing",
+            Self::Fail => "failing",
+            Self::Running => "running",
+            Self::None => "no checks",
+        }
+    }
+}
+
+fn decision_word(decision: Option<&str>) -> String {
+    match decision {
+        None => "none".to_string(),
+        Some("APPROVED") => "approved".to_string(),
+        Some("CHANGES_REQUESTED") => "changes requested".to_string(),
+        Some("REVIEW_REQUIRED") => "review required".to_string(),
+        Some(other) => other.to_lowercase().replace('_', " "),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObservationKind {
     Baseline,
@@ -729,5 +850,101 @@ mod tests {
                 count
             ))) if count == MAX_SNAPSHOTS + 1
         ));
+    }
+
+    fn changed_snapshot(latest: Observation) -> Snapshot {
+        let mut store = SnapshotStore::new(namespace("octocat"));
+        store
+            .observe(
+                "PR_1",
+                observation("2026-09-11T10:00:00Z", ObservedCi::Pass),
+            )
+            .unwrap();
+        store.observe("PR_1", latest).unwrap();
+        store.snapshot("PR_1").unwrap().clone()
+    }
+
+    #[test]
+    fn change_summary_is_empty_until_marked_changed() {
+        let mut store = SnapshotStore::new(namespace("octocat"));
+        store
+            .observe(
+                "PR_1",
+                observation("2026-09-11T10:00:00Z", ObservedCi::Pass),
+            )
+            .unwrap();
+        assert!(store.snapshot("PR_1").unwrap().change_summary().is_empty());
+    }
+
+    #[test]
+    fn change_summary_names_each_semantic_change() {
+        let mut latest = observation("2026-09-11T10:05:00Z", ObservedCi::Fail);
+        latest.semantic.head_oid = Some("oid-2".into());
+        latest.semantic.conflict = true;
+        latest.semantic.requested = vec!["bob".into()];
+        latest.semantic.reviews = vec![ObservedReview {
+            login: Some("reviewer".into()),
+            state: "APPROVED".into(),
+        }];
+        latest.semantic.review_decision = Some("APPROVED".into());
+        latest.semantic.unresolved = 2;
+        assert_eq!(
+            changed_snapshot(latest).change_summary(),
+            vec![
+                "New commits",
+                "CI passing → failing",
+                "Merge conflict",
+                "reviewer approved",
+                "Review requested from bob",
+                "Unresolved threads 0 → 2",
+            ]
+        );
+    }
+
+    #[test]
+    fn change_summary_reports_decisions_removed_requests_and_draft_flips() {
+        let mut latest = observation("2026-09-11T10:05:00Z", ObservedCi::Pass);
+        latest.semantic.draft = true;
+        latest.semantic.requested = Vec::new();
+        latest.semantic.review_decision = Some("REVIEW_REQUIRED".into());
+        latest.semantic.reviewed_at = Some("2026-09-11T10:04:00Z".into());
+        assert_eq!(
+            changed_snapshot(latest).change_summary(),
+            vec![
+                "Converted to draft",
+                "Review decision none → review required",
+                "Review request removed: reviewer",
+                "You reviewed",
+            ]
+        );
+    }
+
+    #[test]
+    fn change_summary_falls_back_for_activity_and_reverts() {
+        let activity = changed_snapshot(observation("2026-09-11T10:05:00Z", ObservedCi::Pass));
+        assert_eq!(
+            activity.change_summary(),
+            vec!["Updated on GitHub (a comment, edit, or label)"]
+        );
+
+        let mut store = SnapshotStore::new(namespace("octocat"));
+        let baseline = observation("2026-09-11T10:00:00Z", ObservedCi::Pass);
+        store.observe("PR_1", baseline).unwrap();
+        store
+            .observe(
+                "PR_1",
+                observation("2026-09-11T10:01:00Z", ObservedCi::Fail),
+            )
+            .unwrap();
+        store
+            .observe(
+                "PR_1",
+                observation("2026-09-11T10:02:00Z", ObservedCi::Pass),
+            )
+            .unwrap();
+        assert_eq!(
+            store.snapshot("PR_1").unwrap().change_summary(),
+            vec!["Changed on GitHub, then changed back"]
+        );
     }
 }

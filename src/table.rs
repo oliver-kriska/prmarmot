@@ -14,8 +14,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Pixels, Stateful, StatefulInteractiveElement, Styled,
-    WeakEntity, Window,
+    IntoElement, MouseButton, ParentElement, Pixels, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -25,7 +25,7 @@ use gpui_component::{h_flex, ActiveTheme, Sizable};
 use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
@@ -389,7 +389,8 @@ pub struct BoardTableDelegate {
     columns: Vec<Column>,
     mode: Mode,
     all_repos: bool,
-    changed: HashSet<String>,
+    /// Changed-marker tooltip text by PR id; present only for changed PRs.
+    changed: HashMap<String, SharedString>,
     watched: HashSet<String>,
     snoozed: HashSet<String>,
     show_snoozed: bool,
@@ -413,7 +414,7 @@ impl BoardTableDelegate {
             ),
             mode,
             all_repos,
-            changed: HashSet::new(),
+            changed: HashMap::new(),
             watched: HashSet::new(),
             snoozed: HashSet::new(),
             show_snoozed: false,
@@ -468,7 +469,7 @@ impl BoardTableDelegate {
 
     pub fn set_attention(
         &mut self,
-        changed: HashSet<String>,
+        changed: HashMap<String, SharedString>,
         watched: HashSet<String>,
         snoozed: HashSet<String>,
         show_snoozed: bool,
@@ -774,6 +775,17 @@ fn review_glyph(state: &str, theme: &gpui_component::theme::Theme) -> (&'static 
         "DISMISSED" => ("✕", theme.muted_foreground),
         _ => ("·", theme.muted_foreground),
     }
+}
+
+/// Tooltip for the blue changed marker: why it is shown, what changed, and
+/// how to clear it.
+pub fn changed_marker_tooltip(changes: &[String]) -> SharedString {
+    let what = if changes.is_empty() {
+        "Changed on GitHub".to_string()
+    } else {
+        changes.join(" · ")
+    };
+    format!("Changed since you last selected it: {what}. Select the PR to clear.").into()
 }
 
 fn status_dot(color: Hsla) -> Div {
@@ -1207,8 +1219,21 @@ impl TableDelegate for BoardTableDelegate {
                     .pr(px(24.))
                     .gap_1()
                     .items_center();
-                if self.changed.contains(&row.id) {
-                    cell = cell.child(status_dot(theme.link));
+                if let Some(tooltip) = self.changed.get(&row.id).cloned() {
+                    // A padded hover target (offset by an equal negative
+                    // margin) so the 7px dot is easy to point at without
+                    // shifting the PR number.
+                    cell = cell.child(
+                        div()
+                            .id(("changed-marker", row_ix))
+                            .flex_shrink_0()
+                            .p(px(4.))
+                            .m(px(-4.))
+                            .child(status_dot(theme.link))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            }),
+                    );
                 }
                 cell = cell.child(number);
                 if let Some(handler) = self.on_row_action.clone() {
@@ -1896,7 +1921,7 @@ mod tests {
         let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
         delegate.set_rows(vec![row(1, Category::Action), row(2, Category::Await)]);
         delegate.set_attention(
-            HashSet::new(),
+            HashMap::new(),
             HashSet::new(),
             HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
             false,
@@ -1912,6 +1937,19 @@ mod tests {
         assert!(delegate
             .display_index_of_url("https://github.com/acme/widgets/pull/1")
             .is_some());
+    }
+
+    #[test]
+    fn changed_marker_tooltip_says_what_changed_and_how_to_clear() {
+        assert_eq!(
+            changed_marker_tooltip(&["New commits".into(), "CI passing → failing".into()]),
+            "Changed since you last selected it: New commits · CI passing → failing. \
+             Select the PR to clear."
+        );
+        assert_eq!(
+            changed_marker_tooltip(&[]),
+            "Changed since you last selected it: Changed on GitHub. Select the PR to clear."
+        );
     }
 
     #[test]
@@ -1964,7 +2002,7 @@ mod tests {
         let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![row(1, Category::Action), row(2, Category::Await)]);
         d.set_attention(
-            HashSet::new(),
+            HashMap::new(),
             HashSet::new(),
             HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
             false,

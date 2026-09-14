@@ -211,7 +211,8 @@ require a restart; changes saved in Settings do not.
   to copy the selected PR's group as a list. Copies respect the active search.
   On Linux the list and table copy as plain text.
 - **Changes:** a blue row marker survives restarts until you actually select the
-  PR. **Changed** filters the loaded rows; a restored selection does not clear it.
+  PR; hover it to see what changed (new commits, CI, reviews, requests, threads).
+  **Changed** filters the loaded rows; a restored selection does not clear it.
 - **Watch:** press `w` on a selected PR. Watches are FIFO-bounded at 50 and are
   refreshed through one batched GraphQL operation, including watched PRs outside
   the active search. Notifications are semantic transitions, suppressed for the

@@ -308,6 +308,13 @@ impl AppState {
             .is_some_and(|attention| attention.is_changed(pr_id))
     }
 
+    pub fn change_summary(&self, pr_id: &str) -> Vec<String> {
+        self.attention
+            .as_ref()
+            .map(|attention| attention.change_summary(pr_id))
+            .unwrap_or_default()
+    }
+
     pub fn is_watched(&self, pr_id: &str) -> bool {
         self.attention
             .as_ref()

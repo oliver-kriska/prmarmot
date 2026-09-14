@@ -26,7 +26,10 @@ use gpui_component::{
 use prmarmot_core::board::{BoardScope, Mode};
 
 use crate::state::{relative, AppState, SetupStatus};
-use crate::table::{columns_for, detail_text, matches_filter, BoardTableDelegate, TableWidthClass};
+use crate::table::{
+    changed_marker_tooltip, columns_for, detail_text, matches_filter, BoardTableDelegate,
+    TableWidthClass,
+};
 use crate::theme::ThemePref;
 use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
 
@@ -400,10 +403,13 @@ impl RootView {
             })
             .cloned()
             .collect();
-        let changed: HashSet<_> = rows
+        let changed: HashMap<_, _> = rows
             .iter()
             .filter(|row| state.is_changed(&row.id))
-            .map(|row| row.id.clone())
+            .map(|row| {
+                let summary = state.change_summary(&row.id);
+                (row.id.clone(), changed_marker_tooltip(&summary))
+            })
             .collect();
         let watched: HashSet<_> = rows
             .iter()
