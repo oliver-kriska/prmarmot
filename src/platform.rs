@@ -246,6 +246,29 @@ fn set_badge(count: usize) {
 #[cfg(not(target_os = "macos"))]
 fn set_badge(_count: usize) {}
 
+/// Put a rich HTML flavour and its plain-text alternative on the clipboard in
+/// one write, so each destination reads the one it renders best. GPUI's
+/// clipboard is plain-text only, hence the direct pasteboard call. Returns
+/// `false` where rich text is unsupported; the caller copies plain text.
+#[cfg(target_os = "macos")]
+pub fn write_rich_clipboard(html: &str, plain: &str) -> bool {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    // SAFETY: AppKit's pasteboard type constants are immutable static strings.
+    let (html_type, string_type) = unsafe { (NSPasteboardTypeHTML, NSPasteboardTypeString) };
+    // Richest flavour first: some readers take the first type they understand.
+    pasteboard.setString_forType(&NSString::from_str(html), html_type)
+        && pasteboard.setString_forType(&NSString::from_str(plain), string_type)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn write_rich_clipboard(_html: &str, _plain: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

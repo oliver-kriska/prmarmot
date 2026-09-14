@@ -10,7 +10,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_base::SelectableText;
 use gpui_component::button::{Button, ButtonVariants};
@@ -96,7 +96,7 @@ pub struct RootView {
     theme_pref: ThemePref,
     refresh: Duration,
     refresh_task: Option<gpui::Task<()>>,
-    feedback: Option<&'static str>,
+    feedback: Option<SharedString>,
     feedback_task: Option<gpui::Task<()>>,
     /// Selected PR per queue, keyed by stable identity (URL), restored on
     /// switch-back so a queue keeps its place (critique #1). Stored by URL —
@@ -155,8 +155,12 @@ impl RootView {
         let view = cx.entity().downgrade();
         let table = cx.new(|cx| {
             let mut delegate = BoardTableDelegate::new(mode, all_repos);
+            let group_view = view.clone();
             delegate.on_row_action = Some(std::rc::Rc::new(move |row, action, window, cx| {
                 let _ = view.update(cx, |this, cx| this.row_action(row, action, window, cx));
+            }));
+            delegate.on_group_copy = Some(std::rc::Rc::new(move |copy, _, cx| {
+                let _ = group_view.update(cx, |this, cx| this.copy_group(copy, cx));
             }));
             delegate.set_columns(columns_for(mode, initial_class, initial_width, all_repos));
             TableState::new(delegate, window, cx)
@@ -526,8 +530,8 @@ impl RootView {
     }
 
     /// One replaceable confirmation, with no queue or continuous animation.
-    fn show_feedback(&mut self, message: &'static str, cx: &mut Context<Self>) {
-        self.feedback = Some(message);
+    fn show_feedback(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.feedback = Some(message.into());
         self.feedback_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(3)).await;
             let _ = this.update(cx, |this, cx| {
@@ -1001,6 +1005,7 @@ impl RootView {
                     cx.open_url(&url);
                 }
             }
+            "y" if !platform && event.keystroke.modifiers.shift => self.copy_selected_group(cx),
             "y" if !platform => {
                 if let Some(url) = self.selected_row_url(cx) {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
@@ -1037,6 +1042,47 @@ impl RootView {
                 });
             },
         );
+    }
+
+    /// Write a copied board group: HTML + plain text where the platform
+    /// clipboard supports it, plain text otherwise.
+    fn copy_group(&mut self, copy: crate::table::GroupCopy, cx: &mut Context<Self>) {
+        use prmarmot_core::share::{ShareFormat, SharePayload};
+        let SharePayload { html, plain } = copy.payload;
+        let rich = html
+            .as_deref()
+            .is_some_and(|html| crate::platform::write_rich_clipboard(html, &plain));
+        if !rich {
+            cx.write_to_clipboard(ClipboardItem::new_string(plain));
+        }
+        let what = match copy.format {
+            ShareFormat::Urls => "URL",
+            _ => "PR",
+        };
+        let how = match copy.format {
+            ShareFormat::List if rich => " as a list",
+            ShareFormat::Table if rich => " as a table",
+            ShareFormat::List | ShareFormat::Table => " as text",
+            ShareFormat::Markdown => " as Markdown",
+            ShareFormat::Urls => "",
+        };
+        let plural = if copy.count == 1 { "" } else { "s" };
+        self.show_feedback(format!("Copied {} {what}{plural}{how}", copy.count), cx);
+    }
+
+    /// `Y`: copy the group containing the selected PR as a list.
+    fn copy_selected_group(&mut self, cx: &mut Context<Self>) {
+        let copy = {
+            let table = self.table.read(cx);
+            table.selected_row().and_then(|row_ix| {
+                let delegate = table.delegate();
+                let label = delegate.group_label_at(row_ix)?;
+                delegate.group_copy(&label, prmarmot_core::share::ShareFormat::List)
+            })
+        };
+        if let Some(copy) = copy {
+            self.copy_group(copy, cx);
+        }
     }
 
     fn row_action(
@@ -1827,7 +1873,7 @@ impl RootView {
                 .on_click(cx.listener(|this, _, window, cx| this.show_shortcuts(window, cx))),
         )
         .child(div().flex_1())
-        .when_some(self.feedback, |bar, message| {
+        .when_some(self.feedback.clone(), |bar, message| {
             bar.child(
                 div()
                     .text_size(px(12.))
@@ -1902,6 +1948,7 @@ impl RootView {
                 ("Select a PR", "↑ / ↓"),
                 ("Open selected PR", "Enter / o"),
                 ("Copy selected PR URL", "y"),
+                ("Copy selected PR's group as a list", "Y"),
                 ("Watch / unwatch selected PR", "w"),
                 ("Snooze selected PR", "s"),
                 ("My PRs / Review queue", "1 / 2"),

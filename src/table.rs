@@ -15,14 +15,18 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Pixels, Stateful, StatefulInteractiveElement, Styled,
-    Window,
+    WeakEntity, Window,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{h_flex, ActiveTheme};
-use prmarmot_core::board::{Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use gpui_component::{h_flex, ActiveTheme, Sizable};
+use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
+use std::cell::Cell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 
@@ -34,6 +38,9 @@ enum DisplayRow {
         label: String,
         count: Option<usize>,
         detail: Option<String>,
+        /// PRs in a top-level group, in display order (indices into `rows`),
+        /// kept even while the group is collapsed. Empty for stack sub-headers.
+        members: Vec<usize>,
     },
     Pr(usize),
 }
@@ -356,6 +363,25 @@ pub fn row_copy_items(row: &BoardRow) -> Vec<(&'static str, String)> {
 }
 
 type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;
+type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
+
+/// A board group rendered for the clipboard, ready for `app.rs` to write.
+pub struct GroupCopy {
+    pub format: ShareFormat,
+    pub count: usize,
+    pub payload: SharePayload,
+}
+
+/// Group copy formats, richest first, labelled with where each pastes best.
+const GROUP_COPY_ITEMS: [(&str, ShareFormat); 4] = [
+    ("Copy list for Slack & docs", ShareFormat::List),
+    ("Copy Markdown for GitHub", ShareFormat::Markdown),
+    ("Copy as table", ShareFormat::Table),
+    ("Copy URLs", ShareFormat::Urls),
+];
+
+/// Hover group for a section header's reveal-on-hover Copy button.
+const HEADER_GROUP: &str = "board-section-header";
 
 pub struct BoardTableDelegate {
     rows: Vec<BoardRow>,
@@ -368,6 +394,10 @@ pub struct BoardTableDelegate {
     snoozed: HashSet<String>,
     show_snoozed: bool,
     pub on_row_action: Option<RowActionHandler>,
+    pub on_group_copy: Option<GroupCopyHandler>,
+    /// Display index of the header whose Copy menu is open, so its button
+    /// stays visible while the pointer is over the menu instead of the header.
+    copy_menu_open: Rc<Cell<Option<usize>>>,
 }
 
 impl BoardTableDelegate {
@@ -388,6 +418,8 @@ impl BoardTableDelegate {
             snoozed: HashSet::new(),
             show_snoozed: false,
             on_row_action: None,
+            on_group_copy: None,
+            copy_menu_open: Rc::new(Cell::new(None)),
         }
     }
 
@@ -495,7 +527,9 @@ impl BoardTableDelegate {
                 .into(),
                 count: Some(i - start),
                 detail: None,
+                members: Vec::new(),
             });
+            let header_ix = display.len() - 1;
             let mut emitted = std::collections::HashSet::new();
             for &j in &order[start..i] {
                 if let Some(stack) = &self.rows[j].stack {
@@ -532,11 +566,22 @@ impl BoardTableDelegate {
                         } else {
                             format!("{} of {} layers shown", members.len(), stack.size)
                         }),
+                        members: Vec::new(),
                     });
                     display.extend(members.into_iter().map(DisplayRow::Pr));
                 } else {
                     display.push(DisplayRow::Pr(j));
                 }
+            }
+            let emitted: Vec<usize> = display[header_ix + 1..]
+                .iter()
+                .filter_map(|d| match d {
+                    DisplayRow::Pr(ix) => Some(*ix),
+                    DisplayRow::Header { .. } => None,
+                })
+                .collect();
+            if let DisplayRow::Header { members, .. } = &mut display[header_ix] {
+                *members = emitted;
             }
         }
         if !snoozed_order.is_empty() {
@@ -548,6 +593,7 @@ impl BoardTableDelegate {
                 } else {
                     "collapsed · use Snoozed to show".into()
                 }),
+                members: snoozed_order.clone(),
             });
             if self.show_snoozed {
                 display.extend(snoozed_order.into_iter().map(DisplayRow::Pr));
@@ -610,6 +656,81 @@ impl BoardTableDelegate {
     pub fn display_len(&self) -> usize {
         self.display.len()
     }
+
+    /// The top-level group label a display row belongs to (a header is its
+    /// own group; stack sub-headers belong to the group above them).
+    pub fn group_label_at(&self, display_ix: usize) -> Option<String> {
+        self.display
+            .get(..=display_ix)?
+            .iter()
+            .rev()
+            .find_map(|d| match d {
+                DisplayRow::Header {
+                    label,
+                    count: Some(_),
+                    ..
+                } => Some(label.clone()),
+                _ => None,
+            })
+    }
+
+    /// Render the group named `label` for the clipboard. Groups are looked up
+    /// by label, which is unique per board, so a menu opened before a refresh
+    /// copies the group's current rows rather than whatever moved to its index.
+    pub fn group_copy(&self, label: &str, format: ShareFormat) -> Option<GroupCopy> {
+        let members = self.display.iter().find_map(|d| match d {
+            DisplayRow::Header {
+                label: header,
+                count: Some(_),
+                members,
+                ..
+            } if header == label => Some(members),
+            _ => None,
+        })?;
+        let rows: Vec<BoardRow> = members
+            .iter()
+            .filter_map(|&ix| self.rows.get(ix).cloned())
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        Some(GroupCopy {
+            format,
+            count: rows.len(),
+            payload: share_group(label, &rows, self.mode, format),
+        })
+    }
+}
+
+/// Group copy items for a header's context menu or Copy dropdown. Rows are
+/// read when an item is clicked, not when the menu is built.
+fn group_copy_menu(
+    mut menu: PopupMenu,
+    table: WeakEntity<TableState<BoardTableDelegate>>,
+    label: String,
+) -> PopupMenu {
+    for (item_label, format) in GROUP_COPY_ITEMS {
+        let table = table.clone();
+        let label = label.clone();
+        menu = menu.item(
+            PopupMenuItem::new(item_label).on_click(move |_, window, cx| {
+                let Some(table) = table.upgrade() else {
+                    return;
+                };
+                let (copy, handler) = {
+                    let delegate = table.read(cx).delegate();
+                    (
+                        delegate.group_copy(&label, format),
+                        delegate.on_group_copy.clone(),
+                    )
+                };
+                if let (Some(copy), Some(handler)) = (copy, handler) {
+                    handler(copy, window, cx);
+                }
+            }),
+        );
+    }
+    menu
 }
 
 /// Aggregate review-state word for the merged Review column ("✓ alice —
@@ -653,20 +774,6 @@ fn review_glyph(state: &str, theme: &gpui_component::theme::Theme) -> (&'static 
         "DISMISSED" => ("✕", theme.muted_foreground),
         _ => ("·", theme.muted_foreground),
     }
-}
-
-/// Notes come from core with the prototype's emoji language (the SKILL spec);
-/// on this board a themed status dot carries that signal instead, so the
-/// emoji are presentation noise — strip them, never change them in core.
-fn strip_note_glyphs(note: &str) -> String {
-    const GLYPHS: &[&str] = &[
-        "⚠️ ", "🔴 ", "❌ ", "✋ ", "🟡 ", "🟢 ", "✅ ", "💬 ", "🔵 ",
-    ];
-    let mut s = note.to_string();
-    for g in GLYPHS {
-        s = s.replace(g, "");
-    }
-    s
 }
 
 fn status_dot(color: Hsla) -> Div {
@@ -873,8 +980,20 @@ impl TableDelegate for BoardTableDelegate {
         row_ix: usize,
         mut menu: PopupMenu,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
+        if let Some(DisplayRow::Header {
+            label,
+            count: Some(_),
+            members,
+            ..
+        }) = self.display.get(row_ix)
+        {
+            if members.is_empty() {
+                return menu;
+            }
+            return group_copy_menu(menu, cx.entity().downgrade(), label.clone());
+        }
         let Some(row) = self.row(row_ix).cloned() else {
             return menu;
         };
@@ -943,8 +1062,10 @@ impl TableDelegate for BoardTableDelegate {
                 label,
                 count,
                 detail,
+                members,
             }) => tr
                 .relative()
+                .group(HEADER_GROUP)
                 .bg(theme.background)
                 .when(count.is_some(), |header| {
                     header
@@ -989,6 +1110,34 @@ impl TableDelegate for BoardTableDelegate {
                                     .text_size(px(11.))
                                     .text_color(theme.muted_foreground)
                                     .child(format!("· {detail}")),
+                            )
+                        })
+                        // Revealed on header hover (a style swap, no animation)
+                        // and held while its menu is open.
+                        .when(count.is_some() && !members.is_empty(), |header| {
+                            let open_state = self.copy_menu_open.clone();
+                            let table = cx.entity().downgrade();
+                            let label = label.clone();
+                            header.child(
+                                div()
+                                    .when(open_state.get() != Some(row_ix), |slot| {
+                                        slot.invisible()
+                                            .group_hover(HEADER_GROUP, |style| style.visible())
+                                    })
+                                    .child(
+                                        Button::new(("copy-group", row_ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .label("Copy")
+                                            .dropdown_caret(true)
+                                            .dropdown_menu(move |menu, _, _| {
+                                                group_copy_menu(menu, table.clone(), label.clone())
+                                            })
+                                            .on_open_change(move |open, window, _| {
+                                                open_state.set(open.then_some(row_ix));
+                                                window.refresh();
+                                            }),
+                                    ),
                             )
                         }),
                 ),
@@ -1763,6 +1912,76 @@ mod tests {
         assert!(delegate
             .display_index_of_url("https://github.com/acme/widgets/pull/1")
             .is_some());
+    }
+
+    #[test]
+    fn group_copy_takes_display_order_including_stack_layers() {
+        let mut base = row(2, Category::Action);
+        base.stack = Some(prmarmot_core::board::StackInfo {
+            number: 70,
+            size: 2,
+            base_ref_name: "main".into(),
+            position: Some(1),
+        });
+        let mut top = row(4, Category::Action);
+        top.review_state = ReviewState::Approved;
+        top.stack = Some(prmarmot_core::board::StackInfo {
+            position: Some(2),
+            ..base.stack.clone().unwrap()
+        });
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![
+            row(1, Category::Action),
+            base,
+            row(3, Category::Action),
+            top,
+            row(5, Category::Await),
+        ]);
+        let copy = d.group_copy("Needs action", ShareFormat::Urls).unwrap();
+        assert_eq!(copy.count, 4);
+        assert_eq!(
+            copy.payload.plain,
+            [2, 4, 1, 3]
+                .map(|n| format!("https://github.com/acme/widgets/pull/{n}"))
+                .join("\n")
+        );
+        // A stack layer and the stack sub-header both belong to "Needs action".
+        assert_eq!(d.group_label_at(1).as_deref(), Some("Needs action"));
+        assert_eq!(d.group_label_at(2).as_deref(), Some("Needs action"));
+        let await_ix = d
+            .display_index_of_url("https://github.com/acme/widgets/pull/5")
+            .unwrap();
+        assert_eq!(
+            d.group_label_at(await_ix).as_deref(),
+            Some("Awaiting review")
+        );
+        assert!(d.group_copy("Stack #70", ShareFormat::Urls).is_none());
+        assert!(d.group_copy("Drafts", ShareFormat::Urls).is_none());
+    }
+
+    #[test]
+    fn collapsed_snoozed_group_still_copies_its_rows() {
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![row(1, Category::Action), row(2, Category::Await)]);
+        d.set_attention(
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
+            false,
+        );
+        let copy = d.group_copy("Snoozed", ShareFormat::Markdown).unwrap();
+        assert_eq!(copy.count, 1);
+        assert!(copy
+            .payload
+            .plain
+            .contains("(https://github.com/acme/widgets/pull/1)"));
+        assert_eq!(
+            d.group_copy("Awaiting review", ShareFormat::Urls)
+                .unwrap()
+                .payload
+                .plain,
+            "https://github.com/acme/widgets/pull/2"
+        );
     }
 
     #[test]

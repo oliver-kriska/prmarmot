@@ -31,7 +31,7 @@ notify-rust = { version = "=4.18.0", features = ["preview-macos-un"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSPasteboard"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSString"] }
 # No tokio, no reqwest — transport is a `gh` subprocess on GPUI's background executor.
 # No `open` crate — gpui's cx.open_url covers open-in-browser.

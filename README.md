@@ -203,6 +203,13 @@ require a restart; changes saved in Settings do not.
 - **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
   Select text in the panel and press `⌘C` (macOS) or `Ctrl+C` (Linux) to copy it.
   The **Copy** menu offers the PR number, title, URL, or all details without selecting text.
+- **Share a group:** hover a section header (e.g. **Awaiting review**) and click
+  **Copy**, or right-click the header. **Copy list for Slack & docs** pastes titled
+  links into Slack, Teams, Google Docs, email, Notion, Linear, and Jira; **Copy
+  Markdown for GitHub** is plain Markdown for GitHub, Discord, and editors; **Copy
+  as table** suits docs and slides; **Copy URLs** is one link per line. Press `Y`
+  to copy the selected PR's group as a list. Copies respect the active search.
+  On Linux the list and table copy as plain text.
 - **Changes:** a blue row marker survives restarts until you actually select the
   PR. **Changed** filters the loaded rows; a restored selection does not clear it.
 - **Watch:** press `w` on a selected PR. Watches are FIFO-bounded at 50 and are

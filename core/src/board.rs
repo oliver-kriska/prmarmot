@@ -1118,6 +1118,20 @@ fn blocker_note(blocker: &Blocker) -> String {
     }
 }
 
+/// Notes keep the prototype's emoji language (the SKILL spec). Surfaces that
+/// carry the signal another way — the board's themed status dots, shared
+/// plain text — strip the glyphs for display; the note itself never changes.
+pub fn strip_note_glyphs(note: &str) -> String {
+    const GLYPHS: &[&str] = &[
+        "⚠️ ", "🔴 ", "❌ ", "✋ ", "🟡 ", "🟢 ", "✅ ", "💬 ", "🔵 ",
+    ];
+    let mut s = note.to_string();
+    for g in GLYPHS {
+        s = s.replace(g, "");
+    }
+    s
+}
+
 /// Mode A Note (SKILL.md): action rows combine every applicable blocker,
 /// most-blocking first; await/draft rows are single-state. Action rows render
 /// straight from `row.blockers`, so the note and the structured list can never
