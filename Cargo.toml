@@ -18,7 +18,7 @@ gpui = { package = "gpui-pre", version = "=0.3.4" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.4", features = ["font-kit", "wayland", "x11"] }
 gpui-component = "=0.6.0"
 # Already used by gpui-component; expose its plain selectable-text primitive.
-gpui-base = "=0.6.0"
+gpui-base = "=0.6.1"
 chrono = "0.4"
 # Config file (Spotlight launches have no env vars / cwd).
 toml = "1.1"
