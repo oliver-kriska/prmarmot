@@ -36,6 +36,12 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 # No tokio, no reqwest — transport is a `gh` subprocess on GPUI's background executor.
 # No `open` crate — gpui's cx.open_url covers open-in-browser.
 
+# block 0.1.6 (via GPUI's macOS backend) declares a static of an uninhabited
+# type, a future hard error in rustc. Upstream is unmaintained; see
+# vendor/block/PATCHED.md.
+[patch.crates-io]
+block = { path = "vendor/block" }
+
 [profile.release]
 opt-level = 3
 lto = true
