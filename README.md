@@ -285,7 +285,7 @@ layers appear in the same loaded section.
 
 The workspace contains the GPUI app and `core/`, a UI-independent crate for
 GitHub transport, categorization, and Note logic. Current UI dependencies are
-`gpui-component 0.6.0` and `gpui-pre` / `gpui-pre-platform 0.3.4`.
+`gpui-component 0.6.1` and `gpui-pre` / `gpui-pre-platform 0.3.5`.
 
 ```sh
 make check      # fmt check + core clippy -D warnings + core tests (same as CI)
