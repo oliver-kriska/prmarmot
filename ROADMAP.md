@@ -4,7 +4,17 @@ Working plan agreed 2026-09-11. Ordered by dependency, not by size. Checkboxes a
 each phase ends with a shipped release. Evidence for the ordering is in
 `.claude/research/2026-09-11-monetization-and-naming-analysis.md` (local only).
 
-## Implementation status — 2026-09-11 (local, not released)
+## Implementation status — 2026-09-15
+
+- **v0.6.0 released 2026-09-15 04:54 UTC** under the new name: notarized + stapled `.app`, cask
+  `oliver-kriska/homebrew-tap` live with matching sha256, so Phases 0, 1a and 1b are shipped (verified
+  independently via `gh release view`, the tap's `Casks/prmarmot.rb`, and the hub's `spctl` check).
+- Caveat: `~/Applications/prmarmot.app` on Oliver's Mac is a **source build** (0.6.0 but `spctl`
+  rejects, no ticket). The benchmark's subject A must be the cask install at `/Applications/`, and that
+  local copy must not be running during a gate run. Replace it with the cask install only when no
+  measurement is live.
+
+### Earlier status — 2026-09-11 (local, not released)
 
 - Local rename is implemented, including one-time config/state copying with
   originals preserved and no overwrite of an existing PR Marmot directory.
@@ -22,14 +32,45 @@ each phase ends with a shipped release. Evidence for the ordering is in
 - Logo/icon design is owned by the separate PR Marmot logo thread; current
   production assets remain the existing PR glyph until a design is approved.
 
+## Strategic roadmap — decided 2026-09-14
+
+Oliver's product ladder (assessment behind it: `.claude/research/2026-09-14-swift-native-mac-ipad-assessment.md`):
+
+| Rung | Product | Stack | Price | Role |
+|---|---|---|---|---|
+| 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, `gh` login, local only | Free, MIT, forever | Acquisition engine, the OSS brand |
+| 2 | **PR Marmot for iPad (+ iPhone)** | Swift/SwiftUI over `prmarmot-core` via UniFFI | Paid, App Store (free download + one-time unlock) | First revenue, no server |
+| 3 | **PR Marmot Cloud** | Hosted watcher (Phoenix/Fly.io or Workers) + APNs | Subscription | The only way mobile alerts are real; second revenue |
+| 4 | Mac App Store copy of rung 1 (optional) | Same OSS app, sandboxed, direct-HTTP transport | Paid (Maccy model) | Only if cheap once rung 2 exists |
+
+Why in this order: rung 1 has zero stars today, so nothing above it is justified yet; rung 2 needs
+the direct-HTTP transport that also improves rung 1; rung 3 is the only thing that makes iPad
+notifications work (iOS cannot poll in the background, pushes need a server) and it is the
+subscription that scales — but it needs paying rung-2 customers to justify hosting and token custody.
+
+Gates (numbers are targets, ASSESSMENT — revise against reality):
+
+| Gate | Passes when | Unlocks |
+|---|---|---|
+| G0 memory | on the shipped cask build, 12–24 h soak, hands off: **phys_footprint** (Activity Monitor "Memory", summed over every `prmarmot.app/` process) is the headline, RSS recorded alongside for continuity with the July `measurements/`; **pass = mean phys_footprint over hours 1→end < 150 MB AND "flat" = linear-fit slope ≤ 2 MB/h over hours 1→end AND (max − min) after hour 1 ≤ 25 MB AND idle CPU ≈ 0 %** — numbers fixed 2026-09-15 before any soak run | Launch (Phase 3) |
+| G1 signal | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from strangers, ~8 weeks after launch. *Waitlist signal* (decided 2026-09-16) = unique participants (comments + 👍 reactions) on one pinned GitHub Discussion "iPad app + Cloud: notify me", counted via the API — no email form, no third-party service, no PII, CSP untouched; the site's "Join the waitlist" button links to that Discussion. Emails are collected only when the iPad TestFlight opens (Phase 5). | iPad app (Phase 5) |
+| G2 demand | ≥ 100 paid iPad unlocks **or** ≥ 50 % of iPad reviews/waitlist ask for alerts | Cloud (Phase 6) |
+
+Timeline from 2026-09-14 (solo, ASSESSMENT): Phases 0–2 → week 2–6 · Phase 3 launch → week 6–8 ·
+Phase 4 core work in parallel → week 8–12 · G1 read → week 16 · Phase 5 iPad → week 16–26 ·
+G2 → week 30+ · Phase 6 Cloud → week 30–40.
+
+---
+
 ## Principles
 
-- **Free / paid line:** everything you see while the window is open is free and open source.
-  Anything the app does while you are *not* looking at it (a background agent, menu-bar presence,
-  digests) is the future Pro layer. Nothing on this roadmap is Pro. Nothing shipped free is ever
-  clawed back.
-- **Early users get Pro for life.** Anyone who installs before 1.0 is grandfathered. Say so on the
-  website from day one; it turns "no users yet" into a launch story.
+- **Free / paid line (revised 2026-09-14):** the desktop app is free and open source, all of it,
+  forever — everything in this file's Phases 0–3 ships free. Paid = the iPad/iPhone app (App Store)
+  and, later, the Cloud watcher subscription. Nothing shipped free is ever clawed back.
+- **Early users get Cloud for life.** Anyone who installs the desktop app before 1.0 gets the Cloud
+  subscription free. (Offer codes cover subscriptions *and* non-consumable unlocks at 1,000,000 per
+  app per quarter since 2026-03-26, so either product could carry the promise; Cloud is the one whose
+  marginal cost the promise actually affects.) Say so on the website from day one; it turns "no users yet" into a launch story.
 - **Growth first, billing never before signal.** No licence keys, no payment provider, no extension
   system until stars / downloads / issues show real usage.
 - **The memory gate still applies.** Keep-it-open-all-day is the promise; re-run
@@ -51,9 +92,9 @@ or `PRMarmot` (the first reads as the word "Pr", the second runs into "PRM").
 - [ ] Trademark + handle due diligence for `prmarmot` (rerun the Opus agent as done for prmarmot:
       TMview exact + contains, YouTube/X/Bluesky/Mastodon/HN handles, App Store, Reddit/Product Hunt
       manual). Report to `.claude/research/2026-09-11-prmarmot-name-due-diligence.md`.
-- [ ] Lock down in this order (irreversible ones first): (1) `prmarmot.dev`, (2) crates.io `prmarmot`
-      + `prmarmot-core` placeholders, (3) GitHub org `prmarmot`, (4) `prmarmot.com`, (5) `@prmarmot`
-      on X + Bluesky, (6) Mastodon, (7) npm `prmarmot` defensive. Skip `.io`.
+- [x] Domains: `prmarmot.dev` and `prmarmot.com` registered 2026-09-14 (Oliver). `.io` skipped.
+- [ ] Still to lock down: crates.io `prmarmot` + `prmarmot-core` placeholders, GitHub org `prmarmot`,
+      `@prmarmot` on X + Bluesky, Mastodon, npm `prmarmot` defensive.
 - [ ] Rename the GitHub repo `oliver-kriska/prboard` → `oliver-kriska/prmarmot` (GitHub redirects old URLs).
 - [x] Cargo: package names `prmarmot` / `prmarmot-core`, binary name, repository metadata.
       Bundling uses the existing shell script, not cargo-bundle metadata.
@@ -76,18 +117,21 @@ or `PRMarmot` (the first reads as the word "Pr", the second runs into "PRM").
 Prerequisite for everything else. Homebrew enforces Gatekeeper on casks since 2026-09-01.
 
 ### 1a. Notarized `.app`
-- [ ] Enrol the IdeaX Developer ID; create the **Developer ID Application** certificate; export `.p12`.
-- [ ] App Store Connect API key for `notarytool` (preferred over app-specific password in CI).
-- [ ] CI secrets per `packaging/RELEASING.md` §2; extend `.github/workflows/release-build.yml`:
+- [x] Enrol the IdeaX Developer ID; create the **Developer ID Application** certificate; export `.p12`.
+      (v0.6.0 signed by "Developer ID Application: IdeaX, s.r.o", team AUL48LCR3Y — verified 2026-09-15.)
+- [x] App Store Connect API key for `notarytool` (preferred over app-specific password in CI).
+- [x] CI secrets per `packaging/RELEASING.md` §2; extend `.github/workflows/release-build.yml`:
       `codesign --options runtime --timestamp` → `notarytool submit --wait` → `stapler staple` →
       `spctl -a -vv` assertion. Replace the current ad-hoc `codesign -s -` step.
 - [ ] Hardened-runtime entitlements audit: the app shells out to `gh`; confirm no sandbox entitlement
       is set (sandbox would block it) and that JIT/unsigned-memory entitlements are not needed.
 - [ ] Verify on a clean machine (or a fresh user account): download via browser, open, no Gatekeeper
+      (partial 2026-09-15: SEO hub downloaded the v0.6.0 asset to a scratch dir; `spctl` = accepted,
+      source=Notarized Developer ID; `stapler validate` OK. Fresh-account Gatekeeper dialog check still open.)
       dialog.
 
 ### 1b. Homebrew tap + cask
-- [ ] Create `oliver-kriska/homebrew-tap` with `Casks/prmarmot.rb` (sha256, `url` to the release
+- [x] Create `oliver-kriska/homebrew-tap` with `Casks/prmarmot.rb` (sha256, `url` to the release
       tarball, `app "prmarmot.app"`, `zap` for `~/.config/prmarmot`, `livecheck` on GitHub releases).
 - [x] Leave `auto_updates` unset (false by default) so normal `brew upgrade` includes the cask.
 - [x] Release workflow implementation: after publishing, update the tap version + sha256.
@@ -178,28 +222,130 @@ agent that does this while the app is closed.
 
 ## Phase 3 — Launch
 
-- [ ] Re-run the memory gate on the current runtime (`scripts/measure.sh` 12–24 h) and record the
-      verdict in HANDOFF; do not launch a keep-it-open app without it.
-- [ ] README: hero GIF at the top, install one-liner, the "no account, no server" line, comparison
-      table (github.com/pulls · gh-dash · Gitify · prmarmot).
-- [ ] GitHub Discussions on, issue templates, a "what would you pay for" poll pinned.
-- [ ] Posts: Show HN, r/rust, r/github, Lobsters, X/LinkedIn; awesome-lists (awesome-rust,
-      awesome-github); gh-dash and Gitify comparison angle.
+Sequencing agreed with the SEO hub 2026-09-16: **launch posts go out only after** the benchmark is
+published, the three `/compare/` pages, the waitlist Discussion link, and JSON-LD are live on
+prmarmot.dev — launch traffic is the only large sample the site will get for months. GEO baseline ~4
+weeks *after* the posts. Ownership: this session owns the plan + G0 criteria/verdict; the SEO hub owns
+the protocol, measurement and handoff acceptance; site edits go to the site session; **the soak run
+itself is operator-scheduled by Oliver** (his Mac unattended ~12 h, PR Flow trial installed by him).
+
+- [ ] **G0 / memory benchmark** — `benchmarks/2026-09-memory/` per the hub protocol (subjects: cask build
+      of v0.6.0 at `/Applications/`, PR Flow trial, one github.com/pulls Safari tab as marginal cost;
+      quit the `~/Applications` source build first). Runnable now (v0.6.0 notarized, cask live). Oliver
+      picks the night; verdict recorded here + HANDOFF. Until published: no "lightweight / low memory /
+      fast" wording anywhere. Before publishing: send PR Flow's developer the README + results (Oliver's
+      call, recommended); read prflow.app/terms in full.
+- [x] PRFlow name disambiguation added to public CLAUDE.md + HANDOFF.md (2026-09-16; uncommitted).
+- [ ] Repo hygiene: GitHub **topics** (github, pull-requests, code-review, rust, gpui, macos, linux,
+      developer-tools, cli, claude-code) — still empty 2026-09-16; social preview + homepage are set.
+- [ ] Pinned GitHub Discussion "iPad app + Cloud: notify me" (= the waitlist, see G1); Discussions on,
+      issue templates, a "what would you pay for" poll.
+- [ ] README: hero GIF at the top, install one-liner (cask), the "no account, no server" line, the CLI
+      + agent-skill section, comparison table (github.com/pulls · gh-dash · RepoBar · Gitify · PR Flow).
+- [ ] Posts (after the gates above): Show HN, r/rust, r/github, Lobsters, X/LinkedIn; awesome-rust,
+      awesome-github, awesome-claude-code (the CLI skill is the hook there). Lead with "PR triage for
+      you and your agents".
 - [ ] Adoption tracking without telemetry: weekly script appending stars, release downloads, traffic
-      views/clones, tap installs to `measurements/adoption.csv`.
-- [ ] Tag `v1.0.0` when Phase 1 + 2a/2b/2d are stable; grandfathering cutoff is announced against
-      this tag.
+      views/clones, Discussion participants to `measurements/adoption.csv`.
+- [ ] Tag `v1.0.0` when Phase 1 + 2a/2b/2d + benchmark are stable; grandfathering cutoff is announced
+      against this tag.
 
-## Later / maybe
+## Phase 4 — Core becomes app-store-ready (parallel with post-launch measuring)
 
-- [ ] GitHub Enterprise hosts (`GH_HOST` passthrough; `gh` already handles auth per host). Cheap,
-      but ship blind only with a volunteer tester — no proof otherwise.
-- [ ] Launch at login (`auto-launch` / `SMAppService`) — fits the keep-it-open promise.
-- [ ] Menu-bar / tray item — verify-first: `tray-icon` vs GPUI's run loop is unproven, Linux worse.
+Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Enterprise hosts).
+Keep `prmarmot-core` the single source of categorization/Note; golden tests stay the contract.
+
+- [ ] Direct HTTP `GithubTransport`: same GraphQL document, `reqwest`/`ureq` behind the trait, same
+      bounded paging, `rateLimit{}` parsing, host configurable (github.com + GHES).
+- [ ] `TokenSource` for OAuth: register a GitHub OAuth App; **Device Flow** first (no secret, no
+      server — works on desktop). Store the token in the OS keychain (`keyring` crate), never in TOML.
+- [ ] Desktop: transport picker — `gh` if present (zero-config), else OAuth device flow onboarding.
+- [ ] UniFFI bindings for `prmarmot-core` (`uniffi` crate, proc-macro style): expose board rows,
+      categories, Note/Blocker, snapshot diff, and a callback interface for the transport so Swift
+      can supply `URLSession`. CI job builds an `XCFramework` (macOS arm64, iOS, iOS simulator) and
+      publishes it as a Swift package `PRMarmotCore` from a tag.
+- [ ] Contract tests: the Swift package runs the same golden fixtures through the bindings.
+- [x] OAuth for iOS decided 2026-09-14 (research: `.claude/research/2026-09-14-ios-ipad-and-cloud-research.md`
+      §1): **Device Flow, no token-exchange server, ever.** `gh` itself uses Device Flow; GitHub
+      requires no client secret for Device Flow tokens *or* their refresh; PKCE (2025-07) still needs
+      the secret and is absent on GHES. A Worker would only save one 8-char paste per ~6 months in
+      exchange for uptime + GDPR surface. Always send a `User-Agent` header (silent 403 otherwise).
+- [ ] Rate-limit note for mobile: GraphQL budget (5,000 pts/h) is shared with the user's `gh`/IDE/PATs;
+      board query ≈ 1–2 pts, so the 30 s floor / 5 min default stand on iOS too.
+
+## Phase 5 — PR Marmot for iPad (and iPhone) — first paid product (after G1)
+
+Scope is the mockup: sidebar (My PRs / Review queue / Watched / Snoozed, repositories), detail
+pane (Note, checks, reviews, threads, branch, Open in GitHub, Watch, Snooze, Copy, Share).
+Foreground triage companion; **no alert promises** until Phase 6.
+
+- [ ] SwiftUI app target (iPadOS + iOS, Universal Purchase), `PRMarmotCore` dependency, URLSession
+      transport, OAuth per Phase 4, Keychain token storage, same refresh floor/rate-limit rules.
+- [ ] Parity with desktop categories, stacks, Note, search, change indicators, watches, snooze —
+      local state files mirror the desktop's bounded stores (no sync in v1).
+- [ ] Platform wins that cost little: Home/Lock Screen widget ("N need you", timeline refresh),
+      App Intents/Shortcuts ("what needs me"), keyboard shortcuts on iPad, Handoff to GitHub.
+- [ ] Best-effort background refresh (`BGAppRefreshTask`) with local notifications — label it
+      "best effort" in the UI and never in a screenshot: hours of latency, never after force-quit, in
+      Low Power Mode, or with Background App Refresh off. iOS favours apps you open often, which is
+      the opposite of the pitch. The reliable version is Phase 6.
+- [ ] Pricing (revised 2026-09-14): free download, one-time non-consumable unlock at **€19.99–24.99**
+      — €12.99 is below the category floor (Working Copy $35.99, Prompt 3 $49.99, Textastic $69.99;
+      nobody charges up front). Free tier = one repo, read-only; unlock = all repos + watches + snooze.
+      Standard IAP + Small Business Program 15 % stays right in the EU after the 2026-10-01 terms.
+- [ ] Pitch discipline: do NOT lead with stacked PRs on mobile (GitHub Mobile shipped stacks
+      2026-07-30). Lead with the Note and state-based alerts: GitHub Mobile pushes *events* (mention,
+      review requested, approval, CI result), never *states* (mergeable, all-green, conflicted), and
+      has no snooze. Nearest prior art with snooze (Pocket Trailer iOS) was abandoned in 2023.
+- [ ] Book a free "Meet with App Review" consultation (Tue/Thu) before Phase 6 and ask whether
+      guideline 5.1.1(v) ("tokens to social networks off of the device") applies to a GitHub token.
+      Research reads no (scoped to social networks; Buffer/Hootsuite ship worse), but no precedent
+      exists either way and the answer gates Cloud.
+- [ ] TestFlight beta from the desktop waitlist first; App Store listing, privacy nutrition label
+      ("data not collected"), review notes explaining OAuth.
+- [ ] Website: iPad page, App Store badge; desktop README cross-links.
+
+## Phase 6 — PR Marmot Cloud — subscription (after G2)
+
+The hosted sentinel: computes Note transitions server-side and pushes to iPad/iPhone (APNs) and
+optionally Mac. Opt-in; local stays the default and the free path.
+
+- [ ] Backend (decided by research 2026-09-14, §5): **Phoenix on Fly.io + `rustler_precompiled`
+      NIF around `prmarmot-core` + `pigeon` 2.1 for APNs.** Workers/WASM rejected: second language,
+      a `chrono`/wasm-bindgen panic trap, and Durable Object hibernation risk swinging the 10k-user
+      bill between $50 and $400. Cost is otherwise noise: ~$5–150/month from 100 to 10,000 users.
+- [ ] Ingest (inverted from the original plan): **poll with the user's OAuth token first**, same
+      board query, adaptive interval. GitHub App webhooks become a *Team-tier* upgrade — a personal
+      App install does not reach repos in orgs the user doesn't own (org-admin approval), which would
+      invert the "no App to approve" advantage. Polling is mandatory anyway: merge conflicts have no
+      webhook event. Encrypted token storage (GitHub's own guidance for backends), per-user isolation,
+      in-app revoke, delete-my-data endpoint, minimal scopes.
+- [ ] Push: APNs with the semantic Note transitions (same strings as desktop 2d); notification
+      actions (Open, Snooze); digest option.
+- [ ] Billing: StoreKit subscription in the iPad app (target €3.99/mo or €29/yr). Offer codes for
+      pre-1.0 desktop users ("Cloud for life") — Apple retired IAP promo codes 2026-03-26 and offer
+      codes now cover non-consumables too, 1,000,000 per app per quarter, so the grandfathering promise
+      could equally be the iPad unlock; keep "Cloud for life" as worded. Web billing via a merchant of
+      record only if Mac-only customers ask.
+- [ ] Desktop opt-in: the Mac app can register for Cloud pushes instead of local polling (still free
+      app; the subscription is the server).
+- [ ] This is also where any Team features would live (review SLAs, stale-PR digests, Slack) —
+      out of scope until Cloud exists.
+
+## Phase 7 — optional: Mac App Store copy of the OSS app
+
+Only if a sandboxed GPUI build proves cheap (spike: Zed is not on MAS). Maccy model: Homebrew/GitHub
+build free, App Store copy paid for convenience. Requires Phase 4 transport. Not a priority.
+
+## Maybe / small
+
+- [ ] GitHub Enterprise hosts on desktop (`GH_HOST` passthrough) — ship blind only with a tester.
+- [ ] Launch at login (`auto-launch` / `SMAppService`).
+- [ ] Menu-bar / tray item — verify-first: `tray-icon` vs GPUI's run loop unproven, Linux worse.
 - [ ] Always-on-top compact board.
-- [ ] Direct HTTP transport + own OAuth (`TokenSource` trait) — needed for a Mac App Store build
-      (sandbox blocks shelling out to `gh`) and for users without `gh`.
-- [ ] **Pro layer** (only after signal): background agent that watches while the app is closed,
-      menu-bar attention count, notification actions, custom attention rules, daily digest. Sold via a
-      merchant of record (Lemon Squeezy / Paddle / Polar — not yet evaluated), one-time licence with
-      a year of updates preferred over a subscription.
+
+## Metrics to track weekly (no telemetry; `measurements/adoption.csv`)
+
+stars · release downloads · tap installs (release asset counts) · website install-page views ·
+waitlist emails · issues from strangers · (Phase 5+) App Store units, proceeds, ratings ·
+(Phase 6+) subscribers, churn, push volume, hosting cost per subscriber.

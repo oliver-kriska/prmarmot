@@ -1,6 +1,6 @@
 # PR Marmot — Project Handoff
 
-**Name:** PR Marmot (`prmarmot`). **Owner:** Oliver Kriška. **License:** MIT, public, open source. **Platforms:** macOS + Linux. **Created from research on:** 2026-07-24. The project was called `prboard` through v0.5.3; historical entries below retain that name where it records what existed then.
+**Name:** PR Marmot (`prmarmot`). **Owner:** Oliver Kriška. **License:** MIT, public, open source. **Platforms:** macOS + Linux. **Created from research on:** 2026-07-24. The project was called `prboard` through v0.5.3; historical entries below retain that name where it records what existed then. **"PRFlow" / `~/Projects/pr_flow` throughout this file is Oliver's own unreleased 2025 Rust+GPUI prototype (the predecessor whose memory bug shaped the guardrails), not the commercial product PR Flow at prflow.app.**
 
 > **Read this first.** It's the executive summary of a research spike for a new project: an open-source **GitHub PR-review dashboard in Rust**. It distills five detailed research files (linked at the bottom) into a recommendation, a risk list, a v1 scope cut, and a build roadmap. A fresh session should be able to start building from this file alone. The deeper docs are there when you need the evidence behind a claim.
 >

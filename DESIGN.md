@@ -24,7 +24,7 @@ ramp, one blue accent, status hues as dots/short text only (never filled slabs).
 ### Light (open-color gray + blue, Primer where open-color fails AA)
 
 - Background `#FFFFFF` (true white — no cream) · Foreground `#212529` (gray.9 ink)
-- Raised/hover `#F1F3F5` · Border `#DEE2E6` · Muted text `#6C757D` (gray.6 fails AA — never use)
+- Raised/hover `#F1F3F5` · Border `#DEE2E6` · Muted body text `#6C757D`
 - Chrome + zebra `#F8F9FA` (gray.0)
 - Accent: primary `#1C7ED6` (blue.7 fills), link `#1971C2` (blue.8 — blue.7 text fails AA)
 - Status: danger `#C92A2A` · warning `#9A6700` · success `#1A7F37` (warning/success are GitHub
@@ -59,7 +59,10 @@ keycaps 3 px. Small radii are the native-Mac tell.
 - **Table**: gpui-component `DataTable` + `TableState` + delegate, `.small()` (30 px rows, 6×3 cell
   pad), `.stripe(false)`, `.bordered(false)` — full-bleed, the window IS the table. The delegate
   stripes real PR rows only; category and stack headers retain their own bands, and unused
-  space is plain background rather than synthetic empty rows. Columns drag-resizable;
+  space has no synthetic empty rows. No mascot in the titlebar or table, and no watermark.
+  The untiled full-color marmot appears at 64 px in Settings and notification help only:
+  identity beside useful text, never a status indicator or animation.
+  Columns drag-resizable;
   Note wins width over Title; both carry full-text tooltips.
 - **Status dots**: 7 px (`STATUS_DOT`) `rounded_full` div + text, `gap_1p5`. The calm rule: bad
   states get colored text; good states get only a colored dot with muted text.
