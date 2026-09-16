@@ -13,7 +13,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, rems, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
+    div, px, rems, AnyElement, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Pixels, SharedString, Stateful,
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
@@ -78,6 +78,8 @@ const PR_W: f32 = 116.0;
 const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 52.0;
 const LABELS_W: f32 = 96.0;
+/// Wide windows have room for a whole chip plus its "+n" more often.
+const LABELS_W_WIDE: f32 = 120.0;
 const REVIEW_W_COMPACT: f32 = 160.0;
 const REVIEW_W: f32 = 190.0;
 const AUTHOR_W_COMPACT: f32 = 96.0;
@@ -133,6 +135,74 @@ fn measure_width(window: &mut Window, text: &str) -> Pixels {
         .width
 }
 
+/// Chip text size in px, as [`label_chip`] renders it.
+const CHIP_TEXT_PX: f32 = 11.0;
+/// A chip whose text room is narrower than this shows only "…"; fold it into
+/// "+n" instead.
+const CHIP_TEXT_MIN: f32 = 18.0;
+
+/// Chip padding and border, both sides.
+fn chip_chrome() -> f32 {
+    2.0 * (CHIP_PAD_X + 1.0)
+}
+
+/// The text style a label chip's text renders with.
+fn chip_text_style(window: &Window) -> gpui::TextStyle {
+    let mut style = window.text_style();
+    style.font_weight = FontWeight::MEDIUM;
+    style
+}
+
+/// Pixel width of a label chip showing `text`.
+fn chip_width(window: &mut Window, text: &str) -> f32 {
+    let run = chip_text_style(window).to_run(text.len());
+    let text_w = window
+        .text_system()
+        .layout_line(text, px(CHIP_TEXT_PX), &[run], None)
+        .width;
+    f32::from(text_w) + chip_chrome()
+}
+
+/// `text` shortened with "…" to fit a chip's text room of `max_width`.
+fn elide_chip_text(window: &mut Window, text: &str, max_width: Pixels) -> String {
+    let style = chip_text_style(window);
+    let runs = vec![style.to_run(text.len())];
+    window
+        .text_system()
+        .line_wrapper(style.font(), px(CHIP_TEXT_PX))
+        .truncate_line(
+            text.to_string().into(),
+            max_width,
+            "…",
+            &runs,
+            gpui::TruncateFrom::End,
+        )
+        .0
+        .to_string()
+}
+
+/// How many whole chips of `widths` fit in `avail`, in order, `gap` apart,
+/// keeping room for the "+n" chip (`more(n)` wide) while any are left out.
+fn chips_that_fit(widths: &[f32], more: impl Fn(usize) -> f32, avail: f32, gap: f32) -> usize {
+    let mut used = 0.0;
+    let mut shown = 0;
+    for (ix, width) in widths.iter().enumerate() {
+        let next = used + if ix == 0 { 0.0 } else { gap } + width;
+        let left_out = widths.len() - ix - 1;
+        let reserve = if left_out == 0 {
+            0.0
+        } else {
+            gap + more(left_out)
+        };
+        if next + reserve > avail {
+            break;
+        }
+        used = next;
+        shown = ix + 1;
+    }
+    shown
+}
+
 /// Truncate `text` with a trailing "…" so it fits within `max_width`, at the
 /// cell's rendered font size and using gpui's own line metrics. Done by hand
 /// because gpui's in-cell `.truncate()` is inert inside gpui-component's
@@ -179,7 +249,11 @@ pub fn columns_for(
     let show_labels = !compact;
     let review_w = if compact { REVIEW_W_COMPACT } else { REVIEW_W };
     let author_w = if compact { AUTHOR_W_COMPACT } else { AUTHOR_W };
-    let labels_w = if show_labels { LABELS_W } else { 0.0 };
+    let labels_w = match class {
+        TableWidthClass::Compact => 0.0,
+        TableWidthClass::Medium => LABELS_W,
+        TableWidthClass::Wide => LABELS_W_WIDE,
+    };
     let repo_w = if all_repos {
         if compact {
             REPO_W_COMPACT
@@ -227,7 +301,7 @@ pub fn columns_for(
                 col("review", "Review", review_w),
             ]);
             if show_labels {
-                cols.push(col("labels", "Labels", LABELS_W));
+                cols.push(col("labels", "Labels", labels_w));
             }
             cols.push(col("note", "Note", note_w));
             cols
@@ -244,7 +318,7 @@ pub fn columns_for(
                 col("unresolved", "Unres", UNRESOLVED_W),
             ]);
             if show_labels {
-                cols.push(col("labels", "Labels", LABELS_W));
+                cols.push(col("labels", "Labels", labels_w));
             }
             cols.push(col("note", "Note", note_w));
             cols
@@ -252,9 +326,230 @@ pub fn columns_for(
     }
 }
 
-/// Case-insensitive AND search across the fields users scan in the board.
-/// Filtering is local; it must not trigger GitHub requests on each keystroke.
+/// A `key:value` search term. Each matches one field whole and ignoring
+/// case; a new one is added here and in [`Qualifier::matches`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Qualifier {
+    Label,
+    Author,
+    Repo,
+}
+
+impl Qualifier {
+    const ALL: [Qualifier; 3] = [Qualifier::Label, Qualifier::Author, Qualifier::Repo];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Qualifier::Label => "label",
+            Qualifier::Author => "author",
+            Qualifier::Repo => "repo",
+        }
+    }
+
+    /// `label:bug`, or `label:"help wanted"` when the value needs quotes.
+    fn term(self, value: &str) -> String {
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            format!("{}:\"{value}\"", self.key())
+        } else {
+            format!("{}:{value}", self.key())
+        }
+    }
+
+    /// Whether `row`'s field is `value`, whole and ignoring case.
+    fn matches(self, row: &BoardRow, value: &str) -> bool {
+        match self {
+            Qualifier::Label => has_label(row, value),
+            Qualifier::Author => row
+                .author
+                .as_deref()
+                .is_some_and(|author| same_text(author, value)),
+            Qualifier::Repo => same_text(&row.repo, value),
+        }
+    }
+}
+
+fn same_text(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// A finished qualifier term: a chip in the search box, or what a click on a
+/// label, author, or repository adds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterChip {
+    pub qualifier: Qualifier,
+    pub value: String,
+}
+
+impl FilterChip {
+    pub fn new(qualifier: Qualifier, value: impl Into<String>) -> Self {
+        Self {
+            qualifier,
+            value: value.into(),
+        }
+    }
+
+    /// The term as a user would type it.
+    pub fn term(&self) -> String {
+        self.qualifier.term(&self.value)
+    }
+
+    pub fn matches(&self, row: &BoardRow) -> bool {
+        self.qualifier.matches(row, &self.value)
+    }
+
+    /// The same filter, ignoring case.
+    pub fn same_as(&self, other: &FilterChip) -> bool {
+        self.qualifier == other.qualifier && same_text(&self.value, &other.value)
+    }
+}
+
+/// One search term: a free word or a qualifier, with its byte range in the
+/// query so a pill can remove exactly the text it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterTerm {
+    pub qualifier: Option<Qualifier>,
+    /// The word, or the qualifier's value, without quotes.
+    pub value: String,
+    pub span: std::ops::Range<usize>,
+}
+
+/// Split a search at whitespace outside double quotes. Quotes group words
+/// (`label:"help wanted"`, `"two words"`) and are dropped from the value; an
+/// unclosed quote runs to the end. A term is a qualifier only when its key
+/// comes before any quote.
+pub fn filter_terms(query: &str) -> Vec<FilterTerm> {
+    let mut terms = Vec::new();
+    let mut chars = query.char_indices().peekable();
+    while let Some(&(start, ch)) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let (mut end, mut value, mut quoted) = (start, String::new(), false);
+        while let Some(&(ix, ch)) = chars.peek() {
+            if ch.is_whitespace() && !quoted {
+                break;
+            }
+            chars.next();
+            end = ix + ch.len_utf8();
+            if ch == '"' {
+                quoted = !quoted;
+            } else {
+                value.push(ch);
+            }
+        }
+        let text = &query[start..end];
+        let qualifier = Qualifier::ALL.into_iter().find(|qualifier| {
+            let key = qualifier.key();
+            text.as_bytes().get(key.len()) == Some(&b':')
+                && text
+                    .get(..key.len())
+                    .is_some_and(|k| k.eq_ignore_ascii_case(key))
+        });
+        if let Some(qualifier) = qualifier {
+            // The key and colon are ASCII and precede any quote.
+            value.drain(..=qualifier.key().len());
+        }
+        terms.push(FilterTerm {
+            qualifier,
+            value,
+            span: start..end,
+        });
+    }
+    terms
+}
+
+/// One neutral chip style for labels (spec §7): GitHub's arbitrary label
+/// hues would out-shout the status system. Also used for the search tokens.
+pub fn label_chip(theme: &gpui_component::Theme) -> Div {
+    h_flex()
+        .h(px(CHIP_HEIGHT))
+        .px(px(CHIP_PAD_X))
+        .items_center()
+        .rounded(px(CHIP_RADIUS))
+        .bg(theme.muted)
+        .border_1()
+        .border_color(theme.border)
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+}
+
+/// Whether the PR carries `label`, compared whole and case-insensitively.
+fn has_label(row: &BoardRow, label: &str) -> bool {
+    row.labels.iter().any(|name| same_text(name, label))
+}
+
+/// `query` with `chip`'s term appended, unless it has the same one.
+pub fn with_filter(query: &str, chip: &FilterChip) -> String {
+    if filter_terms(query).iter().any(|term| {
+        term.qualifier
+            .is_some_and(|q| chip.same_as(&FilterChip::new(q, term.value.as_str())))
+    }) {
+        return query.to_owned();
+    }
+    let term = chip.term();
+    match query.trim_end() {
+        "" => term,
+        rest => format!("{rest} {term}"),
+    }
+}
+
+/// Finished qualifier terms taken out of typed search text, for the search
+/// box's chips, and the text left behind. `all` (Enter) takes every one;
+/// while typing, only a term just ended by a space, so nothing is taken
+/// mid-word or from the middle of the text.
+pub fn take_filter_chips(text: &str, all: bool) -> (Vec<FilterChip>, String) {
+    let terms = filter_terms(text);
+    let finished = |term: &&FilterTerm| term.qualifier.is_some() && !term.value.is_empty();
+    let taken: Vec<&FilterTerm> = if all {
+        terms.iter().filter(finished).collect()
+    } else {
+        // An unclosed quote swallows the trailing space into the term.
+        terms
+            .last()
+            .filter(finished)
+            .filter(|term| term.span.end < text.len())
+            .into_iter()
+            .collect()
+    };
+    if taken.is_empty() {
+        return (Vec::new(), text.to_owned());
+    }
+    let mut rest = text.to_owned();
+    // Back to front, so earlier spans still point at the same text.
+    for term in taken.iter().rev() {
+        let before = rest[..term.span.start].trim_end();
+        let after = rest[term.span.end..].trim_start();
+        rest = if before.is_empty() || after.is_empty() {
+            format!("{before}{after}")
+        } else {
+            format!("{before} {after}")
+        };
+    }
+    // Typing goes on after the space that finished the term.
+    if !all && !rest.is_empty() {
+        rest.push(' ');
+    }
+    let chips = taken
+        .iter()
+        .filter_map(|term| {
+            term.qualifier
+                .map(|q| FilterChip::new(q, term.value.as_str()))
+        })
+        .collect();
+    (chips, rest)
+}
+
+/// Case-insensitive AND search across the fields users scan in the board:
+/// every free word must appear somewhere, and every qualifier (`label:`,
+/// `author:`, `repo:`) must match its field exactly. Filtering is local; it
+/// must not trigger GitHub requests on each keystroke.
 pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
+    let terms = filter_terms(query);
+    if terms.is_empty() {
+        return true;
+    }
     let text = format!(
         "#{} {} {} {} {} {} {}",
         row.number,
@@ -266,9 +561,11 @@ pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
         row.note
     )
     .to_lowercase();
-    query
-        .split_whitespace()
-        .all(|word| text.contains(&word.to_lowercase()))
+    terms.iter().all(|term| match term.qualifier {
+        None => text.contains(&term.value.to_lowercase()),
+        // `label:` alone is still being typed; it filters nothing yet.
+        Some(qualifier) => term.value.is_empty() || qualifier.matches(row, &term.value),
+    })
 }
 
 /// Full, unelided snapshot details; no secondary network request or hidden cache.
@@ -364,6 +661,7 @@ pub fn row_copy_items(row: &BoardRow) -> Vec<(&'static str, String)> {
 }
 
 type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;
+type FilterClickHandler = Rc<dyn Fn(FilterChip, &mut Window, &mut App)>;
 type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
 
 /// A board group rendered for the clipboard, ready for `app.rs` to write.
@@ -397,6 +695,8 @@ pub struct BoardTableDelegate {
     show_snoozed: bool,
     pub on_row_action: Option<RowActionHandler>,
     pub on_group_copy: Option<GroupCopyHandler>,
+    /// A label, author, or repository was clicked: add it to the search.
+    pub on_filter_click: Option<FilterClickHandler>,
     /// Display index of the header whose Copy menu is open, so its button
     /// stays visible while the pointer is over the menu instead of the header.
     copy_menu_open: Rc<Cell<Option<usize>>>,
@@ -421,6 +721,7 @@ impl BoardTableDelegate {
             show_snoozed: false,
             on_row_action: None,
             on_group_copy: None,
+            on_filter_click: None,
             copy_menu_open: Rc::new(Cell::new(None)),
         }
     }
@@ -668,6 +969,40 @@ fn review_glyph(state: &str, theme: &gpui_component::theme::Theme) -> (&'static 
         // invalidated review, which is information.
         "DISMISSED" => ("✕", theme.muted_foreground),
         _ => ("·", theme.muted_foreground),
+    }
+}
+
+impl BoardTableDelegate {
+    /// Cell text that adds `chip` to the search when clicked, if the board
+    /// handles filter clicks. The click never reaches the row.
+    fn filter_target(
+        &self,
+        id: (&'static str, usize),
+        text: String,
+        chip: Option<FilterChip>,
+    ) -> AnyElement {
+        let (Some(handler), Some(chip)) = (self.on_filter_click.clone(), chip) else {
+            return div().child(text).into_any_element();
+        };
+        let tip = format!("Filter by {}", chip.term());
+        h_flex()
+            .min_w_0()
+            .child(
+                div()
+                    .id(id)
+                    .cursor_pointer()
+                    .hover(|style| style.underline())
+                    .child(text)
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |event: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count() == 1 {
+                            handler(chip.clone(), window, cx);
+                        }
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -1201,52 +1536,145 @@ impl TableDelegate for BoardTableDelegate {
                     // "none" is a meaningful status (CI).
                     div()
                 } else {
-                    // Chips; "bug" is the loud one. Cap the visible count —
-                    // the tooltip carries the full list.
-                    const VISIBLE: usize = 2;
+                    // Chips; "bug" is the loud one. Only whole chips are
+                    // drawn — each is a click target — and the rest fold into
+                    // "+n". The tooltip carries the full list.
                     let full = row.labels.join(", ");
                     // "bug" must never hide behind the +n overflow.
                     let mut ordered: Vec<String> = row.labels.clone();
                     ordered.sort_by_key(|l| l != "bug");
-                    // One neutral chip style (spec §7) — GitHub's arbitrary
-                    // label hues would out-shout the status system. 🐛 is the
-                    // single permitted emoji: semantic, not decorative.
-                    let chip_base = || {
-                        h_flex()
-                            .h(px(CHIP_HEIGHT))
-                            .px(px(CHIP_PAD_X))
-                            .items_center()
-                            .rounded(px(CHIP_RADIUS))
-                            .bg(theme.muted)
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .whitespace_nowrap()
-                    };
-                    let mut chips = h_flex().gap_1().overflow_hidden();
-                    for label in ordered.iter().take(VISIBLE) {
-                        let text = if label == "bug" {
-                            format!("🐛 {label}")
+                    // 🐛 is the single permitted emoji: semantic, not decorative.
+                    let texts: Vec<String> = ordered
+                        .iter()
+                        .map(|label| {
+                            if label == "bug" {
+                                format!("🐛 {label}")
+                            } else {
+                                label.clone()
+                            }
+                        })
+                        .collect();
+                    let avail = f32::from(self.columns[col_ix].width) - CELL_PAD_X - ELIDE_SAFETY;
+                    let widths: Vec<f32> = texts.iter().map(|t| chip_width(window, t)).collect();
+                    let more: Vec<f32> = (0..=texts.len())
+                        .map(|n| chip_width(window, &format!("+{n}")))
+                        .collect();
+                    let shown = chips_that_fit(&widths, |n| more[n], avail, GAP_1);
+                    let mut visible: Vec<(usize, String)> =
+                        texts.iter().cloned().enumerate().take(shown).collect();
+                    if shown == 0 {
+                        // Not even one whole chip: shorten the first one.
+                        let left_out = texts.len() - 1;
+                        let reserve = if left_out == 0 {
+                            0.0
                         } else {
-                            label.clone()
+                            GAP_1 + more[left_out]
                         };
-                        chips = chips.child(
-                            chip_base()
-                                .text_color(theme.secondary_foreground)
-                                .child(text),
-                        );
+                        let room = avail - reserve - chip_chrome();
+                        if room >= CHIP_TEXT_MIN {
+                            visible.push((0, elide_chip_text(window, &texts[0], px(room))));
+                        }
                     }
-                    if row.labels.len() > VISIBLE {
-                        chips = chips.child(
-                            chip_base()
+                    let hidden = texts.len() - visible.len();
+                    let mut chips = h_flex().gap_1().overflow_hidden();
+                    let (hover_border, hover_text) = (muted, theme.foreground);
+                    for (ix, text) in visible {
+                        let label = &ordered[ix];
+                        let chip = label_chip(theme)
+                            .flex_shrink_0()
+                            .text_color(theme.secondary_foreground)
+                            .child(text);
+                        // A click filters the board by the label. It must not
+                        // reach the row, which would select it or open details.
+                        chips = chips.child(match self.on_filter_click.clone() {
+                            Some(handler) => {
+                                let filter = FilterChip::new(Qualifier::Label, label.as_str());
+                                chip.id(("label-chip", ix))
+                                    .cursor_pointer()
+                                    .hover(|style| {
+                                        style.border_color(hover_border).text_color(hover_text)
+                                    })
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(move |event: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        if event.click_count() == 1 {
+                                            handler(filter.clone(), window, cx);
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                            None => chip.into_any_element(),
+                        });
+                    }
+                    if hidden > 0 {
+                        let more = format!("+{hidden}");
+                        chips = chips.child(match self.on_filter_click.clone() {
+                            // "+n" opens the hidden labels, each a filter.
+                            Some(handler) => {
+                                let rest = ordered[ordered.len() - hidden..].to_vec();
+                                div()
+                                    .flex_shrink_0()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .child(
+                                        Button::new(("more-labels", row_ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .h(px(CHIP_HEIGHT))
+                                            .px(px(CHIP_PAD_X))
+                                            .rounded(px(CHIP_RADIUS))
+                                            .bg(theme.muted)
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .child(
+                                                // A Button label ignores the
+                                                // button's text size.
+                                                div()
+                                                    .text_size(px(CHIP_TEXT_PX))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(muted)
+                                                    .child(more),
+                                            )
+                                            .dropdown_menu(move |mut menu, _, _| {
+                                                menu = menu
+                                                    .label("Filter by label")
+                                                    .scrollable(true)
+                                                    .max_h(px(320.));
+                                                for label in &rest {
+                                                    let handler = handler.clone();
+                                                    let target =
+                                                        FilterChip::new(Qualifier::Label, label);
+                                                    menu = menu.item(
+                                                        PopupMenuItem::new(label.clone()).on_click(
+                                                            move |_, window, cx| {
+                                                                handler(target.clone(), window, cx)
+                                                            },
+                                                        ),
+                                                    );
+                                                }
+                                                menu
+                                            }),
+                                    )
+                                    .into_any_element()
+                            }
+                            None => label_chip(theme)
+                                .flex_shrink_0()
                                 .text_color(muted)
-                                .child(format!("+{}", row.labels.len() - VISIBLE)),
-                        );
+                                .child(more)
+                                .into_any_element(),
+                        });
                     }
+                    let tip: SharedString = if self.on_filter_click.is_some() {
+                        format!("{full}\nClick a label to search for label:<name>").into()
+                    } else {
+                        full.into()
+                    };
                     return chips
                         .id(("labels", row_ix))
-                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                         .into_any_element();
                 }
             }
@@ -1270,8 +1698,27 @@ impl TableDelegate for BoardTableDelegate {
                     .child(div().text_color(muted).child("running")),
                 Ci::None => h_flex().child(div().text_color(muted.opacity(0.5)).child("—")),
             },
-            "repo" => div().text_color(muted).child(row.repo.clone()),
-            "author" => div().child(row.author.clone().unwrap_or_else(|| "?".into())),
+            "repo" => {
+                let chip = FilterChip::new(Qualifier::Repo, row.repo.as_str());
+                return div()
+                    .text_color(muted)
+                    .child(self.filter_target(
+                        ("repo-filter", row_ix),
+                        row.repo.clone(),
+                        Some(chip),
+                    ))
+                    .into_any_element();
+            }
+            "author" => {
+                let chip = row
+                    .author
+                    .as_deref()
+                    .map(|author| FilterChip::new(Qualifier::Author, author));
+                let text = row.author.clone().unwrap_or_else(|| "?".into());
+                return self
+                    .filter_target(("author-filter", row_ix), text, chip)
+                    .into_any_element();
+            }
             "unresolved" => {
                 if row.unresolved > 0 {
                     div()
@@ -1508,7 +1955,7 @@ impl TableDelegate for BoardTableDelegate {
                     let col_w = self.columns[col_ix].width;
                     let avail = col_w
                         - primary_w
-                        - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 + ELIDE_SAFETY);
+                        - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 2. + ELIDE_SAFETY);
                     let tail = elide(window, &tail, avail);
                     cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
                 }
@@ -2172,6 +2619,191 @@ mod tests {
     }
 
     #[test]
+    fn label_terms_match_whole_label_names() {
+        let mut r = row(42, Category::Action);
+        r.title = "Fix login".into();
+        r.labels = vec!["bugfix".into(), "Help Wanted".into()];
+        // Free words still match inside labels; `label:` only whole names.
+        assert!(matches_filter(&r, "bug"));
+        assert!(!matches_filter(&r, "label:bug"));
+        assert!(matches_filter(&r, "label:BUGFIX"));
+        assert!(matches_filter(&r, "LABEL:bugfix"));
+        assert!(!matches_filter(&r, "label:help"));
+        assert!(matches_filter(&r, "label:\"help wanted\""));
+        assert!(
+            matches_filter(&r, "label:\"help wanted"),
+            "an unclosed quote runs to the end"
+        );
+        // Several qualifiers must all hold, alongside free words.
+        assert!(matches_filter(
+            &r,
+            "login label:bugfix label:\"Help Wanted\""
+        ));
+        assert!(!matches_filter(&r, "login label:bugfix label:docs"));
+        assert!(!matches_filter(&r, "logout label:bugfix"));
+        // A quoted free phrase, and a key that is not a qualifier.
+        assert!(matches_filter(&r, "\"fix login\""));
+        assert!(!matches_filter(&r, "\"login fix\""));
+        assert!(!matches_filter(&r, "\"label:bugfix\""));
+        assert!(!matches_filter(&r, "reviewer:alice"));
+        // `label:` alone is still being typed.
+        assert!(matches_filter(&r, "label:"));
+        assert!(matches_filter(&r, "login label:"));
+        r.labels.clear();
+        assert!(!matches_filter(&r, "label:bugfix"));
+    }
+
+    #[test]
+    fn filter_terms_keep_spans_and_values() {
+        let query = "  fix label:\"help wanted\" é Label:bug";
+        let terms = filter_terms(query);
+        let values: Vec<_> = terms
+            .iter()
+            .map(|term| {
+                (
+                    term.qualifier,
+                    term.value.as_str(),
+                    &query[term.span.clone()],
+                )
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                (None, "fix", "fix"),
+                (
+                    Some(Qualifier::Label),
+                    "help wanted",
+                    "label:\"help wanted\""
+                ),
+                (None, "é", "é"),
+                (Some(Qualifier::Label), "bug", "Label:bug"),
+            ]
+        );
+    }
+
+    #[test]
+    fn author_and_repo_terms_match_whole_values() {
+        let mut r = row(7, Category::Await);
+        r.title = "Fix login".into();
+        r.author = Some("Alice".into());
+        r.labels = vec!["alice".into()];
+        assert!(matches_filter(&r, "author:alice"));
+        assert!(matches_filter(&r, "AUTHOR:\"ALICE\""));
+        assert!(!matches_filter(&r, "author:ali"));
+        assert!(matches_filter(&r, "repo:ACME/Widgets"));
+        assert!(!matches_filter(&r, "repo:widgets"));
+        assert!(matches_filter(&r, "login author:alice repo:acme/widgets"));
+        assert!(!matches_filter(&r, "author:alice repo:acme/gadgets"));
+        // Each key checks its own field only.
+        assert!(matches_filter(&r, "label:alice"));
+        r.labels.clear();
+        assert!(!matches_filter(&r, "label:alice"));
+        assert!(matches_filter(&r, "author:"), "still being typed");
+        r.author = None;
+        assert!(!matches_filter(&r, "author:alice"));
+    }
+
+    #[test]
+    fn filter_terms_render_once_and_quote_when_needed() {
+        let label = |value: &str| FilterChip::new(Qualifier::Label, value);
+        let author = |value: &str| FilterChip::new(Qualifier::Author, value);
+        assert_eq!(with_filter("", &label("bug")), "label:bug");
+        assert_eq!(with_filter("login  ", &label("bug")), "login label:bug");
+        assert_eq!(
+            with_filter("login label:Bug", &label("bug")),
+            "login label:Bug"
+        );
+        assert_eq!(
+            with_filter("login", &label("help wanted")),
+            "login label:\"help wanted\""
+        );
+        // The same value under another key is another filter.
+        assert_eq!(
+            with_filter("label:alice", &author("alice")),
+            "label:alice author:alice"
+        );
+        assert_eq!(
+            with_filter("AUTHOR:Alice", &author("alice")),
+            "AUTHOR:Alice"
+        );
+        assert_eq!(
+            FilterChip::new(Qualifier::Repo, "acme/widgets").term(),
+            "repo:acme/widgets"
+        );
+        assert!(author("Alice").same_as(&author("alice")));
+        assert!(!author("alice").same_as(&label("alice")));
+        let mut r = row(1, Category::Await);
+        r.labels = vec!["Help Wanted".into()];
+        assert!(has_label(&r, "help wanted"));
+        assert!(!has_label(&r, "help"));
+    }
+
+    #[test]
+    fn typed_filter_terms_become_chips_once_finished() {
+        let label = |value: &str| FilterChip::new(Qualifier::Label, value);
+        // Still typing: nothing is taken.
+        for text in [
+            "label",
+            "label:",
+            "label:bu",
+            "fix label:bug",
+            "label:\"help ",
+        ] {
+            assert_eq!(
+                take_filter_chips(text, false),
+                (vec![], text.to_owned()),
+                "{text}"
+            );
+        }
+        // A space finishes the last term; the rest keeps its trailing space.
+        assert_eq!(
+            take_filter_chips("fix label:bug ", false),
+            (vec![label("bug")], "fix ".to_owned())
+        );
+        assert_eq!(
+            take_filter_chips("label:\"help wanted\" ", false),
+            (vec![label("help wanted")], String::new())
+        );
+        assert_eq!(
+            take_filter_chips("label:area:gpui ", false),
+            (vec![label("area:gpui")], String::new())
+        );
+        // Only the last term, never one in the middle of the text.
+        assert_eq!(
+            take_filter_chips("label:docs fix ", false),
+            (vec![], "label:docs fix ".to_owned())
+        );
+        // Enter takes them all, an unclosed quote included.
+        assert_eq!(
+            take_filter_chips("label:docs fix label: LABEL:\"help wanted", true),
+            (
+                vec![label("docs"), label("help wanted")],
+                "fix label:".to_owned()
+            )
+        );
+        // Every key becomes a chip the same way.
+        assert_eq!(
+            take_filter_chips("fix author:alice ", false),
+            (
+                vec![FilterChip::new(Qualifier::Author, "alice")],
+                "fix ".to_owned()
+            )
+        );
+        assert_eq!(
+            take_filter_chips("repo:acme/widgets author:\"bob\" fix", true),
+            (
+                vec![
+                    FilterChip::new(Qualifier::Repo, "acme/widgets"),
+                    FilterChip::new(Qualifier::Author, "bob"),
+                ],
+                "fix".to_owned()
+            )
+        );
+        assert_eq!(take_filter_chips("fix", true), (vec![], "fix".to_owned()));
+    }
+
+    #[test]
     fn details_include_unelided_notes_and_deleted_reviewers() {
         let mut r = row(42, Category::Action);
         r.note = "merge conflict — rebase · CI failing · 3 unresolved".into();
@@ -2260,6 +2892,43 @@ mod tests {
                     total_width(&cols) + SCROLLBAR_MARGIN <= w + 1.0,
                     "mode {mode:?} at {w}px: total {} overflows",
                     total_width(&cols)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_whole_label_chips_are_drawn_and_the_rest_fold_into_more() {
+        // "+n" is 20 px wide whatever n is; chips are 4 px apart.
+        let more = |_: usize| 20.0;
+        let fit = |widths: &[f32], avail: f32| chips_that_fit(widths, more, avail, 4.0);
+        // Everything fits: no "+n" needed.
+        assert_eq!(fit(&[40.0, 40.0], 84.0), 2);
+        // One px short of both: the second folds into "+1".
+        assert_eq!(fit(&[40.0, 40.0], 83.0), 1);
+        // One chip plus "+2" (40 + 4 + 20).
+        assert_eq!(fit(&[40.0, 30.0, 30.0], 64.0), 1);
+        // Not even the first chip beside "+2": the caller shortens it.
+        assert_eq!(fit(&[70.0, 30.0, 30.0], 90.0), 0);
+        // A single chip needs no room for "+n".
+        assert_eq!(fit(&[90.0], 90.0), 1);
+        assert_eq!(fit(&[], 90.0), 0);
+    }
+
+    #[test]
+    fn wide_windows_give_labels_more_room() {
+        for mode in [Mode::Authored, Mode::Review] {
+            for all_repos in [false, true] {
+                let medium = columns_for(mode, TableWidthClass::Medium, 1200.0, all_repos);
+                let wide = columns_for(mode, TableWidthClass::Wide, 1360.0, all_repos);
+                assert_eq!(width_of(&medium, "labels"), Some(LABELS_W));
+                assert_eq!(width_of(&wide, "labels"), Some(LABELS_W_WIDE));
+                // The wider column still leaves Title and Note their minimums
+                // at the narrowest Wide window.
+                assert!(
+                    total_width(&wide) + SCROLLBAR_MARGIN <= 1360.0 + 1.0,
+                    "{mode:?} all_repos={all_repos}: total {} overflows",
+                    total_width(&wide)
                 );
             }
         }

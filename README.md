@@ -238,7 +238,8 @@ require a restart; changes saved in Settings do not.
   On Linux the list and table copy as plain text.
 - **Changes:** a blue row marker survives restarts until you actually select the
   PR; hover it to see what changed (new commits, CI, reviews, requests, threads).
-  **Changed** filters the loaded rows; a restored selection does not clear it.
+  **Changed** (with the count of changed PRs matching the search) filters the
+  loaded rows; a restored selection does not clear it.
 - **Watch:** press `w` on a selected PR. Watches are FIFO-bounded at 50 and are
   refreshed through one batched GraphQL operation, including watched PRs outside
   the active search. Notifications are semantic transitions, suppressed for the
@@ -246,9 +247,25 @@ require a restart; changes saved in Settings do not.
 - **Snooze:** press `s` for one hour, until tomorrow, waiting on a person, waiting
   for terminal CI, or review-again-when-changed. Snoozed rows move to a collapsed
   group and do not contribute attention alerts or counts until they wake.
-- **Search loaded rows:** click **Search** or press `/`. Terms match PR number,
-  repository, title, author, label, issue, and Note; multiple terms narrow
-  together.
+  **Snoozed** (with its count) shows or collapses that group.
+- **Search loaded rows:** click **Search**, press `/`, or press `⌘F` (`Ctrl+F`
+  on Linux, or **Edit → Find**). Words match PR number, repository, title,
+  author, label, issue, and Note; several words narrow together, and quotes keep
+  a phrase whole (`"merge conflict"`). The count beside the box says how many
+  loaded PRs match.
+  - `label:NAME`, `author:LOGIN`, and `repo:OWNER/NAME` keep PRs whose label,
+    author, or repository is exactly that, ignoring case. Quote values with
+    spaces: `label:"help wanted"`. After a space or Enter a term becomes a
+    chip, and all chips and words must match.
+  - Click a label (in the table or in Details), an author, or a repository to
+    add it. **+n** lists the labels that didn't fit.
+  - A chip's × removes it, and Backspace in an empty box removes the last one.
+    The × at the right clears the search. An empty search closes when you leave
+    it.
+- **Header:** it shows how many PRs are loaded and how many need you (your PRs
+  that need action plus review requests, without snoozed ones — the Dock badge
+  number, marked "so far" until both queues have loaded), then how many watched
+  or snoozed PRs were refreshed. Hover it for the explanation.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.

@@ -27,15 +27,18 @@ use prmarmot_core::board::{BoardScope, Mode};
 
 use crate::state::{relative, AppState, SetupStatus};
 use crate::table::{
-    changed_marker_tooltip, columns_for, detail_text, matches_filter, BoardTableDelegate,
-    TableWidthClass,
+    changed_marker_tooltip, columns_for, detail_text, label_chip, matches_filter,
+    take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, TableWidthClass,
 };
 use crate::theme::ThemePref;
 use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
 
-gpui::actions!(prmarmot, [CloseDetails]);
+// `FocusSearch` (⌘F / Ctrl-F, Edit → Find) is bound in `main`.
+gpui::actions!(prmarmot, [CloseDetails, FocusSearch]);
 
 const ALL_REPOS_LABEL: &str = "All repositories";
+/// Chips (`label:`, `author:`, `repo:`, `is:`) the search box holds at most.
+const MAX_FILTER_CHIPS: usize = 8;
 
 fn scope_label(scope: &BoardScope) -> String {
     match scope {
@@ -91,7 +94,10 @@ pub struct RootView {
     discovering_repos: bool,
     repo_status: String,
     search: Entity<InputState>,
+    /// The words typed in the search box.
     filter_text: String,
+    /// The search box's chips, ANDed with the typed words.
+    filter_chips: Vec<FilterChip>,
     visible_count: usize,
     details_open: bool,
     focus_handle: FocusHandle,
@@ -124,6 +130,10 @@ pub struct RootView {
     col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
     changed_only: bool,
     snoozed_expanded: bool,
+    /// Loaded PRs matching the search that changed since you looked.
+    changed_count: usize,
+    /// Snoozed PRs among the rows the table shows.
+    snoozed_count: usize,
     suppress_ack_for: Option<String>,
     pending_notification_pr: Option<String>,
     automatic_update_checks: bool,
@@ -159,6 +169,10 @@ impl RootView {
         let table = cx.new(|cx| {
             let mut delegate = BoardTableDelegate::new(mode, all_repos);
             let group_view = view.clone();
+            let filter_view = view.clone();
+            delegate.on_filter_click = Some(std::rc::Rc::new(move |chip, window, cx| {
+                let _ = filter_view.update(cx, |this, cx| this.filter_by(chip, window, cx));
+            }));
             delegate.on_row_action = Some(std::rc::Rc::new(move |row, action, window, cx| {
                 let _ = view.update(cx, |this, cx| this.row_action(row, action, window, cx));
             }));
@@ -217,13 +231,37 @@ impl RootView {
             select
         };
 
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter loaded PRs…  /"));
-        cx.subscribe(&search, |this: &mut Self, input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.filter_text = input.read(cx).value().to_string();
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter loaded PRs…"));
+        cx.subscribe_in(
+            &search,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| {
+                let all = match event {
+                    InputEvent::Change => false,
+                    InputEvent::PressEnter { .. } => true,
+                    // An empty box closes when you leave it; `/` reopens it.
+                    InputEvent::Blur => {
+                        if !this.filtering() {
+                            this.search_open = false;
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    _ => return,
+                };
+                // A finished `label:x` becomes a chip; the field keeps the words.
+                let text = input.read(cx).value().to_string();
+                let (chips, rest) = take_filter_chips(&text, all);
+                if !chips.is_empty() {
+                    for chip in chips {
+                        this.add_filter_chip(chip, cx);
+                    }
+                    input.update(cx, |input, cx| input.set_value(rest.clone(), window, cx));
+                }
+                this.filter_text = rest;
                 this.sync_table(cx);
-            }
-        })
+            },
+        )
         .detach();
 
         // Theme: apply the configured preference, and while in System mode
@@ -351,6 +389,7 @@ impl RootView {
             repo_status: String::new(),
             search,
             filter_text: String::new(),
+            filter_chips: Vec::new(),
             visible_count: 0,
             details_open: false,
             focus_handle: cx.focus_handle(),
@@ -368,6 +407,8 @@ impl RootView {
             col_overrides: HashMap::new(),
             changed_only: false,
             snoozed_expanded: false,
+            changed_count: 0,
+            snoozed_count: 0,
             suppress_ack_for: None,
             pending_notification_pr: None,
             automatic_update_checks: launch.automatic_update_checks,
@@ -390,17 +431,99 @@ impl RootView {
         this
     }
 
+    /// Open the search bar with its text selected, so typing replaces it.
+    fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = true;
+        self.search.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Clear the words and chips and close the search box.
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // `set_value` emits no change event; update the filter here.
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.filter_text.clear();
+        self.filter_chips.clear();
+        self.search_open = false;
+        self.sync_table(cx);
+        self.table.focus_handle(cx).focus(window, cx);
+    }
+
+    /// Whether the board is filtered by the search box.
+    fn filtering(&self) -> bool {
+        !self.filter_text.trim().is_empty() || !self.filter_chips.is_empty()
+    }
+
+    /// The search as one line, chips first, for messages.
+    fn filter_summary(&self) -> String {
+        let chips = self
+            .filter_chips
+            .iter()
+            .fold(String::new(), |query, chip| with_filter(&query, chip));
+        format!("{chips} {}", self.filter_text.trim())
+            .trim()
+            .to_owned()
+    }
+
+    fn add_filter_chip(&mut self, chip: FilterChip, cx: &mut Context<Self>) {
+        if self.filter_chips.iter().any(|held| held.same_as(&chip)) {
+            return;
+        }
+        if self.filter_chips.len() >= MAX_FILTER_CHIPS {
+            self.show_feedback(
+                format!("Search holds at most {MAX_FILTER_CHIPS} filters"),
+                cx,
+            );
+            return;
+        }
+        self.filter_chips.push(chip);
+    }
+
+    fn remove_filter_chip(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index < self.filter_chips.len() {
+            self.filter_chips.remove(index);
+            // Unless you're typing, the keyboard goes back to the board, and
+            // with nothing left the empty box goes away.
+            if !self.search.focus_handle(cx).is_focused(window) {
+                if !self.filtering() {
+                    self.search_open = false;
+                }
+                self.table.focus_handle(cx).focus(window, cx);
+            }
+            self.sync_table(cx);
+        }
+    }
+
+    /// A label, author, or repository was clicked: filter by it, show the
+    /// search box, and keep the keyboard on the board.
+    fn filter_by(&mut self, chip: FilterChip, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = true;
+        self.add_filter_chip(chip, cx);
+        self.sync_table(cx);
+        self.table.focus_handle(cx).focus(window, cx);
+    }
+
     fn sync_table(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        let rows: Vec<_> = self
-            .state
-            .read(cx)
+        let matching: Vec<_> = state
             .rows
             .iter()
             .filter(|row| {
                 matches_filter(row, &self.filter_text)
-                    && (!self.changed_only || state.is_changed(&row.id))
+                    && self.filter_chips.iter().all(|chip| chip.matches(row))
             })
+            .collect();
+        self.changed_count = matching
+            .iter()
+            .filter(|row| state.is_changed(&row.id))
+            .count();
+        let rows: Vec<_> = matching
+            .into_iter()
+            .filter(|row| !self.changed_only || state.is_changed(&row.id))
             .cloned()
             .collect();
         let changed: HashMap<_, _> = rows
@@ -422,6 +545,7 @@ impl RootView {
             .map(|row| row.id.clone())
             .collect();
         self.visible_count = rows.len();
+        self.snoozed_count = snoozed.len();
         let switching = self.pending_restore.take();
         let target_url = match switching {
             Some(mode) => self.selections.get(&mode).cloned(),
@@ -969,9 +1093,7 @@ impl RootView {
         let platform = event.keystroke.modifiers.platform;
         match key {
             "/" if !platform => {
-                self.search_open = true;
-                self.search.focus_handle(cx).focus(window, cx);
-                cx.notify();
+                self.open_search(window, cx);
                 cx.stop_propagation();
             }
             "space" if table_focused => self.toggle_details(window, cx),
@@ -1376,38 +1498,18 @@ impl RootView {
                     Button::new("open-search")
                         .small()
                         .label("Search · /")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.search_open = true;
-                            this.search.focus_handle(cx).focus(window, cx);
-                            cx.notify();
-                        })),
+                        .tooltip(if cfg!(target_os = "macos") {
+                            "Filter loaded PRs (/ or ⌘F). Type label:, author:, or repo:, or click a label, author, or repository."
+                        } else {
+                            "Filter loaded PRs (/ or Ctrl F). Type label:, author:, or repo:, or click a label, author, or repository."
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
                 )
             })
             .when(self.search_open, |bar| {
-                bar.child(
-                    div().w(px(280.)).child(
-                        Input::new(&self.search)
-                            .small()
-                            .aria_label("Filter loaded PRs"),
-                    ),
-                )
+                bar.child(self.render_search_box(cx))
             })
-            .when(self.search_open, |bar| {
-                bar.child(
-                    Button::new("clear-filter")
-                        .small()
-                        .label("Close search")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.search
-                                .update(cx, |input, cx| input.set_value("", window, cx));
-                            this.filter_text.clear();
-                            this.search_open = false;
-                            this.sync_table(cx);
-                            this.table.focus_handle(cx).focus(window, cx);
-                        })),
-                )
-            })
-            .when(!self.filter_text.trim().is_empty(), |bar| {
+            .when(self.filtering() || self.changed_only, |bar| {
                 bar.child(
                     div()
                         .text_size(px(12.))
@@ -1420,31 +1522,47 @@ impl RootView {
                 )
             })
             .child(
-                Button::new("changed-filter")
-                    .small()
-                    .label(if self.changed_only {
-                        "Changed ✓"
-                    } else {
-                        "Changed"
-                    })
-                    .when(self.changed_only, |button| button.bg(cx.theme().secondary))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.changed_only = !this.changed_only;
-                        this.sync_table(cx);
-                    })),
+                div()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .flex_shrink_0()
+                    .bg(cx.theme().border),
             )
             .child(
-                Button::new("snoozed-toggle")
-                    .small()
-                    .label(if self.snoozed_expanded {
-                        "Snoozed · hide"
-                    } else {
-                        "Snoozed"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.snoozed_expanded = !this.snoozed_expanded;
-                        this.sync_table(cx);
-                    })),
+                view_toggle(
+                    "changed-filter",
+                    "Changed",
+                    self.changed_count,
+                    self.changed_only,
+                    Some(cx.theme().link),
+                    cx,
+                )
+                .tooltip(changed_toggle_tooltip(
+                    self.changed_only,
+                    self.changed_count,
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.changed_only = !this.changed_only;
+                    this.sync_table(cx);
+                })),
+            )
+            .child(
+                view_toggle(
+                    "snoozed-toggle",
+                    "Snoozed",
+                    self.snoozed_count,
+                    self.snoozed_expanded,
+                    None,
+                    cx,
+                )
+                .tooltip(snoozed_toggle_tooltip(
+                    self.snoozed_expanded,
+                    self.snoozed_count,
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.snoozed_expanded = !this.snoozed_expanded;
+                    this.sync_table(cx);
+                })),
             )
             .when(self.search_open, |bar| bar.child(div().flex_1()))
             .when(state.truncated, |bar| {
@@ -1490,6 +1608,7 @@ impl RootView {
             .and_then(|ix| table.delegate().row(ix))
             .cloned();
         let theme = cx.theme();
+        let (hover_border, hover_text) = (theme.muted_foreground, theme.foreground);
         v_flex()
             .h(px(210.))
             .flex_shrink_0()
@@ -1568,10 +1687,53 @@ impl RootView {
                                     format!("#{}  {}", row.number, row.title),
                                 ),
                             ))
+                            // Labels as chips: a click filters by the label, as in the table.
+                            .when(!row.labels.is_empty(), |content| {
+                                content.child(
+                                    h_flex()
+                                        .flex_wrap()
+                                        .gap_1()
+                                        .text_size(px(13.))
+                                        .child("Labels:")
+                                        .children(row.labels.iter().enumerate().map(
+                                            |(ix, label)| {
+                                                let target =
+                                                    FilterChip::new(Qualifier::Label, label);
+                                                let tip = format!("Filter by {}", target.term());
+                                                label_chip(theme)
+                                                    .id(("detail-label", ix))
+                                                    .cursor_pointer()
+                                                    .text_color(theme.secondary_foreground)
+                                                    .hover(|style| {
+                                                        style
+                                                            .border_color(hover_border)
+                                                            .text_color(hover_text)
+                                                    })
+                                                    .child(label.clone())
+                                                    .tooltip(move |window, cx| {
+                                                        Tooltip::new(tip.clone()).build(window, cx)
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.filter_by(
+                                                                target.clone(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    ))
+                                            },
+                                        )),
+                                )
+                            })
                             .child(div().text_size(px(13.)).child(SelectableText::new(
                                 "detail-body",
                                 {
-                                    let mut text = detail_text(&row);
+                                    // The labels line is the chip row above.
+                                    let mut text = detail_text(&row).replace(
+                                        &format!("\nLabels: {}", row.labels.join(", ")),
+                                        "",
+                                    );
                                     let state = self.state.read(cx);
                                     text.push_str(&format!(
                                         "\nAttention: {} · {}",
@@ -1603,24 +1765,16 @@ impl RootView {
         // Just the total: the section headers already carry the per-category
         // breakdown, so repeating "N need action · N awaiting…" here is
         // redundant and truncates at narrow widths (design review). This frees
-        // titlebar room for the future `/` search field.
-        let counts = format!(
-            "{} shown{} · {} attention{} · tracked {}/{}",
-            state.rows.len(),
-            if state.truncated {
-                " · partial results"
-            } else {
-                ""
-            },
-            state.badge_count,
-            if state.badge_coverage_complete {
-                " known"
-            } else {
-                " loaded"
-            },
-            state.tracked_loaded,
-            state.tracked_total,
-        );
+        // titlebar room. "Loaded", not "shown": search, Changed, and a
+        // collapsed Snoozed group hide rows; the tools bar says how many.
+        let (counts, counts_tip) = header_counts(&HeaderCounts {
+            loaded: state.rows.len(),
+            truncated: state.truncated,
+            need_you: state.badge_count,
+            need_you_complete: state.badge_coverage_complete,
+            tracked_loaded: state.tracked_loaded,
+            tracked_total: state.tracked_total,
+        });
         // Status priority: a hard error wins; then a rate-limit back-off (so a
         // switch into a paused window shows "paused", not a permanent
         // "Loading…"); otherwise the queue-specific sync line. Static text only
@@ -1722,12 +1876,14 @@ impl RootView {
             .child(view_switcher)
             .child(
                 div()
+                    .id("header-counts")
                     .min_w_0()
                     .flex_1()
                     .truncate()
                     .text_size(px(13.))
                     .text_color(theme.muted_foreground)
-                    .child(counts),
+                    .child(counts)
+                    .tooltip(move |window, cx| Tooltip::new(counts_tip.clone()).build(window, cx)),
             )
             .child(
                 h_flex()
@@ -1944,11 +2100,93 @@ impl RootView {
         )
     }
 
+    /// One search box: a search glyph, the label tokens (each removable),
+    /// the typed words, and one × that clears everything and closes it.
+    fn render_search_box(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, hover_bg, hover_text) =
+            (theme.muted_foreground, theme.secondary, theme.foreground);
+        let icon = |path: &'static str, size: f32| {
+            gpui::svg()
+                .path(path)
+                .size(px(size))
+                .flex_shrink_0()
+                .text_color(muted)
+        };
+        let tokens = h_flex()
+            .id("filter-chips")
+            .max_w(px(360.))
+            .overflow_x_scroll()
+            .gap_1()
+            .children(self.filter_chips.iter().enumerate().map(|(ix, chip)| {
+                let tip = format!("Stop filtering by {}", chip.term());
+                // "label:" as typed, so the chip teaches the syntax.
+                label_chip(theme)
+                    .flex_shrink_0()
+                    .gap(px(3.))
+                    .pr(px(2.))
+                    .text_color(theme.secondary_foreground)
+                    .child(
+                        h_flex()
+                            .child(
+                                div()
+                                    .text_color(muted)
+                                    .child(format!("{}:", chip.qualifier.key())),
+                            )
+                            .child(div().max_w(px(140.)).truncate().child(chip.value.clone())),
+                    )
+                    .child(
+                        div()
+                            .id(("remove-filter-chip", ix))
+                            .size(px(14.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(hover_bg))
+                            .child(icon("icons/close.svg", 9.))
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.remove_filter_chip(ix, window, cx)
+                            })),
+                    )
+            }));
+        let close = div()
+            .id("close-search")
+            .size(px(18.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .cursor_pointer()
+            .hover(|style| style.bg(hover_bg).text_color(hover_text))
+            .child(icon("icons/close.svg", 11.))
+            .tooltip(|window, cx| Tooltip::new("Clear and close search").build(window, cx))
+            .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx)));
+        // Nothing to clear in an empty box; leaving it closes it.
+        let has_content = self.filtering() || !self.search.read(cx).value().is_empty();
+        // Wider with tokens, so the words keep room to type.
+        let width = 300. + 110. * self.filter_chips.len().min(3) as f32;
+        div().w(px(width)).flex_shrink_0().child(
+            Input::new(&self.search)
+                .small()
+                .aria_label("Filter loaded PRs")
+                .prefix(
+                    h_flex()
+                        .gap_1p5()
+                        .child(icon("icons/search.svg", 13.))
+                        .when(!self.filter_chips.is_empty(), |prefix| prefix.child(tokens)),
+                )
+                .when(has_content, |input| input.suffix(close)),
+        )
+    }
+
     fn show_shortcuts(&self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.table.focus_handle(cx);
         window.open_dialog(cx, move |dialog, window, cx| {
             let mut rows = v_flex().id("shortcut-list").overflow_y_scroll()
-                .max_h((window.viewport_size().height - px(300.)).min(px(340.)))
+                .max_h((window.viewport_size().height - px(300.)).min(px(450.)))
                 .gap_2().text_size(px(13.));
             for (label, keys) in [
                 ("Select a PR", "↑ / ↓"),
@@ -1960,7 +2198,12 @@ impl RootView {
                 ("My PRs / Review queue", "1 / 2"),
                 ("Switch queue", "v"),
                 ("Refresh", "r"),
-                ("Search loaded PRs", "/"),
+                (
+                    "Search loaded PRs",
+                    if cfg!(target_os = "macos") { "/ or ⌘F" } else { "/ or Ctrl F" },
+                ),
+                ("Search one label, author, or repo", "label: author: repo:"),
+                ("Remove the last search filter", "⌫ in empty search"),
                 ("Toggle selected PR details", "Space"),
                 ("Cycle theme", "t"),
                 ("Close dialog or details", "Esc"),
@@ -1974,12 +2217,151 @@ impl RootView {
             let focus = focus.clone();
             dialog.title("Keyboard shortcuts").w(px(420.)).close_button(false).child(rows)
                 .child(div().mt_3().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                    .child("Clicking a label, author, or repository in the table adds it to the search. Quote values with spaces: label:\"help wanted\"."))
+                .child(div().mt_2().text_size(px(12.)).text_color(cx.theme().muted_foreground)
                     .child("Typing in search, the repository picker, or Settings never triggers dashboard shortcuts. Arrow keys, Enter, and Space act on the focused control."))
                 .child(h_flex().mt_3().justify_end().child(Button::new("close-shortcuts")
                     .label("Done").on_click(|_, window, cx| window.close_dialog(cx))))
                 .on_close(move |_, window, cx| focus.focus(window, cx))
         });
     }
+}
+
+/// A toolbar toggle with a fixed label, the count it applies to, and an
+/// optional dot. When on it takes the accent, like the current pinned repo.
+fn view_toggle(
+    id: &'static str,
+    label: &'static str,
+    count: usize,
+    on: bool,
+    dot: Option<gpui::Hsla>,
+    cx: &App,
+) -> Button {
+    let theme = cx.theme();
+    let count_color = if on {
+        theme.accent_foreground
+    } else {
+        theme.muted_foreground
+    };
+    // The content is a row, not a label, so name it for screen readers.
+    let name: SharedString = if count > 0 {
+        format!("{label} ({count})").into()
+    } else {
+        label.into()
+    };
+    Button::new(id)
+        .small()
+        .toggled(on)
+        .accessibility_label(name)
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .when_some(dot.filter(|_| count > 0), |row, color| {
+                    row.child(
+                        div()
+                            .size(px(crate::design::STATUS_DOT))
+                            .rounded_full()
+                            .bg(color),
+                    )
+                })
+                .child(label)
+                .when(count > 0, |row| {
+                    row.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(count_color)
+                            .child(count.to_string()),
+                    )
+                }),
+        )
+        .when(on, |button| {
+            button.bg(theme.accent).text_color(theme.accent_foreground)
+        })
+}
+
+fn changed_toggle_tooltip(on: bool, count: usize) -> String {
+    match (on, count) {
+        (true, _) => "Showing only PRs that changed since you looked. Click to show all.".into(),
+        (false, 0) => "No loaded PRs changed since you looked".into(),
+        (false, 1) => "Show only the PR that changed since you looked".into(),
+        (false, n) => format!("Show only the {n} PRs that changed since you looked"),
+    }
+}
+
+fn snoozed_toggle_tooltip(on: bool, count: usize) -> String {
+    match (on, count) {
+        (true, _) => "Collapse the snoozed PRs".into(),
+        (false, 0) => "No snoozed PRs here".into(),
+        (false, 1) => "Show the snoozed PR".into(),
+        (false, n) => format!("Show the {n} snoozed PRs"),
+    }
+}
+
+/// The numbers behind the header's count line.
+struct HeaderCounts {
+    loaded: usize,
+    truncated: bool,
+    /// The Dock badge: your PRs that need action plus reviews requested from
+    /// you, snoozed ones excluded.
+    need_you: usize,
+    /// Both queues have loaded, so `need_you` is the whole count.
+    need_you_complete: bool,
+    tracked_loaded: usize,
+    tracked_total: usize,
+}
+
+/// The header's count line and the tooltip that explains it.
+fn header_counts(c: &HeaderCounts) -> (String, String) {
+    let so_far = if c.need_you_complete { "" } else { " so far" };
+    let need_you = match c.need_you {
+        0 => format!("nothing needs you{so_far}"),
+        1 => format!("1 needs you{so_far}"),
+        n => format!("{n} need you{so_far}"),
+    };
+    let mut line = format!("{} loaded", c.loaded);
+    if c.truncated {
+        line.push_str(" · partial results");
+    }
+    line.push_str(&format!(" · {need_you}"));
+    let tracked = match (c.tracked_loaded, c.tracked_total) {
+        (_, 0) => None,
+        (loaded, total) if loaded >= total => Some(format!("{total} watched/snoozed")),
+        (loaded, total) => Some(format!("{loaded} of {total} watched/snoozed")),
+    };
+    if let Some(tracked) = &tracked {
+        line.push_str(&format!(" · {tracked}"));
+    }
+
+    let mut tip = format!("{} PRs loaded in this view", c.loaded);
+    tip.push_str(if c.truncated {
+        "; GitHub has more (Load more)."
+    } else {
+        "."
+    });
+    tip.push_str(&format!(
+        "\n{}: your PRs that need action plus reviews requested from you, not counting \
+         snoozed ones. The Dock badge shows the same number.",
+        upper_first(&need_you)
+    ));
+    if !c.need_you_complete {
+        tip.push_str(" Only the queues loaded since launch are counted.");
+    }
+    if let Some(tracked) = tracked {
+        tip.push_str(&format!(
+            "\n{}: watched and snoozed PRs, refreshed with this view (up to 50 each time).",
+            upper_first(&tracked)
+        ));
+    }
+    (line, tip)
+}
+
+fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// The header's right-side status line, specific to the active queue. Keeps
@@ -2192,6 +2574,24 @@ impl Render for RootView {
                 this.table.focus_handle(cx).focus(window, cx);
                 cx.notify();
             }))
+            // Backspace in an empty search box removes the last chip.
+            .capture_action(cx.listener(
+                |this, _: &gpui_component::input::Backspace, window, cx| {
+                    if this.filter_text.is_empty()
+                        && !this.filter_chips.is_empty()
+                        && this.search.focus_handle(cx).is_focused(window)
+                    {
+                        this.filter_chips.pop();
+                        this.sync_table(cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
+            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                if !window.has_active_dialog(cx) {
+                    this.open_search(window, cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::handle_key_down))
             .child(TitleBar::new().child(self.render_header(cx)))
             .child(self.render_update_banners(cx))
@@ -2210,19 +2610,17 @@ impl Render for RootView {
                         // loaded, the delegate's own render_empty shows the
                         // queue-specific "nothing here" — correct, because we
                         // now KNOW the queue is empty.
-                        BodyState::Loaded
-                            if self.visible_count == 0 && !self.filter_text.trim().is_empty() =>
-                        {
-                            this.child(
+                        BodyState::Loaded if self.visible_count == 0 && self.filtering() => this
+                            .child(
                                 h_flex()
                                     .size_full()
                                     .justify_center()
                                     .text_color(theme.muted_foreground)
-                                    .child(
-                                        "No matching loaded PRs — clear the filter or load more.",
-                                    ),
-                            )
-                        }
+                                    .child(format!(
+                                        "No loaded PRs match {} — clear the search or load more.",
+                                        self.filter_summary()
+                                    )),
+                            ),
                         BodyState::Loaded => this.child(
                             DataTable::new(&self.table)
                                 .small()
@@ -2262,5 +2660,48 @@ impl Render for RootView {
             })
             .child(self.render_footer(cx))
             .children(dialog_layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn counts(need_you: usize, complete: bool, tracked: (usize, usize)) -> HeaderCounts {
+        HeaderCounts {
+            loaded: 56,
+            truncated: true,
+            need_you,
+            need_you_complete: complete,
+            tracked_loaded: tracked.0,
+            tracked_total: tracked.1,
+        }
+    }
+
+    #[test]
+    fn the_header_says_who_needs_you_in_plain_words() {
+        let line = |c: HeaderCounts| header_counts(&c).0;
+        assert_eq!(
+            line(counts(0, true, (0, 0))),
+            "56 loaded · partial results · nothing needs you"
+        );
+        assert_eq!(
+            line(counts(1, false, (2, 2))),
+            "56 loaded · partial results · 1 needs you so far · 2 watched/snoozed"
+        );
+        assert_eq!(
+            line(counts(3, true, (50, 64))),
+            "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed"
+        );
+        let (_, tip) = header_counts(&counts(3, false, (2, 2)));
+        assert_eq!(
+            tip,
+            "56 PRs loaded in this view; GitHub has more (Load more).\n\
+             3 need you so far: your PRs that need action plus reviews requested from you, \
+             not counting snoozed ones. The Dock badge shows the same number. Only the \
+             queues loaded since launch are counted.\n\
+             2 watched/snoozed: watched and snoozed PRs, refreshed with this view (up to 50 \
+             each time)."
+        );
     }
 }

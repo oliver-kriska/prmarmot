@@ -17,7 +17,8 @@ pub mod updates;
 use std::sync::Arc;
 
 use gpui::{
-    px, size, App, AppContext, KeyBinding, Menu, MenuItem, WindowBounds, WindowKind, WindowOptions,
+    px, size, App, AppContext, KeyBinding, Menu, MenuItem, OsAction, WindowBounds, WindowKind,
+    WindowOptions,
 };
 use prmarmot_core::board::{BoardConfig, BoardScope, Mode};
 use prmarmot_core::github::gh_cli::GhCliTransport;
@@ -32,15 +33,18 @@ const APPLICATION_NAME: &str = "prmarmot";
 gpui::actions!(prmarmot, [Quit]);
 
 fn install_app_menu(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        if cfg!(target_os = "macos") {
-            "cmd-q"
-        } else {
-            "ctrl-q"
-        },
-        Quit,
-        None,
-    )]);
+    let macos = cfg!(target_os = "macos");
+    cx.bind_keys([
+        KeyBinding::new(if macos { "cmd-q" } else { "ctrl-q" }, Quit, None),
+        // Same as `/`. Global, and bound after gpui-component's own
+        // find-in-input key, so it also wins inside the search field. Inputs
+        // outside the board (dialogs) have no handler and fall through.
+        KeyBinding::new(
+            if macos { "cmd-f" } else { "ctrl-f" },
+            app::FocusSearch,
+            None,
+        ),
+    ]);
     cx.on_action(|_: &Quit, cx: &mut App| {
         // Application quit does not call the individual window-close callback.
         for handle in cx.windows() {
@@ -48,11 +52,31 @@ fn install_app_menu(cx: &mut App) {
         }
         cx.quit();
     });
-    cx.set_menus(vec![Menu {
-        name: "PR Marmot".into(),
-        items: vec![MenuItem::action("Quit PR Marmot", Quit)],
-        disabled: false,
-    }]);
+    use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+    cx.set_menus(vec![
+        Menu {
+            name: "PR Marmot".into(),
+            items: vec![MenuItem::action("Quit PR Marmot", Quit)],
+            disabled: false,
+        },
+        // The standard editing items act on the focused text field (search,
+        // repository picker, Settings); Find is the same as `/`.
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("Find", app::FocusSearch),
+            ],
+            disabled: false,
+        },
+    ]);
 }
 
 const USAGE: &str = "usage: prmarmot [--repo owner/name | --all-repos] [--review]
