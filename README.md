@@ -69,9 +69,10 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install
 ```
 
 The installer downloads the latest macOS arm64 release, installs
-`~/Applications/prmarmot.app`, verifies the published checksum, Developer ID
-signature, notarization ticket, and Gatekeeper acceptance, and creates the
-config file only when it can resolve an accessible repository. It never
+`/Applications/prmarmot.app` (`~/Applications` for accounts that cannot write
+`/Applications`; `--dir <dir>` to choose), verifies the published checksum,
+Developer ID signature, notarization ticket, and Gatekeeper acceptance, and
+creates the config file only when it can resolve an accessible repository. It never
 overwrites an existing config. It also links the bundled
 [terminal and agent CLI](#terminal-and-agent-cli) as `~/.local/bin/prmarmot-cli`
 (`--bin-dir <dir>` to choose another directory, `--bin-dir ""` to skip).
@@ -83,6 +84,14 @@ brew install --cask oliver-kriska/tap/prmarmot
 ```
 
 The cask links `prmarmot-cli` into Homebrew's `bin` as well.
+
+Every install path — the installer, Homebrew, and `make install` — uses the same
+`/Applications/prmarmot.app`, so a Mac has one PR Marmot. The installer and
+`make install` remove an older copy that earlier versions put in
+`~/Applications`. Once Homebrew manages the app, update with
+`brew upgrade --cask prmarmot`; the installer refuses and says so. If an app is
+already in `/Applications` when you first install the cask, use
+`brew install --cask --force oliver-kriska/tap/prmarmot` to replace it.
 
 **Updating? Quit the installed app before running the installer again.**
 
@@ -103,9 +112,10 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install
   | sh -s -- --from-source --repo owner/name
 ```
 
-On macOS this installs `~/Applications/prmarmot.app` and links
-`~/.local/bin/prmarmot-cli` into it (`make install` from a checkout does the
-same); on Linux it installs the `prmarmot` and `prmarmot-cli` binaries to
+On macOS this installs `/Applications/prmarmot.app`, the same app the cask
+manages, and links `~/.local/bin/prmarmot-cli` into it (`make install` from a
+checkout does the same, replacing a Homebrew-installed app until the next
+`brew upgrade`); on Linux it installs the `prmarmot` and `prmarmot-cli` binaries to
 `~/.local/bin` by default. There are no prebuilt Linux packages yet.
 
 ## First run

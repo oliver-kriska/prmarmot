@@ -22,7 +22,7 @@ after the user approves the version at the gate.
 
 ## Traps
 
-- **Never install over `~/Applications/prmarmot.app`.** macOS can SIGKILL a
+- **Never install over `/Applications/prmarmot.app`.** macOS can SIGKILL a
   running app whose signed binary is replaced, and an instance may be under a
   memory measurement. Verify installs into a scratch `--dir`; only the user
   relaunches their own app. `install.sh` refuses while the app runs, even with

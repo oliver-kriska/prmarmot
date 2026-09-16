@@ -5,8 +5,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install.sh | sh -s -- --from-source
 #
 # Default: download the latest signed and notarized Apple-silicon macOS app.
-# Source builds remain locally ad-hoc signed. Either way the terminal/agent CLI
-# is linked as ~/.local/bin/prmarmot-cli (--bin-dir to change; --bin-dir "" to skip).
+# Source builds remain locally ad-hoc signed. On macOS the app goes to
+# /Applications — the same place as the Homebrew cask and `make install` — or
+# ~/Applications when /Applications is not writable (--dir to change). Either
+# way the terminal/agent CLI is linked as ~/.local/bin/prmarmot-cli (--bin-dir
+# to change; --bin-dir "" to skip).
 set -eu
 
 REPO="oliver-kriska/prmarmot"
@@ -71,6 +74,32 @@ configure_repo() {
   say "Configured $CANONICAL in $CONFIG"
 }
 
+BUNDLE_ID="dev.oliverkriska.prmarmot"
+LEGACY_APP="$HOME/Applications/prmarmot.app"
+
+default_app_dir() {
+  if [ -w /Applications ]; then echo /Applications; else echo "$HOME/Applications"; fi
+}
+
+# Earlier installs defaulted to ~/Applications. Two bundles with one identifier
+# show up twice in Spotlight and Launchpad, so drop the older copy — only when
+# it really is this app and is not the one just installed ($1).
+remove_legacy_app() {
+  [ -d "$LEGACY_APP" ] || return 0
+  [ "$(cd "$LEGACY_APP" && pwd -P)" != "$(cd "$1/prmarmot.app" && pwd -P)" ] || return 0
+  LEGACY_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_APP/Contents/Info.plist" 2>/dev/null || true)
+  [ "$LEGACY_ID" = "$BUNDLE_ID" ] || return 0
+  LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  [ ! -x "$LSREG" ] || "$LSREG" -u "$LEGACY_APP" >/dev/null 2>&1 || true
+  rm -rf "$LEGACY_APP"
+  # Its CLI link would dangle; link_cli recreates it when wanted.
+  STALE="$HOME/.local/bin/prmarmot-cli"
+  if [ -L "$STALE" ] && [ "$(readlink "$STALE")" = "$LEGACY_APP/Contents/MacOS/prmarmot-cli" ]; then
+    rm -f "$STALE"
+  fi
+  say "Removed the older copy at $LEGACY_APP"
+}
+
 on_path() {
   case ":$PATH:" in
     *":$1:"*) return 0 ;;
@@ -130,7 +159,10 @@ install_release_macos() {
   [ "$ARCH" = "arm64" ] || die "prebuilt releases are Apple-silicon only for now; use --from-source"
   command -v shasum >/dev/null 2>&1 || die "shasum not found"
   command -v spctl >/dev/null 2>&1 || die "macOS Gatekeeper tool not found"
-  DIR="${DIR:-$HOME/Applications}"
+  if [ -z "$DIR" ] && command -v brew >/dev/null 2>&1 && brew list --cask prmarmot >/dev/null 2>&1; then
+    die "PR Marmot is installed with Homebrew here; update it with: brew upgrade --cask prmarmot"
+  fi
+  DIR="${DIR:-$(default_app_dir)}"
   say "Finding the latest stable release of $REPO"
   RELEASE=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest") \
     || die "could not query the latest GitHub release"
@@ -164,6 +196,7 @@ install_release_macos() {
   mv "$TMP/prmarmot.app" "$DIR/prmarmot.app"
   LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   [ -x "$LSREG" ] && "$LSREG" -f "$DIR/prmarmot.app" >/dev/null 2>&1 || true
+  remove_legacy_app "$DIR"
   link_cli "$DIR"
   configure_repo
   say "Done — launch 'PR Marmot' from Spotlight, or: open '$DIR/prmarmot.app'"
@@ -180,8 +213,8 @@ install_from_source() {
   say "Building release binaries (a few minutes; LTO)"
   (cd "$TMP/prmarmot" && cargo build --release --workspace)
   if [ "$OS" = "Darwin" ]; then
-    DIR="${DIR:-$HOME/Applications}"
-    # bundle-app.sh links the CLI itself.
+    DIR="${DIR:-$(default_app_dir)}"
+    # bundle-app.sh removes an older ~/Applications copy and links the CLI itself.
     PRMARMOT_INSTALL_DIR="$DIR" PRMARMOT_BIN_DIR="$BIN_DIR" "$TMP/prmarmot/scripts/bundle-app.sh"
   else
     DIR="${DIR:-$HOME/.local/bin}"

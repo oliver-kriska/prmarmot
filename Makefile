@@ -59,7 +59,7 @@ run: ## Run the debug app
 cli: ## Build the terminal/agent CLI (no Metal) -> target/release/prmarmot-cli
 	cargo build --release -p prmarmot-cli
 
-install: ## Release-build and install ~/Applications/prmarmot.app + link ~/.local/bin/prmarmot-cli (refuses if running)
+install: ## Release-build and install /Applications/prmarmot.app (where the cask puts it) + link ~/.local/bin/prmarmot-cli (refuses if running)
 	@pgrep -f 'prmarmot.app/Contents/MacOS/prmarmot( |$$)' >/dev/null \
 		&& { echo "prmarmot.app is running — quit it first (macOS SIGKILLs an app whose binary is swapped; this also protects a live memory-gate run)"; exit 1; } \
 		|| true

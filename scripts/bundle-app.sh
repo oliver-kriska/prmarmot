@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # bundle-app.sh — assemble a local, ad-hoc-signed prmarmot.app and install it
-# to ~/Applications so Spotlight can launch it. The terminal/agent CLI ships
-# inside the bundle (Contents/MacOS/prmarmot-cli) and an install links it onto
-# PATH.
+# to /Applications, the same place the Homebrew cask and install.sh use, so a
+# machine only ever has one PR Marmot. An older copy left in ~/Applications by
+# earlier installs is removed. The terminal/agent CLI ships inside the bundle
+# (Contents/MacOS/prmarmot-cli) and an install links it onto PATH.
 #
 # This assembles the same app skeleton used in release CI. Local builds remain
 # ad-hoc signed; release CI replaces that signature with Developer ID signing,
@@ -11,7 +12,8 @@
 # Usage: scripts/bundle-app.sh [--stage-only]
 #   --stage-only          stop after codesign; leave the .app in target/bundle
 #                         (used by release packaging to tar it up)
-#   PRMARMOT_INSTALL_DIR  override the install destination (default ~/Applications)
+#   PRMARMOT_INSTALL_DIR  override the install destination (default /Applications,
+#                         or ~/Applications when /Applications is not writable)
 #   PRMARMOT_BIN_DIR      where to link prmarmot-cli (default ~/.local/bin; set it
 #                         empty to skip the link)
 # Requires: target/release/prmarmot and target/release/prmarmot-cli
@@ -26,10 +28,20 @@ BINARY="$REPO_ROOT/target/release/prmarmot"
 CLI_BINARY="$REPO_ROOT/target/release/prmarmot-cli"
 STAGE="$REPO_ROOT/target/bundle"
 APP="$STAGE/prmarmot.app"
-INSTALL_DIR="${PRMARMOT_INSTALL_DIR:-$HOME/Applications}"
 BUNDLE_ID="dev.oliverkriska.prmarmot"
+LEGACY_APP="$HOME/Applications/prmarmot.app"
 
 step() { printf '\n==> %s\n' "$*"; }
+
+# One location for every install path. A standard (non-admin) account cannot
+# write /Applications, and neither can Homebrew there, so it keeps a per-user app.
+if [[ -n "${PRMARMOT_INSTALL_DIR:-}" ]]; then
+  INSTALL_DIR="$PRMARMOT_INSTALL_DIR"
+elif [[ -w /Applications ]]; then
+  INSTALL_DIR="/Applications"
+else
+  INSTALL_DIR="$HOME/Applications"
+fi
 
 for built in "$BINARY" "$CLI_BINARY"; do
   [[ -x "$built" ]] || {
@@ -113,13 +125,44 @@ if [[ "$STAGE_ONLY" == 1 ]]; then
   step "Staged (not installed): $APP (v$VERSION, ad-hoc signed)"
   exit 0
 fi
+# macOS can SIGKILL an app whose signed binary is swapped, and a running
+# instance may be under a memory measurement.
+if pgrep -f 'prmarmot.app/Contents/MacOS/prmarmot( |$)' >/dev/null; then
+  echo "error: PR Marmot is running — quit it first" >&2
+  exit 1
+fi
+if command -v brew >/dev/null 2>&1 && brew list --cask prmarmot >/dev/null 2>&1; then
+  echo "note: this replaces the Homebrew-installed app with a local build;" \
+    "'brew upgrade --cask prmarmot' or 'brew reinstall --cask prmarmot' puts a release back"
+fi
 step "Installing to $INSTALL_DIR/prmarmot.app"
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/prmarmot.app"
 ditto "$APP" "$INSTALL_DIR/prmarmot.app"
+INSTALLED_APP="$(cd "$INSTALL_DIR" && pwd -P)/prmarmot.app"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+# The staging copy sits in an indexed folder; left behind, Spotlight and
+# Launchpad list it as a second PR Marmot. Release packaging uses --stage-only.
+[[ -x "$LSREGISTER" ]] && "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+rm -rf "$APP"
+
+# Earlier installs defaulted to ~/Applications. Two bundles with one identifier
+# show up twice in Spotlight and Launchpad, so drop the older copy — only when it
+# really is this app and is not the one just installed.
+if [[ -d "$LEGACY_APP" && "$(cd "$LEGACY_APP" && pwd -P)" != "$INSTALLED_APP" ]] \
+  && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_APP/Contents/Info.plist" 2>/dev/null)" == "$BUNDLE_ID" ]]; then
+  [[ -x "$LSREGISTER" ]] && "$LSREGISTER" -u "$LEGACY_APP" >/dev/null 2>&1 || true
+  rm -rf "$LEGACY_APP"
+  # Its CLI link would dangle; the link step below recreates it when wanted.
+  if [[ -L "$HOME/.local/bin/prmarmot-cli" \
+    && "$(readlink "$HOME/.local/bin/prmarmot-cli")" == "$LEGACY_APP/Contents/MacOS/prmarmot-cli" ]]; then
+    rm -f "$HOME/.local/bin/prmarmot-cli"
+  fi
+  step "Removed the older copy at $LEGACY_APP"
+fi
 
 # Nudge LaunchServices so Spotlight picks it up promptly (best-effort).
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [[ -x "$LSREGISTER" ]] && "$LSREGISTER" -f "$INSTALL_DIR/prmarmot.app" >/dev/null 2>&1 || true
 
 # --- CLI link --------------------------------------------------------------
@@ -132,7 +175,7 @@ if [[ -n "$BIN_DIR" ]]; then
     echo "warning: $LINK exists and is not a symlink; leaving it (the CLI is at $INSTALL_DIR/prmarmot.app/Contents/MacOS/prmarmot-cli)" >&2
   else
     mkdir -p "$BIN_DIR"
-    ln -sfn "$(cd "$INSTALL_DIR" && pwd)/prmarmot.app/Contents/MacOS/prmarmot-cli" "$LINK"
+    ln -sfn "$INSTALLED_APP/Contents/MacOS/prmarmot-cli" "$LINK"
     step "Linked $LINK"
     case ":$PATH:" in
       *":$BIN_DIR:"*) ;;
@@ -142,5 +185,5 @@ if [[ -n "$BIN_DIR" ]]; then
 fi
 
 step "Done: $INSTALL_DIR/prmarmot.app (v$VERSION, ad-hoc signed)"
-echo "Launch with Spotlight ('PR Marmot') or: open ~/Applications/prmarmot.app"
+echo "Launch with Spotlight ('PR Marmot') or: open '$INSTALLED_APP'"
 echo "Terminal and agents: prmarmot-cli --help"

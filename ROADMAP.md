@@ -9,10 +9,11 @@ each phase ends with a shipped release. Evidence for the ordering is in
 - **v0.6.0 released 2026-09-15 04:54 UTC** under the new name: notarized + stapled `.app`, cask
   `oliver-kriska/homebrew-tap` live with matching sha256, so Phases 0, 1a and 1b are shipped (verified
   independently via `gh release view`, the tap's `Casks/prmarmot.rb`, and the hub's `spctl` check).
-- Caveat: `~/Applications/prmarmot.app` on Oliver's Mac is a **source build** (0.6.0 but `spctl`
-  rejects, no ticket). The benchmark's subject A must be the cask install at `/Applications/`, and that
-  local copy must not be running during a gate run. Replace it with the cask install only when no
-  measurement is live.
+- **v0.7.0 released 2026-09-16** (prmarmot-cli bundled in the app and linked by the cask). Oliver's Mac
+  now has the single cask install at `/Applications/prmarmot.app`; the old `~/Applications` source build
+  was moved to the Trash, and `make install` / `install.sh` now target `/Applications` too, so the
+  benchmark's subject A is simply that app. A `make install` replaces it with a local ad-hoc build until
+  the next `brew upgrade` — reinstall the cask before a gate run.
 
 ### Earlier status — 2026-09-11 (local, not released)
 
@@ -230,8 +231,9 @@ the protocol, measurement and handoff acceptance; site edits go to the site sess
 itself is operator-scheduled by Oliver** (his Mac unattended ~12 h, PR Flow trial installed by him).
 
 - [ ] **G0 / memory benchmark** — `benchmarks/2026-09-memory/` per the hub protocol (subjects: cask build
-      of v0.6.0 at `/Applications/`, PR Flow trial, one github.com/pulls Safari tab as marginal cost;
-      quit the `~/Applications` source build first). Runnable now (v0.6.0 notarized, cask live). Oliver
+      of the current release at `/Applications/`, PR Flow trial, one github.com/pulls Safari tab as
+      marginal cost; `brew reinstall --cask prmarmot` first if a `make install` build replaced it).
+      Runnable now (notarized release, cask live). Oliver
       picks the night; verdict recorded here + HANDOFF. Until published: no "lightweight / low memory /
       fast" wording anywhere. Before publishing: send PR Flow's developer the README + results (Oliver's
       call, recommended); read prflow.app/terms in full.
