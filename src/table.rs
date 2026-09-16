@@ -233,7 +233,7 @@ fn elide(window: &mut Window, text: &str, max_width: Pixels) -> String {
 
 /// The responsive column set for a mode at a given width class and viewport.
 ///
-/// Human scanning order (critique #3): identity first (PR + draft badge), then
+/// Human scanning order (critique #3): identity first (PR), then
 /// WHAT it is (Title), then health (CI), then the merged Review / Author +
 /// Unresolved metadata, then Labels, then the Note. Fixed metadata columns get
 /// bounded widths; Title and Note split the remaining viewport with Note kept
@@ -1423,8 +1423,8 @@ impl TableDelegate for BoardTableDelegate {
         let cell = match self.columns[col_ix].key.as_ref() {
             "pr" => {
                 // Single-click link (critique #5): the blue #number opens the
-                // PR. A compact "draft" badge replaces the old always-"ready"
-                // Status column.
+                // PR. Drafts need no badge here: they have their own section,
+                // a dimmed number, and a Note that starts with "draft".
                 let url = row.url.clone();
                 let number = h_flex()
                     .id(("pr-link", row_ix))
@@ -1511,20 +1511,6 @@ impl TableDelegate for BoardTableDelegate {
                                 }
                             })
                             .on_click(|_, _, cx| cx.stop_propagation()),
-                    );
-                }
-                if row.draft {
-                    cell = cell.child(
-                        div()
-                            .px(px(4.))
-                            .rounded(px(CHIP_RADIUS))
-                            .bg(theme.muted)
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(10.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(muted)
-                            .child("draft"),
                     );
                 }
                 return cell.into_any_element();
