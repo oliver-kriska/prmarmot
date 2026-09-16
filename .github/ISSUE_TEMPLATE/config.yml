@@ -1,0 +1,12 @@
+# Issues are for bugs. Everything else has a better home in Discussions.
+blank_issues_enabled: false
+contact_links:
+  - name: Feature request
+    url: https://github.com/oliver-kriska/prmarmot/discussions/categories/ideas
+    about: One thread per feature in Ideas — vote with 👍; upvotes decide what gets built next.
+  - name: Question or setup help
+    url: https://github.com/oliver-kriska/prmarmot/discussions/categories/q-a
+    about: Installing, gh login, config, or "is this expected?" — ask in Q&A.
+  - name: iPad app + Cloud waitlist
+    url: https://github.com/oliver-kriska/prmarmot/discussions/8
+    about: React with 👍 or comment on the pinned thread to be notified.

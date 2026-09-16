@@ -1,0 +1,89 @@
+name: Bug report
+description: PR Marmot or prmarmot-cli does something wrong, crashes, or shows the wrong state.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Feature ideas go to [Ideas](https://github.com/oliver-kriska/prmarmot/discussions/categories/ideas) and setup questions to [Q&A](https://github.com/oliver-kriska/prmarmot/discussions/categories/q-a).
+
+        Please remove private repository names, PR titles, and logins from anything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: PR Marmot version
+      description: The version at the top of Settings, or the output of `prmarmot-cli --version` (the app and CLI share one version).
+      placeholder: "0.7.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: How did you install it?
+      options:
+        - Homebrew cask (brew install --cask oliver-kriska/tap/prmarmot)
+        - install.sh (curl installer, prebuilt release)
+        - install.sh --from-source
+        - make install from a checkout
+        - cargo build / cargo run
+        - Other (say below)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS, Apple Silicon
+        - macOS, Intel (built from source)
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os-details
+    attributes:
+      label: OS version and, on Linux, distro + GPU + Wayland or X11
+      description: GPUI on NVIDIA with Wayland is the known trouble spot, so the GPU and session type matter on Linux.
+      placeholder: "macOS 26.1 · or · Fedora 43, NVIDIA RTX 4070 (driver 580), Wayland"
+    validations:
+      required: true
+  - type: textarea
+    id: gh
+    attributes:
+      label: GitHub CLI
+      description: Output of `gh --version`, and whether `gh auth status` says you are logged in (and to which host). Do not paste tokens.
+      placeholder: |
+        gh version 2.80.0 (2026-09-01)
+        gh auth status: logged in to github.com
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead. Screenshots help for display problems.
+      placeholder: |
+        1. Opened Review queue for all repositories
+        2. Expected PR #123 under "Needs action"
+        3. It showed under "Awaiting review" with the note "…"
+    validations:
+      required: true
+  - type: dropdown
+    id: cli
+    attributes:
+      label: Does prmarmot-cli show the same thing?
+      description: For wrong PR state, `prmarmot-cli mine` or `prmarmot-cli review` (add `--repo owner/name` if you used one) helps tell a data problem from a display problem.
+      options:
+        - "Yes, the CLI shows the same problem"
+        - "No, the CLI is correct"
+        - "Not applicable (crash, install, or window problem)"
+        - "Did not try"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Anything PR Marmot printed when started from a terminal, or the CLI's error message and exit code.
+      render: text
