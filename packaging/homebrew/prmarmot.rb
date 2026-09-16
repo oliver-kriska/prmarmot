@@ -32,6 +32,9 @@ cask "prmarmot" do
   depends_on macos: :monterey
 
   app "prmarmot.app"
+  # The terminal/agent CLI ships inside the signed bundle; Homebrew links it
+  # onto PATH, so `brew upgrade` updates both.
+  binary "#{appdir}/prmarmot.app/Contents/MacOS/prmarmot-cli"
 
   zap trash: [
     "~/.config/prmarmot",

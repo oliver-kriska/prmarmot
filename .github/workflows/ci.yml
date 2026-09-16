@@ -31,7 +31,7 @@ jobs:
       - run: cargo fmt --all --check
 
   core:
-    name: Core (clippy + test)
+    name: Core, local, CLI (clippy + test)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -44,10 +44,29 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      # prmarmot-core has no GPUI/Metal dependency, so this compiles cleanly on
-      # Linux. The root GPUI binary is intentionally not built in CI — see
-      # CLAUDE.md ("Fast core checks only"); build it locally with `make build`.
-      - name: Clippy (prmarmot-core, warnings as errors)
-        run: cargo clippy -p prmarmot-core --all-targets -- -D warnings
-      - name: Test (prmarmot-core spec + golden suite)
-        run: cargo test -p prmarmot-core
+      # prmarmot-core, prmarmot-local, and prmarmot-cli have no GPUI/Metal
+      # dependency, so they compile cleanly on Linux. The root GPUI binary is
+      # intentionally not built in CI — see CLAUDE.md ("Fast core checks only");
+      # build it locally with `make build`.
+      - name: Clippy (core, local, cli; warnings as errors)
+        run: cargo clippy -p prmarmot-core -p prmarmot-local -p prmarmot-cli --all-targets -- -D warnings
+      - name: Test (core spec + golden suite, local, cli)
+        run: cargo test -p prmarmot-core -p prmarmot-local -p prmarmot-cli
+
+  msrv:
+    name: MSRV (core, local, CLI on Rust 1.85)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # Keep in sync with `rust-version` in core/, local/, and cli/Cargo.toml.
+      # The GPUI app needs a newer toolchain and is not part of this promise.
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # --locked: a dependency bump that raises the floor fails here first.
+      - name: Check at the declared rust-version
+        run: cargo check --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli --all-targets

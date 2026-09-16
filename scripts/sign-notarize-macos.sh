@@ -25,17 +25,26 @@ for name in "${required[@]}"; do
 done
 
 [[ -d "$app" ]] || { echo "app bundle does not exist: $app" >&2; exit 1; }
-[[ -x "$app/Contents/MacOS/prmarmot" ]] || {
-  echo "app bundle has no executable prmarmot binary: $app" >&2
-  exit 1
-}
+for binary in prmarmot prmarmot-cli; do
+  [[ -x "$app/Contents/MacOS/$binary" ]] || {
+    echo "app bundle has no executable $binary binary: $app" >&2
+    exit 1
+  }
+done
 [[ -f "$MACOS_NOTARY_KEY_PATH" ]] || {
   echo "App Store Connect API key does not exist: $MACOS_NOTARY_KEY_PATH" >&2
   exit 1
 }
 
+# Inside-out without --deep: the nested CLI keeps its own identifier, then the
+# bundle seals it.
+echo "Developer ID signing $app/Contents/MacOS/prmarmot-cli"
+codesign --force --timestamp --options runtime \
+  --identifier dev.oliverkriska.prmarmot.cli \
+  --sign "$MACOS_SIGN_IDENTITY" \
+  "$app/Contents/MacOS/prmarmot-cli"
 echo "Developer ID signing $app"
-codesign --force --deep --timestamp --options runtime \
+codesign --force --timestamp --options runtime \
   --identifier dev.oliverkriska.prmarmot \
   --sign "$MACOS_SIGN_IDENTITY" \
   "$app"

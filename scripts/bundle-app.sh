@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # bundle-app.sh — assemble a local, ad-hoc-signed prmarmot.app and install it
-# to ~/Applications so Spotlight can launch it.
+# to ~/Applications so Spotlight can launch it. The terminal/agent CLI ships
+# inside the bundle (Contents/MacOS/prmarmot-cli) and an install links it onto
+# PATH.
 #
 # This assembles the same app skeleton used in release CI. Local builds remain
 # ad-hoc signed; release CI replaces that signature with Developer ID signing,
@@ -10,7 +12,10 @@
 #   --stage-only          stop after codesign; leave the .app in target/bundle
 #                         (used by release packaging to tar it up)
 #   PRMARMOT_INSTALL_DIR  override the install destination (default ~/Applications)
-# Requires: target/release/prmarmot (cargo build --release), stock macOS tools.
+#   PRMARMOT_BIN_DIR      where to link prmarmot-cli (default ~/.local/bin; set it
+#                         empty to skip the link)
+# Requires: target/release/prmarmot and target/release/prmarmot-cli
+# (cargo build --release --workspace), stock macOS tools.
 set -euo pipefail
 
 STAGE_ONLY=0
@@ -18,6 +23,7 @@ STAGE_ONLY=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="$REPO_ROOT/target/release/prmarmot"
+CLI_BINARY="$REPO_ROOT/target/release/prmarmot-cli"
 STAGE="$REPO_ROOT/target/bundle"
 APP="$STAGE/prmarmot.app"
 INSTALL_DIR="${PRMARMOT_INSTALL_DIR:-$HOME/Applications}"
@@ -25,10 +31,12 @@ BUNDLE_ID="dev.oliverkriska.prmarmot"
 
 step() { printf '\n==> %s\n' "$*"; }
 
-[[ -x "$BINARY" ]] || {
-  echo "error: $BINARY not found or not executable — run 'cargo build --release' first" >&2
-  exit 1
-}
+for built in "$BINARY" "$CLI_BINARY"; do
+  [[ -x "$built" ]] || {
+    echo "error: $built not found or not executable — run 'cargo build --release --workspace' first" >&2
+    exit 1
+  }
+done
 
 # --- version ---------------------------------------------------------------
 # Parse the [package] version straight from Cargo.toml (read-only; cargo
@@ -49,6 +57,7 @@ step "Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/prmarmot"
+cp "$CLI_BINARY" "$APP/Contents/MacOS/prmarmot-cli"
 
 # --- icon -----------------------------------------------------------------
 # Generated from assets/branding/icon.svg by scripts/generate-icons.sh.
@@ -94,8 +103,10 @@ plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 # --- ad-hoc codesign -------------------------------------------------------
 step "Codesigning (ad-hoc)"
-codesign --force --deep -s - "$APP"
-codesign --verify --deep "$APP"
+# Inside-out, like the release signing: nested code first, then the bundle.
+codesign --force -s - --identifier "$BUNDLE_ID.cli" "$APP/Contents/MacOS/prmarmot-cli"
+codesign --force -s - "$APP"
+codesign --verify --deep --strict "$APP"
 
 # --- install ---------------------------------------------------------------
 if [[ "$STAGE_ONLY" == 1 ]]; then
@@ -111,5 +122,25 @@ ditto "$APP" "$INSTALL_DIR/prmarmot.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [[ -x "$LSREGISTER" ]] && "$LSREGISTER" -f "$INSTALL_DIR/prmarmot.app" >/dev/null 2>&1 || true
 
+# --- CLI link --------------------------------------------------------------
+# A symlink into the bundle, so every app update updates the CLI too. Never
+# replace a real file someone put there (e.g. a cargo-installed copy).
+BIN_DIR="${PRMARMOT_BIN_DIR-$HOME/.local/bin}"
+if [[ -n "$BIN_DIR" ]]; then
+  LINK="$BIN_DIR/prmarmot-cli"
+  if [[ -e "$LINK" && ! -L "$LINK" ]]; then
+    echo "warning: $LINK exists and is not a symlink; leaving it (the CLI is at $INSTALL_DIR/prmarmot.app/Contents/MacOS/prmarmot-cli)" >&2
+  else
+    mkdir -p "$BIN_DIR"
+    ln -sfn "$(cd "$INSTALL_DIR" && pwd)/prmarmot.app/Contents/MacOS/prmarmot-cli" "$LINK"
+    step "Linked $LINK"
+    case ":$PATH:" in
+      *":$BIN_DIR:"*) ;;
+      *) echo "note: $BIN_DIR is not on your PATH — add it to use prmarmot-cli" ;;
+    esac
+  fi
+fi
+
 step "Done: $INSTALL_DIR/prmarmot.app (v$VERSION, ad-hoc signed)"
 echo "Launch with Spotlight ('PR Marmot') or: open ~/Applications/prmarmot.app"
+echo "Terminal and agents: prmarmot-cli --help"

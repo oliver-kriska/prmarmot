@@ -1,5 +1,6 @@
 #!/bin/sh
-# PR Marmot pre-commit hook — the fast quality gate (fmt + core clippy + core test).
+# PR Marmot pre-commit hook — the fast quality gate (fmt + clippy + tests of the
+# GPUI-free crates: prmarmot-core, prmarmot-local, prmarmot-cli).
 # Mirrors CI. Runs only when Rust/Cargo files are staged, so docs-only commits
 # (CLAUDE.md, HANDOFF.md, …) stay instant.
 #
@@ -26,10 +27,14 @@ if ! cargo fmt --check; then
   exit 1
 fi
 
-echo "pre-commit: cargo clippy -p prmarmot-core -D warnings"
-cargo clippy -p prmarmot-core --all-targets -- -D warnings
+crates="-p prmarmot-core -p prmarmot-local -p prmarmot-cli"
 
-echo "pre-commit: cargo test -p prmarmot-core"
-cargo test -p prmarmot-core --quiet
+echo "pre-commit: cargo clippy (core, local, cli) -D warnings"
+# shellcheck disable=SC2086
+cargo clippy $crates --all-targets -- -D warnings
+
+echo "pre-commit: cargo test (core, local, cli)"
+# shellcheck disable=SC2086
+cargo test $crates --quiet
 
 echo "pre-commit: OK"

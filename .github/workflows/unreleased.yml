@@ -8,9 +8,13 @@ name: Unreleased
 on:
   push:
     branches: [main]
-  # After a real release is published the queue is empty again; refresh (and
-  # remove) the draft. Draft creation/deletion fires neither event, so this
-  # cannot recurse.
+    # A pushed release tag empties the queue. release.yml publishes with the
+    # workflow's own token, and GitHub starts no workflow for events that token
+    # creates, so the `release` trigger below never fires for those releases.
+    tags: ["v*"]
+  # After a release published by a person the queue is empty again; refresh
+  # (and remove) the draft. Draft creation/deletion fires neither event, so
+  # this cannot recurse.
   release:
     types: [released, prereleased]
   workflow_dispatch:

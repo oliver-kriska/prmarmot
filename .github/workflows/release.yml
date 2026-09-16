@@ -85,7 +85,7 @@ jobs:
       - name: Verify and build release binary
         run: |
           make verify
-          cargo build --release --locked
+          cargo build --release --locked --workspace
 
       - name: Import Apple credentials
         env:
@@ -104,6 +104,7 @@ jobs:
           scripts/bundle-app.sh --stage-only
           scripts/sign-notarize-macos.sh target/bundle/prmarmot.app
           test "$(lipo -archs target/bundle/prmarmot.app/Contents/MacOS/prmarmot)" = arm64
+          test "$(lipo -archs target/bundle/prmarmot.app/Contents/MacOS/prmarmot-cli)" = arm64
 
       - name: Package and verify checksum
         run: |
