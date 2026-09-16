@@ -11,6 +11,7 @@
 //! Nothing here may animate: the table sits idle between refreshes and any
 //! continuous animation would defeat the idle-GPU half of the spike gate.
 
+use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, AnyElement, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
@@ -24,6 +25,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
 use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
 use prmarmot_core::layout::{layout, LayoutItem, SectionKind};
+use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -333,16 +335,37 @@ pub enum Qualifier {
     Label,
     Author,
     Repo,
+    /// `is:stale`: waited `stale_after_days` or longer for a reviewer.
+    Is,
+}
+
+/// When the table is filtered, and how long a wait makes a PR stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleRule {
+    pub now: DateTime<Utc>,
+    pub after_days: u64,
+}
+
+impl StaleRule {
+    pub fn is_stale(self, row: &BoardRow) -> bool {
+        is_stale(row, self.now, self.after_days)
+    }
 }
 
 impl Qualifier {
-    const ALL: [Qualifier; 3] = [Qualifier::Label, Qualifier::Author, Qualifier::Repo];
+    const ALL: [Qualifier; 4] = [
+        Qualifier::Label,
+        Qualifier::Author,
+        Qualifier::Repo,
+        Qualifier::Is,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
             Qualifier::Label => "label",
             Qualifier::Author => "author",
             Qualifier::Repo => "repo",
+            Qualifier::Is => "is",
         }
     }
 
@@ -356,7 +379,7 @@ impl Qualifier {
     }
 
     /// Whether `row`'s field is `value`, whole and ignoring case.
-    fn matches(self, row: &BoardRow, value: &str) -> bool {
+    fn matches(self, row: &BoardRow, value: &str, stale: StaleRule) -> bool {
         match self {
             Qualifier::Label => has_label(row, value),
             Qualifier::Author => row
@@ -364,6 +387,7 @@ impl Qualifier {
                 .as_deref()
                 .is_some_and(|author| same_text(author, value)),
             Qualifier::Repo => same_text(&row.repo, value),
+            Qualifier::Is => same_text(value, "stale") && stale.is_stale(row),
         }
     }
 }
@@ -393,8 +417,8 @@ impl FilterChip {
         self.qualifier.term(&self.value)
     }
 
-    pub fn matches(&self, row: &BoardRow) -> bool {
-        self.qualifier.matches(row, &self.value)
+    pub fn matches(&self, row: &BoardRow, stale: StaleRule) -> bool {
+        self.qualifier.matches(row, &self.value, stale)
     }
 
     /// The same filter, ignoring case.
@@ -543,9 +567,9 @@ pub fn take_filter_chips(text: &str, all: bool) -> (Vec<FilterChip>, String) {
 
 /// Case-insensitive AND search across the fields users scan in the board:
 /// every free word must appear somewhere, and every qualifier (`label:`,
-/// `author:`, `repo:`) must match its field exactly. Filtering is local; it
-/// must not trigger GitHub requests on each keystroke.
-pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
+/// `author:`, `repo:`, `is:stale`) must match its field exactly. Filtering is
+/// local; it must not trigger GitHub requests on each keystroke.
+pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
     let terms = filter_terms(query);
     if terms.is_empty() {
         return true;
@@ -564,7 +588,7 @@ pub fn matches_filter(row: &BoardRow, query: &str) -> bool {
     terms.iter().all(|term| match term.qualifier {
         None => text.contains(&term.value.to_lowercase()),
         // `label:` alone is still being typed; it filters nothing yet.
-        Some(qualifier) => term.value.is_empty() || qualifier.matches(row, &term.value),
+        Some(qualifier) => term.value.is_empty() || qualifier.matches(row, &term.value, stale),
     })
 }
 
@@ -607,6 +631,9 @@ pub fn detail_text(row: &BoardRow) -> String {
     ];
     if let Some(review) = &row.my_review {
         lines.push(format!("Your review: {review}"));
+    }
+    if let Some(since) = &row.waiting_since {
+        lines.push(format!("Waiting for a reviewer since {since}"));
     }
     if !row.labels.is_empty() {
         lines.push(format!("Labels: {}", row.labels.join(", ")));
@@ -693,6 +720,8 @@ pub struct BoardTableDelegate {
     watched: HashSet<String>,
     snoozed: HashSet<String>,
     show_snoozed: bool,
+    /// A wait this many days long shows as stale.
+    stale_after_days: u64,
     pub on_row_action: Option<RowActionHandler>,
     pub on_group_copy: Option<GroupCopyHandler>,
     /// A label, author, or repository was clicked: add it to the search.
@@ -719,6 +748,7 @@ impl BoardTableDelegate {
             watched: HashSet::new(),
             snoozed: HashSet::new(),
             show_snoozed: false,
+            stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             on_row_action: None,
             on_group_copy: None,
             on_filter_click: None,
@@ -762,6 +792,10 @@ impl BoardTableDelegate {
             col.width = *w;
         }
         true
+    }
+
+    pub fn set_stale_after_days(&mut self, days: u64) {
+        self.stale_after_days = days;
     }
 
     pub fn set_rows(&mut self, rows: Vec<BoardRow>) {
@@ -1891,8 +1925,22 @@ impl TableDelegate for BoardTableDelegate {
                     primary,
                     remedy,
                     context,
-                    tooltip,
+                    mut tooltip,
                 } = note_presentation(row);
+                // How long it has waited for a reviewer trails the Note and,
+                // like the primary, never elides; a stale wait is amber.
+                let now = Utc::now();
+                let wait = waiting_secs(row, now).map(|secs| {
+                    let stale = is_stale(row, now, self.stale_after_days);
+                    (format!(" · {}", wait_label(secs)), stale)
+                });
+                if let Some((label, stale)) = &wait {
+                    tooltip.push_str(&format!(
+                        "\nWaiting for a reviewer:{}{}",
+                        label.trim_start_matches(" ·"),
+                        if *stale { " (stale)" } else { "" }
+                    ));
+                }
                 let (dot_color, primary_color) = match tone {
                     NoteTone::Danger => (Some(theme.danger), theme.danger),
                     NoteTone::Warning => (Some(theme.warning), muted),
@@ -1931,6 +1979,9 @@ impl TableDelegate for BoardTableDelegate {
                     0.0
                 };
                 let primary_w = measure_width(window, &primary);
+                let wait_w = wait
+                    .as_ref()
+                    .map_or(px(0.), |(label, _)| measure_width(window, label));
                 cell = cell.child(
                     div()
                         .flex_shrink_0()
@@ -1941,9 +1992,18 @@ impl TableDelegate for BoardTableDelegate {
                     let col_w = self.columns[col_ix].width;
                     let avail = col_w
                         - primary_w
+                        - wait_w
                         - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 2. + ELIDE_SAFETY);
                     let tail = elide(window, &tail, avail);
                     cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
+                }
+                if let Some((label, stale)) = wait {
+                    cell = cell.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(if stale { theme.warning } else { muted })
+                            .child(label),
+                    );
                 }
                 return cell
                     .id(("note", row_ix))
@@ -1996,6 +2056,20 @@ mod tests {
     use super::*;
     use prmarmot_core::layout::group_label;
 
+    fn rule() -> StaleRule {
+        StaleRule {
+            now: DateTime::parse_from_rfc3339("2026-09-15T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            after_days: 3,
+        }
+    }
+
+    /// The search at a fixed time, with the default stale rule.
+    fn filtered(row: &BoardRow, query: &str) -> bool {
+        matches_filter(row, query, rule())
+    }
+
     #[test]
     fn copied_reference_distinguishes_same_number_in_different_repositories() {
         let first = row(418, Category::Action);
@@ -2036,11 +2110,13 @@ mod tests {
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),
+            requested_teams: Vec::new(),
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
             blockers: Vec::new(),
             created_at: String::new(),
+            waiting_since: None,
             note: String::new(),
         }
     }
@@ -2570,8 +2646,8 @@ mod tests {
             assert_eq!(d.row(2).unwrap().labels, vec!["frontend"]);
             let upper = d.row(3).unwrap();
             assert_eq!(upper.labels, vec!["backend", "bug"]);
-            assert!(matches_filter(upper, "backend bug"));
-            assert!(!matches_filter(upper, "frontend"));
+            assert!(filtered(upper, "backend bug"));
+            assert!(!filtered(upper, "frontend"));
             assert!(detail_text(upper).contains("Labels: backend, bug"));
             assert!(detail_text(upper).contains("Stack #70 · Layer 3 of 3 · Base: main"));
             assert_eq!(d.display_index_of_url(&upper.url), Some(3));
@@ -2599,9 +2675,9 @@ mod tests {
         r.author = Some("Alice".into());
         r.labels = vec!["mobile-dev".into()];
         r.issue = Some("APP-123".into());
-        assert!(matches_filter(&r, "  ALICE mobile-dev app-123 #42 "));
-        assert!(matches_filter(&r, ""));
-        assert!(!matches_filter(&r, "alice desktop"));
+        assert!(filtered(&r, "  ALICE mobile-dev app-123 #42 "));
+        assert!(filtered(&r, ""));
+        assert!(!filtered(&r, "alice desktop"));
     }
 
     #[test]
@@ -2610,33 +2686,30 @@ mod tests {
         r.title = "Fix login".into();
         r.labels = vec!["bugfix".into(), "Help Wanted".into()];
         // Free words still match inside labels; `label:` only whole names.
-        assert!(matches_filter(&r, "bug"));
-        assert!(!matches_filter(&r, "label:bug"));
-        assert!(matches_filter(&r, "label:BUGFIX"));
-        assert!(matches_filter(&r, "LABEL:bugfix"));
-        assert!(!matches_filter(&r, "label:help"));
-        assert!(matches_filter(&r, "label:\"help wanted\""));
+        assert!(filtered(&r, "bug"));
+        assert!(!filtered(&r, "label:bug"));
+        assert!(filtered(&r, "label:BUGFIX"));
+        assert!(filtered(&r, "LABEL:bugfix"));
+        assert!(!filtered(&r, "label:help"));
+        assert!(filtered(&r, "label:\"help wanted\""));
         assert!(
-            matches_filter(&r, "label:\"help wanted"),
+            filtered(&r, "label:\"help wanted"),
             "an unclosed quote runs to the end"
         );
         // Several qualifiers must all hold, alongside free words.
-        assert!(matches_filter(
-            &r,
-            "login label:bugfix label:\"Help Wanted\""
-        ));
-        assert!(!matches_filter(&r, "login label:bugfix label:docs"));
-        assert!(!matches_filter(&r, "logout label:bugfix"));
+        assert!(filtered(&r, "login label:bugfix label:\"Help Wanted\""));
+        assert!(!filtered(&r, "login label:bugfix label:docs"));
+        assert!(!filtered(&r, "logout label:bugfix"));
         // A quoted free phrase, and a key that is not a qualifier.
-        assert!(matches_filter(&r, "\"fix login\""));
-        assert!(!matches_filter(&r, "\"login fix\""));
-        assert!(!matches_filter(&r, "\"label:bugfix\""));
-        assert!(!matches_filter(&r, "reviewer:alice"));
+        assert!(filtered(&r, "\"fix login\""));
+        assert!(!filtered(&r, "\"login fix\""));
+        assert!(!filtered(&r, "\"label:bugfix\""));
+        assert!(!filtered(&r, "reviewer:alice"));
         // `label:` alone is still being typed.
-        assert!(matches_filter(&r, "label:"));
-        assert!(matches_filter(&r, "login label:"));
+        assert!(filtered(&r, "label:"));
+        assert!(filtered(&r, "login label:"));
         r.labels.clear();
-        assert!(!matches_filter(&r, "label:bugfix"));
+        assert!(!filtered(&r, "label:bugfix"));
     }
 
     #[test]
@@ -2674,20 +2747,46 @@ mod tests {
         r.title = "Fix login".into();
         r.author = Some("Alice".into());
         r.labels = vec!["alice".into()];
-        assert!(matches_filter(&r, "author:alice"));
-        assert!(matches_filter(&r, "AUTHOR:\"ALICE\""));
-        assert!(!matches_filter(&r, "author:ali"));
-        assert!(matches_filter(&r, "repo:ACME/Widgets"));
-        assert!(!matches_filter(&r, "repo:widgets"));
-        assert!(matches_filter(&r, "login author:alice repo:acme/widgets"));
-        assert!(!matches_filter(&r, "author:alice repo:acme/gadgets"));
+        assert!(filtered(&r, "author:alice"));
+        assert!(filtered(&r, "AUTHOR:\"ALICE\""));
+        assert!(!filtered(&r, "author:ali"));
+        assert!(filtered(&r, "repo:ACME/Widgets"));
+        assert!(!filtered(&r, "repo:widgets"));
+        assert!(filtered(&r, "login author:alice repo:acme/widgets"));
+        assert!(!filtered(&r, "author:alice repo:acme/gadgets"));
         // Each key checks its own field only.
-        assert!(matches_filter(&r, "label:alice"));
+        assert!(filtered(&r, "label:alice"));
         r.labels.clear();
-        assert!(!matches_filter(&r, "label:alice"));
-        assert!(matches_filter(&r, "author:"), "still being typed");
+        assert!(!filtered(&r, "label:alice"));
+        assert!(filtered(&r, "author:"), "still being typed");
         r.author = None;
-        assert!(!matches_filter(&r, "author:alice"));
+        assert!(!filtered(&r, "author:alice"));
+    }
+
+    #[test]
+    fn is_stale_keeps_prs_that_waited_the_configured_days() {
+        let mut r = row(8, Category::Todo);
+        r.title = "Fix login".into();
+        assert!(!filtered(&r, "is:stale"), "not waiting");
+        r.waiting_since = Some("2026-09-12T12:00:01Z".into());
+        assert!(!filtered(&r, "is:stale"));
+        r.waiting_since = Some("2026-09-12T12:00:00Z".into());
+        assert!(filtered(&r, "IS:Stale login"));
+        assert!(!filtered(&r, "is:fresh"));
+        assert!(filtered(&r, "is:"), "still being typed");
+        let week = StaleRule {
+            after_days: 7,
+            ..rule()
+        };
+        assert!(!matches_filter(&r, "is:stale", week));
+        let chip = FilterChip::new(Qualifier::Is, "stale");
+        assert_eq!(chip.term(), "is:stale");
+        assert!(chip.matches(&r, rule()) && !chip.matches(&r, week));
+        assert_eq!(
+            take_filter_chips("is:stale ", false),
+            (vec![chip], String::new())
+        );
+        assert!(detail_text(&r).contains("Waiting for a reviewer since 2026-09-12T12:00:00Z"));
     }
 
     #[test]

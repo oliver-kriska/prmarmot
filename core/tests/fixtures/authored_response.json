@@ -18,7 +18,12 @@
             ]
           },
           "reviewThreads": { "nodes": [] },
-          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] }
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-18T10:00:00Z", "requestedReviewer": { "__typename": "User", "login": "alice" } }
+            ]
+          }
         },
         {
           "number": 102,
@@ -37,7 +42,15 @@
           },
           "reviews": { "nodes": [] },
           "reviewThreads": { "nodes": [] },
-          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] }
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReadyForReviewEvent", "createdAt": "2026-07-19T09:30:00Z" },
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-19T10:00:00Z", "requestedReviewer": { "__typename": "User", "login": "alice" } },
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-20T12:00:00Z", "requestedReviewer": { "__typename": "User", "login": "bob" } },
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-21T08:00:00Z", "requestedReviewer": { "__typename": "User", "login": "alice" } }
+            ]
+          }
         },
         {
           "number": 103,
@@ -51,7 +64,12 @@
           "reviewRequests": { "nodes": [] },
           "reviews": { "nodes": [] },
           "reviewThreads": { "nodes": [] },
-          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] }
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReadyForReviewEvent", "createdAt": "2026-07-22T09:00:00Z" }
+            ]
+          }
         },
         {
           "number": 104,
@@ -74,7 +92,13 @@
               { "isResolved": true }
             ]
           },
-          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] }
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-20T10:05:00Z", "requestedReviewer": { "__typename": "User", "login": "carol" } },
+              { "__typename": "ReadyForReviewEvent", "createdAt": "2026-07-20T10:30:00Z" }
+            ]
+          }
         },
         {
           "number": 105,
@@ -106,7 +130,12 @@
           "reviewRequests": { "nodes": [] },
           "reviews": { "nodes": [] },
           "reviewThreads": { "nodes": [] },
-          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] }
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReadyForReviewEvent", "createdAt": "2026-07-21T09:30:00Z" }
+            ]
+          }
         },
         {
           "number": 107,
@@ -296,6 +325,50 @@
           },
           "reviewThreads": { "nodes": [] },
           "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] }
+        },
+        {
+          "number": 117,
+          "title": "Only a team is asked",
+          "isDraft": false,
+          "reviewDecision": "REVIEW_REQUIRED",
+          "mergeable": "MERGEABLE",
+          "createdAt": "2026-07-25T08:00:00Z",
+          "author": { "login": "me" },
+          "labels": { "nodes": [] },
+          "reviewRequests": {
+            "nodes": [{ "requestedReviewer": { "__typename": "Team", "slug": "platform" } }]
+          },
+          "reviews": { "nodes": [] },
+          "reviewThreads": { "nodes": [] },
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-25T08:30:00Z", "requestedReviewer": { "__typename": "User", "login": "zed" } },
+              null,
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-25T09:00:00Z", "requestedReviewer": { "__typename": "Team", "slug": "Platform" } }
+            ]
+          }
+        },
+        {
+          "number": 118,
+          "title": "A user and a team share a name",
+          "isDraft": false,
+          "reviewDecision": "REVIEW_REQUIRED",
+          "mergeable": "MERGEABLE",
+          "createdAt": "2026-07-26T08:00:00Z",
+          "author": { "login": "me" },
+          "labels": { "nodes": [] },
+          "reviewRequests": {
+            "nodes": [{ "requestedReviewer": { "__typename": "User", "login": "mallory" } }]
+          },
+          "reviews": { "nodes": [] },
+          "reviewThreads": { "nodes": [] },
+          "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+          "timelineItems": {
+            "nodes": [
+              { "__typename": "ReviewRequestedEvent", "createdAt": "2026-07-26T09:00:00Z", "requestedReviewer": { "__typename": "Team", "slug": "mallory" } }
+            ]
+          }
         }
       ]
     },

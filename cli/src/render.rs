@@ -9,6 +9,7 @@ use prmarmot_core::board::{
     ReviewState,
 };
 use prmarmot_core::layout::{LayoutItem, SectionKind};
+use prmarmot_core::pickup::{wait_label, waiting_secs};
 use serde_json::{json, Value};
 
 use crate::term::{display_width, fit, truncate, Paint, Tone};
@@ -120,6 +121,8 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         "head_oid": row.head_oid,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        "waiting_since": row.waiting_since,
+        "stale": marks.stale,
         "attention": {
             "watched": marks.watched,
             "snoozed": marks.snoozed.as_ref().map(|description| json!({ "description": description })),
@@ -178,6 +181,8 @@ pub fn board_json(view: &BoardView) -> Value {
         "filters": {
             "changed": view.filters.changed,
             "watched": view.filters.watched,
+            "stale": view.filters.stale,
+            "stale_after_days": view.filters.stale_after_days,
             "filtered_out": view.filtered_out,
         },
         "truncated": view.truncated,
@@ -355,6 +360,24 @@ pub fn note(row: &BoardRow) -> Note {
     }
 }
 
+/// The Note plus how long the PR has waited for a reviewer; a stale wait
+/// warns.
+fn note_for(view: &BoardView, ix: usize) -> Note {
+    let row = &view.rows[ix];
+    let mut note = note(row);
+    if let Some(secs) = waiting_secs(row, view.generated_at) {
+        note.text
+            .push_str(&format!(" · waiting {}", wait_label(secs)));
+        if view.marks[ix].stale {
+            note.text.push_str(" (stale)");
+            if note.tone != Tone::Danger {
+                note.tone = Tone::Warning;
+            }
+        }
+    }
+    note
+}
+
 fn status_line(view: &BoardView) -> String {
     let mut parts = vec![
         scope_label(&view.scope),
@@ -377,10 +400,16 @@ fn status_line(view: &BoardView) -> String {
 fn filter_line(view: &BoardView) -> Option<String> {
     let mut active = Vec::new();
     if view.filters.changed {
-        active.push("changed");
+        active.push("changed".to_owned());
     }
     if view.filters.watched {
-        active.push("watched");
+        active.push("watched".to_owned());
+    }
+    if view.filters.stale {
+        active.push(format!(
+            "stale ({}d+ waiting)",
+            view.filters.stale_after_days
+        ));
     }
     (!active.is_empty()).then(|| {
         format!(
@@ -504,7 +533,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                 }
                 let row = &view.rows[*ix];
                 let marks = &view.marks[*ix];
-                let mut note_text = note(row).text;
+                let mut note_text = note_for(view, *ix).text;
                 let attention = md_attention(marks);
                 if !attention.is_empty() {
                     note_text = format!("{note_text} · {attention}");
@@ -573,7 +602,7 @@ fn widths(view: &BoardView, items: &[LayoutItem], total: usize) -> Widths {
         } else {
             display_width(&review_text(row))
         });
-        note_need = note_need.max(display_width(&note(row).text) + 2);
+        note_need = note_need.max(display_width(&note_for(view, *ix).text) + 2);
     }
     let pr = pr.min(40).min((total / 4).max(8));
     // marker(2) + space + pr + gap + title + gap + ci + gap + middle + gap + note
@@ -705,7 +734,7 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
                         None => paint.tone(Tone::Muted, &text),
                     }
                 };
-                let note = note(row);
+                let note = note_for(view, *ix);
                 let note_text = truncate(&format!("● {}", note.text), w.note);
                 let note_cell = if note.tone == Tone::Danger {
                     paint.tone(Tone::Danger, &note_text)
@@ -788,6 +817,7 @@ mod tests {
             base_ref_name: "main".into(),
             position: Some(1),
         });
+        layer1.waiting_since = Some("2026-09-11T06:41:00Z".into());
         let mut layer2 = layer1.clone();
         layer2.id = "PR_13".into();
         layer2.number = 13;
@@ -941,6 +971,58 @@ mod tests {
         }
         assert_eq!(fit_pr_ref(&long, true, 20), "oliver-kriska/hea…#7");
         assert_eq!(display_width(&fit_pr_ref(&long, true, 20)), 20);
+    }
+
+    #[test]
+    fn notes_say_how_long_a_pr_has_waited_and_warn_when_stale() {
+        let waited = |number, since: &str| {
+            let mut pr = row(number, Category::Todo);
+            pr.note = "🔵 needs your review".into();
+            pr.waiting_since = Some(since.into());
+            pr
+        };
+        let mut conflicted = waited(3, "2026-09-01T06:00:00Z");
+        conflicted.conflict = true;
+        conflicted.note = "⚠️ has conflicts".into();
+        let view = build(
+            fetch_of(vec![
+                waited(1, "2026-09-15T00:00:00Z"),
+                waited(2, "2026-09-10T00:00:00Z"),
+                conflicted,
+                row(4, Category::Done),
+            ]),
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::Review,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters::default(),
+            Utc.with_ymd_and_hms(2026, 9, 15, 16, 30, 0).unwrap(),
+        );
+        let notes: Vec<(Tone, String)> = (0..4)
+            .map(|ix| note_for(&view, ix))
+            .map(|note| (note.tone, note.text))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                (Tone::Warning, "needs your review · waiting 16h".into()),
+                (
+                    Tone::Warning,
+                    "needs your review · waiting 5d (stale)".into()
+                ),
+                (Tone::Danger, "has conflicts · waiting 14d (stale)".into()),
+                (Tone::Muted, "waiting on bob".into()),
+            ]
+        );
+        let md = markdown(&view, false);
+        assert!(md.contains("| needs your review · waiting 16h |"), "{md}");
+
+        let mut view = view;
+        view.filters.stale = true;
+        assert_eq!(
+            filter_line(&view).as_deref(),
+            Some("Filter: stale (3d+ waiting) · 0 hidden")
+        );
     }
 
     #[test]

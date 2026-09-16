@@ -404,11 +404,13 @@ mod tests {
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),
+            requested_teams: Vec::new(),
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
             blockers: Vec::new(),
             created_at: String::new(),
+            waiting_since: None,
             note: String::new(),
         }
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Offline, fail-closed gh stand-in for PR Marmot screenshot fixtures."""
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -8,13 +9,27 @@ import sys
 import unittest
 
 
+def ago(hours):
+    """A timestamp `hours` before now, so pickup ages read the same any day."""
+    at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
-       mergeable="MERGEABLE", labels=(), requested=(), reviews=(), unresolved=0,
-       ci="SUCCESS", stack=None, repo="demo-labs/atlas"):
-    request_nodes = [
-        {"requestedReviewer": {"__typename": "User", "login": login}}
-        for login in requested
+       mergeable="MERGEABLE", labels=(), requested=(), teams=(), reviews=(), unresolved=0,
+       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None):
+    reviewers = [{"__typename": "User", "login": login} for login in requested] + [
+        {"__typename": "Team", "slug": slug} for slug in teams
     ]
+    request_nodes = [{"requestedReviewer": reviewer} for reviewer in reviewers]
+    # Ready for review a little before the requests, which went out `waited`
+    # hours ago.
+    timeline = []
+    if waited is not None and not draft:
+        timeline.append({"__typename": "ReadyForReviewEvent",
+                         "createdAt": ago(waited + (1 if reviewers else 0))})
+        timeline += [{"__typename": "ReviewRequestedEvent", "createdAt": ago(waited),
+                      "requestedReviewer": reviewer} for reviewer in reviewers]
     review_nodes = [
         {"author": {"login": login}, "state": state,
          "submittedAt": f"2026-08-{day:02d}T12:00:00Z"}
@@ -43,6 +58,7 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
             [{"isResolved": False} for _ in range(unresolved)]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup":
             None if ci is None else {"state": ci}}}]},
+        "timelineItems": {"nodes": timeline},
     }
     if stack:
         stack_number, position = stack
@@ -57,21 +73,22 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
 
 AUTHORED = [
     pr(418, "[DEMO-418] Repair offline cache reconciliation", labels=("bug",),
-       requested=("alex",), unresolved=2, ci="FAILURE"),
+       requested=("alex",), unresolved=2, ci="FAILURE", waited=20),
     pr(417, "Resolve atlas navigation conflicts", mergeable="CONFLICTING",
-       labels=("feature",), requested=("sam",)),
+       labels=("feature",), requested=("sam",), waited=50),
     pr(416, "Add compact device activity cards", labels=("mobile",),
-       repo="demo-labs/mobile"),
+       repo="demo-labs/mobile", waited=5),
     pr(415, "[DEMO-415] Introduce workspace search", labels=("feature",),
        decision="APPROVED", reviews=(("alex", "APPROVED"),), unresolved=1),
-    pr(414, "Atlas stack: define event envelope", labels=("feature",), stack=(72, 1)),
+    pr(414, "Atlas stack: define event envelope", labels=("feature",), stack=(72, 1),
+       waited=30),
     pr(413, "Atlas stack: persist event batches", labels=("feature",),
-       stack=(72, 2)),
+       stack=(72, 2), waited=29),
     pr(412, "Atlas stack: render delivery timeline", labels=("mobile",),
-       stack=(72, 3)),
+       stack=(72, 3), waited=28),
     pr(611, "Document mobile release health", author="river", labels=("docs",),
-       requested=("demo-user",), repo="demo-labs/mobile"),
-    pr(410, "Publish export schema", labels=("docs",), requested=("sam",)),
+       requested=("demo-user",), repo="demo-labs/mobile", waited=26),
+    pr(410, "Publish export schema", labels=("docs",), teams=("docs-team",), waited=100),
     pr(409, "Reduce startup queries", labels=("performance",), decision="APPROVED",
        reviews=(("alex", "APPROVED"),)),
     pr(411, "Draft adaptive sync experiment", draft=True, decision=None,
@@ -80,9 +97,9 @@ AUTHORED = [
 
 REQUESTED = [
     pr(528, "Review secure session handoff", author="river", labels=("bug",),
-       requested=("demo-user",), unresolved=1),
+       requested=("demo-user",), unresolved=1, waited=3),
     pr(527, "Polish mobile project switcher", author="taylor", labels=("mobile",),
-       requested=("demo-user",)),
+       teams=("mobile",), waited=98),
     pr(526, "Approve atlas export format", author="jordan", labels=("feature",),
        requested=("demo-user",), decision="APPROVED",
        reviews=(("demo-user", "APPROVED"),)),
@@ -91,8 +108,9 @@ REQUESTED = [
 ]
 
 AVAILABLE = [
-    pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",)),
-    pr(523, "Document atlas import boundaries", author="skyler", labels=("feature",)),
+    pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",), waited=30),
+    pr(523, "Document atlas import boundaries", author="skyler", labels=("feature",),
+       waited=150),
     # Included in the broad alias too; requested provenance must win after merge.
     REQUESTED[1],
 ]
@@ -179,6 +197,17 @@ class FixtureTests(unittest.TestCase):
             for node in body["data"][alias]["nodes"]:
                 self.assertIn("totalCount", node["reviewRequests"])
                 self.assertIn("statusCheckRollup", node["commits"]["nodes"][0]["commit"])
+
+    def test_waiting_prs_carry_recent_timeline_events(self):
+        taylor = next(item for item in REQUESTED if item["number"] == 527)
+        events = taylor["timelineItems"]["nodes"]
+        self.assertEqual([event["__typename"] for event in events],
+                         ["ReadyForReviewEvent", "ReviewRequestedEvent"])
+        self.assertEqual(events[1]["requestedReviewer"], {"__typename": "Team", "slug": "mobile"})
+        self.assertLess(events[0]["createdAt"], events[1]["createdAt"])
+        self.assertGreater(events[1]["createdAt"], "2026-09-01")
+        drafts = [item for item in AUTHORED + REQUESTED if item["isDraft"]]
+        self.assertTrue(drafts and all(not item["timelineItems"]["nodes"] for item in drafts))
 
     def test_a_single_pull_request_can_be_followed(self):
         resolved = graphql(["api", "graphql", "-f",

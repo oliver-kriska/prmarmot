@@ -1080,11 +1080,13 @@ mod tests {
             review_decision: None,
             review_state: crate::board::ReviewState::Waiting,
             requested: Vec::new(),
+            requested_teams: Vec::new(),
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
+            waiting_since: None,
             note: String::new(),
         }
     }

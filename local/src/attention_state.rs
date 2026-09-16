@@ -516,11 +516,13 @@ mod tests {
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: vec!["me".into()],
+            requested_teams: Vec::new(),
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
             blockers: Vec::new(),
             created_at: String::new(),
+            waiting_since: None,
             note: "needs your review".into(),
         }
     }

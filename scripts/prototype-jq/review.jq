@@ -14,6 +14,19 @@ def standing:
   | if $last.state == "COMMENTED" and $held != null
        and ($held.state == "APPROVED" or $held.state == "CHANGES_REQUESTED")
     then $held else $last end;
+# Pickup age: when the PR started waiting for a reviewer (null when it is
+# not waiting). A deliberate extension of the prototype; core/src/pickup.rs
+# `pickup_since` implements the same rule. Timestamps are ISO-8601 UTC text,
+# compared as text; logins and team slugs ignore ASCII case.
+def requests: [.reviewRequests.nodes[].requestedReviewer | select(. != null)
+  | if .login then {who: .login, team: false} elif .slug then {who: .slug, team: true} else empty end];
+def request_time($r): [.timelineItems.nodes[]?
+  | select(. != null and .__typename == "ReviewRequestedEvent" and .requestedReviewer != null)
+  | select((if $r.team then .requestedReviewer.slug else .requestedReviewer.login end // "" | ascii_downcase)
+           == ($r.who | ascii_downcase))
+  | .createdAt] | max;
+def ready_time: [.timelineItems.nodes[]? | select(. != null and .__typename == "ReadyForReviewEvent") | .createdAt] | max;
+def pickup($start): [$start, ready_time] | max;
 [ .data.search.nodes[]
   | ([.labels.nodes[].name] | index("bug")) as $bug
   | ([.reviewThreads.nodes[] | select(.isResolved==false)] | length) as $unres
@@ -25,6 +38,13 @@ def standing:
   | (if .isDraft then "draft"
      elif ($mine=="APPROVED" or $mine=="COMMENTED" or $mine=="CHANGES_REQUESTED") then "done"
      else "todo" end) as $cat
+  | (if $cat != "todo" then null
+     else . as $pr | requests as $rs
+     # Asked by name: your latest request. Otherwise a requested team's latest.
+     | (if ($rs | any(.team == false and (.who | ascii_downcase) == ($me | ascii_downcase)))
+        then request_time({who: $me, team: false})
+        else [$rs[] | select(.team) as $r | $pr | request_time($r)] | max end) as $asked
+     | pickup($asked // .createdAt) end) as $waiting
   | ((.title | capture("(?<issue>" + $issue_pattern + ")").issue) // null) as $issue
   | {
       number: .number,
@@ -40,7 +60,8 @@ def standing:
       conflict: $conflict,
       myReview: $mine,
       unresolved: $unres,
-      createdAt: .createdAt
+      createdAt: .createdAt,
+      waitingSince: $waiting
     }
 ]
 | sort_by( (if .category=="todo" then 0 elif .category=="done" then 1 else 2 end), .number )

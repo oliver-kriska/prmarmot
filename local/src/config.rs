@@ -49,6 +49,9 @@ pub struct FileConfig {
     /// Check GitHub's latest stable release on launch, at most once per day.
     #[serde(default = "default_true")]
     pub automatic_update_checks: bool,
+    /// Days a PR may wait for a reviewer before it counts as stale
+    /// (`is:stale`, `--stale`); at least 1.
+    pub stale_after_days: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -74,6 +77,7 @@ impl Default for FileConfig {
             notify_all_needs_action: false,
             dock_badge: true,
             automatic_update_checks: true,
+            stale_after_days: None,
         }
     }
 }
@@ -186,6 +190,11 @@ pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
         config.default_reviewers = file.default_reviewers.clone();
     }
     config.repo_reviewers = repo_reviewers(&file.repo_reviewers, &mut warnings);
+    match file.stale_after_days {
+        Some(0) => warnings.push("ignoring stale_after_days = 0: use 1 or more".into()),
+        Some(days) => config.stale_after_days = days,
+        None => {}
+    }
     if let Some(reviewers) = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
         .ok()
         .filter(|v| !v.is_empty())
@@ -300,6 +309,17 @@ mod tests {
         assert_eq!(config.suggested_reviewers("ACME/web"), ["olga"]);
         assert!(config.suggested_reviewers("quiet/repo").is_empty());
         assert_eq!(config.suggested_reviewers("else/where"), ["dana"]);
+    }
+
+    #[test]
+    fn stale_after_days_defaults_to_three_and_refuses_zero() {
+        let days = |text: &str| {
+            let (config, warning) = board_config(&toml::from_str(text).unwrap());
+            (config.stale_after_days, warning.is_some())
+        };
+        assert_eq!(days(""), (3, false));
+        assert_eq!(days("stale_after_days = 7"), (7, false));
+        assert_eq!(days("stale_after_days = 0"), (3, true));
     }
 
     #[test]

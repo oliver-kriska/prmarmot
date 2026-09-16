@@ -12,6 +12,7 @@ use prmarmot_core::board::{
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::layout::{layout, LayoutItem};
+use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_local::attention_state::AttentionState;
 use prmarmot_local::config::{self, FileConfig};
 
@@ -57,10 +58,25 @@ pub fn attention(host: &str, login: &str) -> AttentionState {
     AttentionState::load(SnapshotNamespace::new(host, login))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Filters {
     pub changed: bool,
     pub watched: bool,
+    /// Only PRs that have waited `stale_after_days` or longer for a reviewer.
+    pub stale: bool,
+    /// What stale means, also for each PR's `stale` mark.
+    pub stale_after_days: u64,
+}
+
+impl Default for Filters {
+    fn default() -> Self {
+        Self {
+            changed: false,
+            watched: false,
+            stale: false,
+            stale_after_days: DEFAULT_STALE_AFTER_DAYS,
+        }
+    }
 }
 
 /// Per-row attention facts as the app would show them right now.
@@ -71,6 +87,8 @@ pub struct Marks {
     pub snoozed: Option<String>,
     pub changed: bool,
     pub changes: Vec<String>,
+    /// Waited `stale_after_days` or longer for a reviewer.
+    pub stale: bool,
 }
 
 /// A fetched, filtered, attention-annotated board ready to render.
@@ -154,8 +172,12 @@ pub fn build(
     let mut marks = Vec::with_capacity(board.rows.len());
     let total = board.rows.len();
     for row in board.rows {
-        let row_marks = marks_for(&row, attention, &mut snapshots, now);
-        if (filters.changed && !row_marks.changed) || (filters.watched && !row_marks.watched) {
+        let mut row_marks = marks_for(&row, attention, &mut snapshots, now);
+        row_marks.stale = is_stale(&row, now, filters.stale_after_days);
+        if (filters.changed && !row_marks.changed)
+            || (filters.watched && !row_marks.watched)
+            || (filters.stale && !row_marks.stale)
+        {
             continue;
         }
         rows.push(row);
@@ -198,6 +220,7 @@ pub fn marks_for(
             .map(|snooze| snooze.description()),
         changed: snapshot.is_some_and(|s| s.changed_since_acknowledgement),
         changes: snapshot.map(|s| s.change_summary()).unwrap_or_default(),
+        stale: false,
     }
 }
 
@@ -235,6 +258,7 @@ pub mod tests {
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: vec!["bob".into()],
+            requested_teams: Vec::new(),
             reviews: vec![ReviewSummary {
                 login: Some("carol".into()),
                 state: "COMMENTED".into(),
@@ -244,6 +268,7 @@ pub mod tests {
             unresolved: 0,
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
+            waiting_since: None,
             note: "🟡 waiting on bob".into(),
         }
     }
@@ -339,7 +364,7 @@ pub mod tests {
             "me".into(),
             Filters {
                 watched: true,
-                changed: false,
+                ..Filters::default()
             },
             Utc::now(),
         );
@@ -353,11 +378,54 @@ pub mod tests {
             BoardScope::AllRepositories,
             "me".into(),
             Filters {
-                watched: false,
                 changed: true,
+                ..Filters::default()
             },
             Utc::now(),
         );
         assert!(view.rows.is_empty());
+    }
+
+    #[test]
+    fn stale_marks_follow_the_configured_days_and_filter() {
+        let now = DateTime::parse_from_rfc3339("2026-09-15T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let waited = |number, since: Option<&str>| {
+            let mut pr = row(number, Category::Todo);
+            pr.waiting_since = since.map(str::to_owned);
+            pr
+        };
+        let rows = || {
+            vec![
+                waited(1, Some("2026-09-10T10:00:00Z")),
+                waited(2, Some("2026-09-13T10:00:00Z")),
+                waited(3, None),
+            ]
+        };
+        let attention = AttentionState::empty(namespace());
+        let view = |filters| {
+            build(
+                fetch_of(rows()),
+                &attention,
+                Mode::Review,
+                BoardScope::AllRepositories,
+                "me".into(),
+                filters,
+                now,
+            )
+        };
+        let all = view(Filters::default());
+        let stale: Vec<bool> = all.marks.iter().map(|marks| marks.stale).collect();
+        assert_eq!(stale, [true, false, false]);
+
+        let only = view(Filters {
+            stale: true,
+            stale_after_days: 2,
+            ..Filters::default()
+        });
+        let numbers: Vec<u64> = only.rows.iter().map(|row| row.number).collect();
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(only.filtered_out, 1);
     }
 }

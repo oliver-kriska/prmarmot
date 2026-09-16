@@ -51,63 +51,15 @@ pub fn global_available_search_string(who: &str) -> String {
     format!("is:pr is:open involves:{who} -author:{who}")
 }
 
-/// Prototype authored query extended with native stacks, request totals,
-/// pagination visibility, and the live rate-limit budget.
-pub const PR_SEARCH_QUERY: &str = r#"query($q:String!,$who:String!){
-  search(query:$q, type:ISSUE, first:60){
-    pageInfo{ hasNextPage endCursor }
-    nodes{ ... on PullRequest {
-      id url repository { nameWithOwner } updatedAt headRefOid
-      number title isDraft reviewDecision mergeable createdAt
-      stack { number size baseRefName }
-      stackEntry { position }
-      author{ login }
-      labels(first:20){ nodes{ name } }
-      latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-      reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-      reviews(first:60){ nodes{ author{login} state submittedAt } }
-      reviewThreads(first:100){ nodes{ isResolved } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-    } }
-  }
-  rateLimit { limit cost remaining resetAt }
-}"#;
-
-pub const PR_SEARCH_PAGE_QUERY: &str = r#"query($q:String!,$after:String!,$who:String!){
-  search(query:$q, type:ISSUE, first:60, after:$after){
-    pageInfo{ hasNextPage endCursor }
-    nodes{ ... on PullRequest {
-      id url repository { nameWithOwner } updatedAt headRefOid
-      number title isDraft reviewDecision mergeable createdAt
-      stack { number size baseRefName }
-      stackEntry { position }
-      author{ login }
-      labels(first:20){ nodes{ name } }
-      latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-      reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-      reviews(first:60){ nodes{ author{login} state submittedAt } }
-      reviewThreads(first:100){ nodes{ isResolved } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-    } }
-  }
-  rateLimit { limit cost remaining resetAt }
-}"#;
-
-/// Review mode keeps requested PRs as the first alias so they cannot be
-/// starved by broad available candidates. Both aliases are bounded at 60.
-pub const REVIEW_SEARCH_QUERY: &str = r#"query($requested:String!,$available:String!,$who:String!){
-  requested: search(query:$requested, type:ISSUE, first:60){
-    pageInfo{ hasNextPage endCursor }
-    nodes{ ...ReviewQueuePr }
-  }
-  available: search(query:$available, type:ISSUE, first:60){
-    pageInfo{ hasNextPage endCursor }
-    nodes{ ...ReviewQueuePr }
-  }
-  rateLimit { limit cost remaining resetAt }
-}
-fragment ReviewQueuePr on PullRequest {
-  id url repository { nameWithOwner } updatedAt headRefOid
+/// The fields every board query selects for one PR, in one place so the
+/// initial, Load-more, and tracked selections can never drift apart. The
+/// `timelineItems` window dates the current review requests and the last
+/// "ready for review" for the pickup age (`crate::pickup`); it adds one point
+/// to a two-alias review query's `rateLimit.cost` (7 → 8) and nothing to a
+/// single search (4).
+macro_rules! pr_fields {
+    () => {
+        r#"id url repository { nameWithOwner } updatedAt headRefOid
   number title isDraft reviewDecision mergeable createdAt
   stack { number size baseRefName }
   stackEntry { position }
@@ -118,75 +70,104 @@ fragment ReviewQueuePr on PullRequest {
   reviews(first:60){ nodes{ author{login} state submittedAt } }
   reviewThreads(first:100){ nodes{ isResolved } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-}"#;
+  timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
+    };
+}
 
-pub const REVIEW_REQUESTED_PAGE_QUERY: &str = r#"query($requested:String!,$after:String!,$who:String!){
+/// The shared PR selection as the review queries' fragment.
+macro_rules! review_queue_fragment {
+    () => {
+        concat!(
+            "\nfragment ReviewQueuePr on PullRequest {\n  ",
+            pr_fields!(),
+            "\n}"
+        )
+    };
+}
+
+/// Prototype authored query extended with native stacks, request totals,
+/// pagination visibility, and the live rate-limit budget.
+pub const PR_SEARCH_QUERY: &str = concat!(
+    r#"query($q:String!,$who:String!){
+  search(query:$q, type:ISSUE, first:60){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ... on PullRequest {
+      "#,
+    pr_fields!(),
+    r#"
+    } }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#
+);
+
+pub const PR_SEARCH_PAGE_QUERY: &str = concat!(
+    r#"query($q:String!,$after:String!,$who:String!){
+  search(query:$q, type:ISSUE, first:60, after:$after){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ... on PullRequest {
+      "#,
+    pr_fields!(),
+    r#"
+    } }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#
+);
+
+/// Review mode keeps requested PRs as the first alias so they cannot be
+/// starved by broad available candidates. Both aliases are bounded at 60.
+pub const REVIEW_SEARCH_QUERY: &str = concat!(
+    r#"query($requested:String!,$available:String!,$who:String!){
+  requested: search(query:$requested, type:ISSUE, first:60){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  available: search(query:$available, type:ISSUE, first:60){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#,
+    review_queue_fragment!()
+);
+
+pub const REVIEW_REQUESTED_PAGE_QUERY: &str = concat!(
+    r#"query($requested:String!,$after:String!,$who:String!){
   requested: search(query:$requested, type:ISSUE, first:60, after:$after){
     pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
   }
   rateLimit { limit cost remaining resetAt }
-}
-fragment ReviewQueuePr on PullRequest {
-  id url repository { nameWithOwner } updatedAt headRefOid
-  number title isDraft reviewDecision mergeable createdAt
-  stack { number size baseRefName } stackEntry { position } author{ login }
-  latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-  labels(first:20){ nodes{ name } }
-  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(first:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(first:100){ nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-}"#;
+}"#,
+    review_queue_fragment!()
+);
 
-pub const REVIEW_AVAILABLE_PAGE_QUERY: &str = r#"query($available:String!,$after:String!,$who:String!){
+pub const REVIEW_AVAILABLE_PAGE_QUERY: &str = concat!(
+    r#"query($available:String!,$after:String!,$who:String!){
   available: search(query:$available, type:ISSUE, first:60, after:$after){
     pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
   }
   rateLimit { limit cost remaining resetAt }
-}
-fragment ReviewQueuePr on PullRequest {
-  id url repository { nameWithOwner } updatedAt headRefOid
-  number title isDraft reviewDecision mergeable createdAt
-  stack { number size baseRefName } stackEntry { position } author{ login }
-  latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-  labels(first:20){ nodes{ name } }
-  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(first:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(first:100){ nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-}"#;
+}"#,
+    review_queue_fragment!()
+);
 
-pub const REVIEW_BOTH_PAGE_QUERY: &str = r#"query($requested:String!,$requestedAfter:String!,$available:String!,$availableAfter:String!,$who:String!){
+pub const REVIEW_BOTH_PAGE_QUERY: &str = concat!(
+    r#"query($requested:String!,$requestedAfter:String!,$available:String!,$availableAfter:String!,$who:String!){
   requested: search(query:$requested, type:ISSUE, first:60, after:$requestedAfter){ pageInfo{ hasNextPage endCursor } nodes{ ...ReviewQueuePr } }
   available: search(query:$available, type:ISSUE, first:60, after:$availableAfter){ pageInfo{ hasNextPage endCursor } nodes{ ...ReviewQueuePr } }
   rateLimit { limit cost remaining resetAt }
-}
-fragment ReviewQueuePr on PullRequest {
-  id url repository { nameWithOwner } updatedAt headRefOid
-  number title isDraft reviewDecision mergeable createdAt
-  stack { number size baseRefName } stackEntry { position } author{ login }
-  latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-  labels(first:20){ nodes{ name } }
-  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(first:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(first:100){ nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-}"#;
+}"#,
+    review_queue_fragment!()
+);
 
-const TRACKED_FRAGMENT: &str = r#"
-fragment TrackedPr on PullRequest {
-  id url state merged repository { nameWithOwner } updatedAt headRefOid
-  number title isDraft reviewDecision mergeable createdAt
-  stack { number size baseRefName } stackEntry { position } author{ login }
-  labels(first:20){ nodes{ name } }
-  latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(first:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(first:100){ nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-}"#;
+const TRACKED_FRAGMENT: &str = concat!(
+    "\nfragment TrackedPr on PullRequest {\n  state merged ",
+    pr_fields!(),
+    "\n}"
+);
 
 /// Add one bounded `nodes(ids:)` selection to an existing initial refresh
 /// operation. This is deliberately not used for Load more: tracked coverage is
@@ -352,6 +333,19 @@ pub struct RequestedReviewer {
     pub slug: Option<String>,
 }
 
+/// A `ReviewRequestedEvent` or `ReadyForReviewEvent` from the PR timeline.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEvent {
+    #[serde(rename = "__typename", default)]
+    pub typename: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Who was asked, for a review request. `None` for a deleted user or team.
+    #[serde(default)]
+    pub requested_reviewer: Option<RequestedReviewer>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewRequestNode {
@@ -472,6 +466,10 @@ pub struct RawPr {
     pub review_threads: Nodes<ThreadNode>,
     #[serde(default)]
     pub commits: Nodes<CommitNode>,
+    /// The latest review requests and "ready for review" events, oldest
+    /// first. Absent in prototype fixtures.
+    #[serde(default)]
+    pub timeline_items: Nodes<Option<TimelineEvent>>,
 }
 
 impl RawPr {

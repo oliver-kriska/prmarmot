@@ -17,6 +17,7 @@ use crate::github::query::{
 };
 use crate::github::rate_limit::RateLimitInfo;
 use crate::github::{GhError, GithubTransport};
+use crate::pickup::pickup_since;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -211,6 +212,8 @@ pub struct BoardConfig {
     /// of every PR involving you. The app keeps it off; `prmarmot-cli
     /// --authored` turns it on. A single repository is always authored-only.
     pub authored_only: bool,
+    /// A PR that has waited this many days for a reviewer is stale.
+    pub stale_after_days: u64,
 }
 
 impl BoardConfig {
@@ -235,13 +238,13 @@ impl Default for BoardConfig {
             repo_reviewers: BTreeMap::new(),
             issue_link: None,
             authored_only: false,
+            stale_after_days: crate::pickup::DEFAULT_STALE_AFTER_DAYS,
         }
     }
 }
 
-/// One row of the dashboard. Fields not applicable to the row's mode are
-/// empty/None (`review_*`/`requested`/`reviews` are authored-mode; `author`
-/// is review-mode; `my_review` is set in both).
+/// One row of the dashboard. `review_state` is authored-mode only (`None` in
+/// the review queue); everything else is set in both modes.
 #[derive(Debug, Clone)]
 pub struct BoardRow {
     /// GitHub node id (canonical URL for legacy prototype fixtures).
@@ -272,7 +275,10 @@ pub struct BoardRow {
     pub mergeable_unknown: bool,
     pub review_decision: Option<String>,
     pub review_state: ReviewState,
+    /// Requested reviewers: logins and team slugs.
     pub requested: Vec<String>,
+    /// The team slugs among `requested`.
+    pub requested_teams: Vec<String>,
     pub reviews: Vec<ReviewSummary>,
     /// The viewer's standing review state (`APPROVED`, `COMMENTED`, …), or
     /// `NONE`; see [`standing_review`].
@@ -283,6 +289,9 @@ pub struct BoardRow {
     /// colors these; the `note` string is generated from exactly this list.
     pub blockers: Vec<Blocker>,
     pub created_at: String,
+    /// When the PR started waiting for a reviewer, or `None` when it is not
+    /// waiting; see [`crate::pickup`].
+    pub waiting_since: Option<String>,
     pub note: String,
 }
 
@@ -941,6 +950,9 @@ fn classify_other_author(row: &mut BoardRow) {
         match row.review_state {
             ReviewState::Approved => format!("{author}'s PR · approved"),
             ReviewState::Commented => format!("{author}'s PR · review comments received"),
+            ReviewState::Waiting if only_teams_asked(row) => {
+                format!("{author}'s PR · team requested, nobody responded")
+            }
             ReviewState::Waiting => format!("{author}'s PR · awaiting review"),
             ReviewState::None | ReviewState::Changes => format!("{author}'s PR · open"),
         }
@@ -990,7 +1002,7 @@ pub fn carry_forward_conflicts(
         }
         row.conflict = true;
         match mode {
-            Mode::Review => row.note = review_note(row),
+            Mode::Review => row.note = review_note(row, me),
             Mode::Authored if row.author.as_deref() == Some(me) => classify_authored(row, cfg),
             Mode::Authored => classify_other_author(row),
         }
@@ -1045,19 +1057,19 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         mergeable_unknown,
         review_decision: pr.review_decision.clone(),
         review_state: ReviewState::None,
-        requested: Vec::new(),
-        reviews: Vec::new(),
+        requested: requested_reviewers(pr),
+        requested_teams: requested_teams(pr),
+        reviews: latest_reviews_excluding(pr, me, &cfg.bots),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
+        waiting_since: None,
         note: String::new(),
     };
 
     match mode {
         Mode::Authored => {
-            row.requested = requested_reviewers(pr);
-            row.reviews = latest_reviews_excluding(pr, me, &cfg.bots);
             let appr = row.reviews.iter().filter(|r| r.state == "APPROVED").count();
             let cmt = row.reviews.iter().any(|r| r.state == "COMMENTED");
             let chg = row.reviews.iter().any(|r| r.state == "CHANGES_REQUESTED");
@@ -1085,9 +1097,10 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             } else {
                 Category::Todo
             };
-            row.note = review_note(&row);
+            row.note = review_note(&row, me);
         }
     }
+    row.waiting_since = pickup_since(pr, &row, me);
     row
 }
 
@@ -1100,15 +1113,12 @@ fn derive_review_row(
 ) -> BoardRow {
     let mut row = derive_row(pr, Mode::Review, repo, me, cfg);
     row.queue_provenance = Some(provenance);
-    // The compact review queue does not display these columns, but its details
-    // panel still needs the metadata already present in the response.
-    row.requested = requested_reviewers(pr);
-    row.reviews = latest_reviews_excluding(pr, me, &cfg.bots);
     if provenance == QueueProvenance::Available
         && !matches!(row.category, Category::Done | Category::Draft)
     {
         row.category = Category::Available;
-        row.note = review_note(&row);
+        row.note = review_note(&row, me);
+        row.waiting_since = pickup_since(pr, &row, me);
     }
     row
 }
@@ -1127,6 +1137,24 @@ fn derive_ci(pr: &RawPr) -> Ci {
         "NONE" => Ci::None,
         _ => Ci::Running, // PENDING / EXPECTED
     }
+}
+
+fn requested_teams(pr: &RawPr) -> Vec<String> {
+    pr.review_requests
+        .nodes
+        .iter()
+        .filter_map(|n| n.requested_reviewer.as_ref())
+        .filter(|r| r.login.is_none())
+        .filter_map(|r| r.slug.clone())
+        .collect()
+}
+
+/// Everyone requested is a team, and nobody has reviewed: a request that
+/// names no person can sit unnoticed.
+fn only_teams_asked(row: &BoardRow) -> bool {
+    !row.requested.is_empty()
+        && row.requested.len() == row.requested_teams.len()
+        && row.reviews.is_empty()
 }
 
 fn requested_reviewers(pr: &RawPr) -> Vec<String> {
@@ -1318,6 +1346,9 @@ fn authored_note(row: &BoardRow) -> String {
         Category::Await => match row.review_state {
             ReviewState::Approved => "🟢 approved — mergeable".to_string(),
             ReviewState::Commented => "🟢 commented — awaiting approval".to_string(),
+            ReviewState::Waiting if only_teams_asked(row) => {
+                "✅ awaiting review — team requested, nobody responded".to_string()
+            }
             _ => "✅ awaiting review".to_string(),
         },
         Category::Draft => {
@@ -1335,8 +1366,9 @@ fn authored_note(row: &BoardRow) -> String {
     }
 }
 
-/// Mode B Note (SKILL.md).
-fn review_note(row: &BoardRow) -> String {
+/// Mode B Note (SKILL.md). A request that reached you only through a team,
+/// with no review yet, says so.
+fn review_note(row: &BoardRow, me: &str) -> String {
     let note = match row.category {
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
@@ -1345,6 +1377,14 @@ fn review_note(row: &BoardRow) -> String {
                 "⚠️ has conflicts".to_string()
             } else if row.category == Category::Available {
                 "available for review".to_string()
+            } else if !row.requested_teams.is_empty()
+                && row.reviews.is_empty()
+                && !row
+                    .requested
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(me) && !row.requested_teams.contains(r))
+            {
+                "🔵 team requested, nobody responded".to_string()
             } else {
                 "🔵 needs your review".to_string()
             }
@@ -1757,11 +1797,120 @@ mod tests {
             {"requestedReviewer": {"__typename": "Team", "slug": "platform"}},
             {"requestedReviewer": null}
         ]);
-        let row = derive_one(v, Mode::Authored);
+        let row = derive_one(v.clone(), Mode::Authored);
         assert_eq!(row.requested, vec!["platform"]);
+        assert_eq!(row.requested_teams, vec!["platform"]);
         assert_eq!(row.review_state, ReviewState::Waiting);
         assert_eq!(row.category, Category::Await);
+        assert_eq!(
+            row.note,
+            "✅ awaiting review — team requested, nobody responded"
+        );
+
+        // A person asked by name is on the hook.
+        let mut named = v.clone();
+        named["reviewRequests"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"requestedReviewer": {"__typename": "User", "login": "alice"}}));
+        let row = derive_one(named, Mode::Authored);
+        assert_eq!(row.requested_teams, vec!["platform"]);
         assert_eq!(row.note, "✅ awaiting review");
+
+        // Someone else's PR in the involving view says the same.
+        let mut theirs = v.clone();
+        theirs["author"] = json!({"login": "alice"});
+        let rows = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg());
+        assert_eq!(
+            rows[0].note,
+            "alice's PR · team requested, nobody responded"
+        );
+
+        // The review queue: asked only through the team, and nobody reviewed.
+        v["author"] = json!({"login": "alice"});
+        let row = derive_one(v.clone(), Mode::Review);
+        assert_eq!(row.category, Category::Todo);
+        assert_eq!(row.note, "🔵 team requested, nobody responded");
+        let mut by_name = v.clone();
+        by_name["reviewRequests"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"requestedReviewer": {"__typename": "User", "login": "Me"}}));
+        assert_eq!(
+            derive_one(by_name, Mode::Review).note,
+            "🔵 needs your review"
+        );
+        let mut reviewed = v.clone();
+        reviewed["reviews"]["nodes"] = json!([
+            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"}
+        ]);
+        assert_eq!(
+            derive_one(reviewed, Mode::Review).note,
+            "🔵 needs your review"
+        );
+    }
+
+    #[test]
+    fn pickup_age_follows_the_row_not_the_prototype_view() {
+        let mut v = base(12);
+        v["author"] = json!({"login": "alice"});
+        v["timelineItems"] = json!({"nodes": [
+            {"__typename": "ReadyForReviewEvent", "createdAt": "2026-07-21T09:00:00Z"}
+        ]});
+        // Available to review: since opened, moved up to ready for review.
+        let available = derive_review_row(
+            &pr(v.clone()),
+            "acme/widgets",
+            "me",
+            &cfg(),
+            QueueProvenance::Available,
+        );
+        assert_eq!(available.category, Category::Available);
+        assert_eq!(
+            available.waiting_since.as_deref(),
+            Some("2026-07-21T09:00:00Z")
+        );
+        // Once you reviewed it, it is not waiting on you.
+        v["reviews"]["nodes"] = json!([
+            {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": "2026-07-22T10:00:00Z"}
+        ]);
+        let done = derive_review_row(
+            &pr(v.clone()),
+            "acme/widgets",
+            "me",
+            &cfg(),
+            QueueProvenance::Available,
+        );
+        assert_eq!(done.category, Category::Done);
+        assert_eq!(done.waiting_since, None);
+        // Someone else's PR you reviewed has been picked up, although your
+        // review does not count toward its review state.
+        let rows = derive_involving_rows(&[pr(v.clone())], "acme/widgets", "me", &cfg());
+        assert_eq!(rows[0].review_state, ReviewState::None);
+        assert_eq!(rows[0].waiting_since, None);
+        // Your own comment on your PR is not a pickup.
+        v["author"] = json!({"login": "me"});
+        let mine = derive_one(v, Mode::Authored);
+        assert_eq!(mine.waiting_since.as_deref(), Some("2026-07-21T09:00:00Z"));
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-24T08:59:59Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            crate::pickup::waiting_secs(&mine, now),
+            Some(3 * 86_400 - 1)
+        );
+        assert!(!crate::pickup::is_stale(&mine, now, 3));
+        assert!(crate::pickup::is_stale(
+            &mine,
+            now + chrono::Duration::seconds(1),
+            3
+        ));
+        assert!(crate::pickup::is_stale(&mine, now, 2));
+        assert!(!crate::pickup::is_stale(&done, now, 0));
+        // A clock behind GitHub's reads as no wait yet.
+        let early = now - chrono::Duration::days(30);
+        assert_eq!(crate::pickup::waiting_secs(&mine, early), Some(0));
     }
 
     #[test]

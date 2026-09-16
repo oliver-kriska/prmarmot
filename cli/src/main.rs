@@ -177,6 +177,8 @@ fn run_view(args: ViewArgs) -> ExitCode {
         Filters {
             changed: args.changed,
             watched: args.watched,
+            stale: args.stale,
+            stale_after_days: setup.board.stale_after_days,
         },
         Utc::now(),
     );

@@ -167,6 +167,7 @@ notification_sound = true
 notify_all_needs_action = false         # watched PRs still notify
 dock_badge = true                       # macOS; no-op on Linux
 automatic_update_checks = true          # latest stable release, at most daily
+stale_after_days = 3                    # waiting this long for a reviewer is stale
 
 # Suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]     # any repository without an entry below
@@ -236,6 +237,17 @@ require a restart; changes saved in Settings do not.
   as table** suits docs and slides; **Copy URLs** is one link per line. Press `Y`
   to copy the selected PR's group as a list. Copies respect the active search.
   On Linux the list and table copy as plain text.
+- **Pickup age:** the Note ends with how long a PR has waited for a reviewer
+  (`· 16h`, `· 3d`), in amber once it has waited `stale_after_days` (default
+  3). A PR requested from you counts from your latest review request (or, when
+  only your team was asked, the team's); your own PR counts from its
+  longest-standing pending request; an available PR, or yours with no reviewer
+  requested, counts from when it opened. Every wait starts no earlier than the
+  last "ready for review", and drafts and PRs someone already reviewed show
+  none. **Requested from you**, **Available to review**, and **Awaiting
+  review** list the longest wait first. When only a team was asked and nobody
+  has reviewed, the Note says "team requested, nobody responded"; with nobody
+  asked at all, your PR's Note says "no reviewers".
 - **Changes:** a blue row marker survives restarts until you actually select the
   PR; hover it to see what changed (new commits, CI, reviews, requests, threads).
   **Changed** (with the count of changed PRs matching the search) filters the
@@ -257,6 +269,8 @@ require a restart; changes saved in Settings do not.
     author, or repository is exactly that, ignoring case. Quote values with
     spaces: `label:"help wanted"`. After a space or Enter a term becomes a
     chip, and all chips and words must match.
+  - `is:stale` keeps PRs that have waited `stale_after_days` or longer for a
+    reviewer (see **Pickup age**).
   - Click a label (in the table or in Details), an author, or a repository to
     add it. **+n** lists the labels that didn't fit.
   - A chip's × removes it, and Backspace in an empty box removes the last one.
@@ -317,6 +331,7 @@ prmarmot-cli mine                      # My PRs (Involving me across all reposit
 prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any repository
 prmarmot-cli review --all-repos        # Review queue across repositories
 prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
+prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
@@ -327,7 +342,10 @@ Scope follows the app: `--repo owner/name` or `--all-repos`, then
 `PRMARMOT_REPO` / `PRMARMOT_SCOPE`, then `config.toml`. A repository that doesn't
 exist or that your `gh` account can't see is an error (exit 1), not an empty
 list. `--watched` keeps only
-PRs you watch in the app. `--snoozed` expands the Snoozed group, which is
+PRs you watch in the app. `--stale` keeps only PRs that have waited
+`stale_after_days` (default 3) or longer for a reviewer, by the app's
+**Pickup age** rule; table and Markdown Notes end with the wait
+(`· waiting 3d`, marked `(stale)`). `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
 cap as **Load more**.
 
@@ -343,8 +361,10 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
   `unresolved_threads`, `labels`, `issue`, `stack`, typed `blockers`, and the
-  plain-text `note`. It also has an `attention` object with `watched`,
-  `snoozed`, `changed`, and `changes`.
+  plain-text `note`. `waiting_since` is the pickup age's start (null when the
+  PR isn't waiting for a reviewer) and `stale` says whether it has waited
+  `filters.stale_after_days` or longer. It also has an `attention` object with
+  `watched`, `snoozed`, `changed`, and `changes`.
 - **Reviews:** `reviews` has one standing review per other reviewer, and
   `my_review` is yours (`NONE` if you haven't reviewed). A standing review is
   the reviewer's latest, except that a later comment doesn't cancel an
@@ -485,6 +505,11 @@ results or 600 review candidates before filtering and deduplication. An
 available-candidate page can add no visible rows after filtering. Refreshing,
 including automatic refresh, returns to page one; a failed page request keeps
 the rows already loaded.
+
+Pickup age comes from each PR's latest 10 review-request and ready-for-review
+timeline events, fetched in the same request (the review-queue refresh costs 8
+GraphQL points instead of 7; My PRs still costs 4). A request older than those
+10 events counts from when the PR opened.
 
 Search and Details operate on the loaded snapshot and make no per-PR request.
 Reviewer, label, thread, and stack information is subject to the GraphQL

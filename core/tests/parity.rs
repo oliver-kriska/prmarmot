@@ -7,7 +7,9 @@
 //! One deliberate divergence from the shell prototype is part of the spec, in
 //! both the jq oracle and the port: a reviewer's standing review is their
 //! latest, except that a comment does not erase an earlier approval or change
-//! request (fixtures 113–116 and 206–210).
+//! request (fixtures 113–116 and 206–210). The pickup age (`waitingSince`,
+//! `core/src/pickup.rs`) is an extension in both as well (fixtures 101–106,
+//! 117–118, 201–205, 211–212).
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;
@@ -50,6 +52,7 @@ fn authored_json(row: &BoardRow) -> Value {
         "requested": row.requested,
         "reviews": row.reviews.iter().map(|r| json!({"login": r.login, "state": r.state})).collect::<Vec<_>>(),
         "unresolved": row.unresolved,
+        "waitingSince": row.waiting_since,
     })
 }
 
@@ -70,6 +73,7 @@ fn review_json(row: &BoardRow) -> Value {
         "myReview": row.my_review,
         "unresolved": row.unresolved,
         "createdAt": row.created_at,
+        "waitingSince": row.waiting_since,
     })
 }
 
@@ -89,7 +93,7 @@ fn assert_rows_match(ours: Vec<Value>, golden: &Value, mode: &str) {
 fn authored_mode_matches_prototype() {
     let body = load("tests/fixtures/authored_response.json");
     let (prs, rate) = parse_search_response(&body).unwrap();
-    assert_eq!(prs.len(), 16);
+    assert_eq!(prs.len(), 18);
     assert_eq!(rate.unwrap().remaining, 4987);
 
     let rows = derive_rows(&prs, Mode::Authored, REPO, ME, &config());
@@ -101,7 +105,7 @@ fn authored_mode_matches_prototype() {
 fn review_mode_matches_prototype() {
     let body = load("tests/fixtures/review_response.json");
     let (prs, _) = parse_search_response(&body).unwrap();
-    assert_eq!(prs.len(), 10);
+    assert_eq!(prs.len(), 12);
 
     let rows = derive_rows(&prs, Mode::Review, REPO, ME, &config());
     let ours: Vec<Value> = rows.iter().map(review_json).collect();

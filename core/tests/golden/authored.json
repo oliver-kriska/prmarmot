@@ -19,7 +19,8 @@
         "state": "DISMISSED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": "2026-07-24T08:00:00Z"
   },
   {
     "number": 114,
@@ -41,7 +42,8 @@
         "state": "CHANGES_REQUESTED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 112,
@@ -63,7 +65,8 @@
         "state": "APPROVED"
       }
     ],
-    "unresolved": 2
+    "unresolved": 2,
+    "waitingSince": null
   },
   {
     "number": 108,
@@ -80,7 +83,8 @@
     "reviewState": "none",
     "requested": [],
     "reviews": [],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": "2026-07-21T11:00:00Z"
   },
   {
     "number": 105,
@@ -102,7 +106,8 @@
         "state": "CHANGES_REQUESTED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 104,
@@ -121,7 +126,8 @@
       "bob"
     ],
     "reviews": [],
-    "unresolved": 3
+    "unresolved": 3,
+    "waitingSince": "2026-07-20T10:30:00Z"
   },
   {
     "number": 103,
@@ -138,7 +144,48 @@
     "reviewState": "none",
     "requested": [],
     "reviews": [],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": "2026-07-22T09:00:00Z"
+  },
+  {
+    "number": 118,
+    "url": "https://github.com/acme/widgets/pull/118",
+    "title": "A user and a team share a name",
+    "issue": null,
+    "issueUrl": null,
+    "draft": false,
+    "category": "await",
+    "bug": false,
+    "ci": "pass",
+    "conflict": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewState": "waiting",
+    "requested": [
+      "mallory"
+    ],
+    "reviews": [],
+    "unresolved": 0,
+    "waitingSince": "2026-07-26T08:00:00Z"
+  },
+  {
+    "number": 117,
+    "url": "https://github.com/acme/widgets/pull/117",
+    "title": "Only a team is asked",
+    "issue": null,
+    "issueUrl": null,
+    "draft": false,
+    "category": "await",
+    "bug": false,
+    "ci": "pass",
+    "conflict": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewState": "waiting",
+    "requested": [
+      "platform"
+    ],
+    "reviews": [],
+    "unresolved": 0,
+    "waitingSince": "2026-07-25T09:00:00Z"
   },
   {
     "number": 116,
@@ -160,7 +207,8 @@
         "state": "COMMENTED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 113,
@@ -182,7 +230,8 @@
         "state": "APPROVED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 111,
@@ -206,7 +255,8 @@
         "state": "COMMENTED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 110,
@@ -228,7 +278,8 @@
         "state": "APPROVED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 109,
@@ -254,7 +305,8 @@
         "state": "DISMISSED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 102,
@@ -274,7 +326,8 @@
       "bob"
     ],
     "reviews": [],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": "2026-07-20T12:00:00Z"
   },
   {
     "number": 101,
@@ -296,7 +349,8 @@
         "state": "APPROVED"
       }
     ],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 107,
@@ -313,7 +367,8 @@
     "reviewState": "none",
     "requested": [],
     "reviews": [],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   },
   {
     "number": 106,
@@ -330,6 +385,7 @@
     "reviewState": "none",
     "requested": [],
     "reviews": [],
-    "unresolved": 0
+    "unresolved": 0,
+    "waitingSince": null
   }
 ]

@@ -49,9 +49,11 @@ pub enum LayoutItem {
 
 /// Lay out `rows` for `mode`. Snoozed rows (by PR id) move to a trailing
 /// Snoozed group whose members are listed but only emitted as rows when
-/// `show_snoozed` is set. Order within a section is stable.
-pub fn layout(
-    rows: &[BoardRow],
+/// `show_snoozed` is set. Requested from you, Available to review, and
+/// Awaiting review (In progress) list the longest pickup wait first; every
+/// other order within a section is the incoming one.
+pub fn layout<'a>(
+    rows: &'a [BoardRow],
     mode: Mode,
     all_repos: bool,
     snoozed: &HashSet<String>,
@@ -65,10 +67,10 @@ pub fn layout(
         .filter(|&ix| snoozed.contains(&rows[ix].id))
         .collect();
     order.retain(|&ix| !snoozed.contains(&rows[ix].id));
-    order.sort_by_key(|&ix| {
-        let row = &rows[ix];
+    let key = |row: &'a BoardRow| {
+        let approved = is_approved_section(mode, row);
         let section = match row.category {
-            Category::Await if is_approved_section(mode, row) => 0,
+            Category::Await if approved => 0,
             Category::Action | Category::Todo => 1,
             Category::Available => 2,
             Category::Await | Category::Done => 3,
@@ -77,8 +79,17 @@ pub fn layout(
         let approved_action = mode == Mode::Authored
             && row.category == Category::Action
             && row.review_state == ReviewState::Approved;
-        (section, !approved_action)
-    });
+        // Where a section is about getting picked up, the longest wait leads
+        // and rows that are not waiting follow in their incoming order.
+        let picked_up_by_wait = match row.category {
+            Category::Todo | Category::Available => true,
+            Category::Await => !approved,
+            _ => false,
+        };
+        let wait = row.waiting_since.as_deref().filter(|_| picked_up_by_wait);
+        (section, !approved_action, wait.is_none(), wait)
+    };
+    order.sort_by(|&a, &b| key(&rows[a]).cmp(&key(&rows[b])));
     let mut i = 0;
     while i < order.len() {
         let row = &rows[order[i]];
@@ -234,11 +245,13 @@ mod tests {
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),
+            requested_teams: Vec::new(),
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
+            waiting_since: None,
             note: String::new(),
         }
     }
@@ -309,6 +322,74 @@ mod tests {
             other => panic!("expected a header, got {other:?}"),
         }
         assert!(layout(&[], Mode::Authored, false, &HashSet::new(), true).is_empty());
+    }
+
+    fn waiting(mut pr: BoardRow, since: Option<&str>) -> BoardRow {
+        pr.waiting_since = since.map(str::to_owned);
+        pr
+    }
+
+    #[test]
+    fn pickup_sections_put_the_longest_wait_first() {
+        let rows = vec![
+            waiting(row(1, Category::Todo), Some("2026-09-03T10:00:00Z")),
+            waiting(row(2, Category::Todo), None),
+            waiting(row(3, Category::Todo), Some("2026-09-01T10:00:00Z")),
+            waiting(row(4, Category::Available), Some("2026-09-02T10:00:00Z")),
+            waiting(row(5, Category::Available), Some("2026-08-30T10:00:00Z")),
+            row(6, Category::Done),
+            row(7, Category::Done),
+        ];
+        let items = layout(&rows, Mode::Review, false, &HashSet::new(), false);
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Requested from you (3)",
+                "3",
+                "1",
+                "2",
+                "Available to review · no reviewer requested (2)",
+                "5",
+                "4",
+                "Reviewed (2)",
+                "6",
+                "7"
+            ]
+        );
+
+        // Your PRs: only the waiting band reorders; a stack keeps its layers
+        // together where its longest-waiting member lands.
+        let mut commented = row(10, Category::Await);
+        commented.review_state = ReviewState::Commented;
+        let rows = vec![
+            waiting(row(11, Category::Action), Some("2026-09-03T10:00:00Z")),
+            waiting(row(12, Category::Action), Some("2026-09-01T10:00:00Z")),
+            commented,
+            waiting(row(13, Category::Await), Some("2026-09-02T10:00:00Z")),
+            waiting(
+                stacked(row(14, Category::Await), "acme/widgets", 9, 2, 1),
+                Some("2026-09-01T09:00:00Z"),
+            ),
+            waiting(
+                stacked(row(15, Category::Await), "acme/widgets", 9, 2, 2),
+                Some("2026-09-05T09:00:00Z"),
+            ),
+        ];
+        let items = layout(&rows, Mode::Authored, false, &HashSet::new(), false);
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Needs action (2)",
+                "11",
+                "12",
+                "Awaiting review (4)",
+                "  Stack #9 · 2 layers",
+                "14",
+                "15",
+                "13",
+                "10"
+            ]
+        );
     }
 
     #[test]

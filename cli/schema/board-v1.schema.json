@@ -32,10 +32,16 @@
     "count": { "type": "integer", "minimum": 0, "description": "PRs loaded before filters." },
     "filters": {
       "type": "object",
-      "required": ["changed", "watched", "filtered_out"],
+      "required": ["changed", "watched", "stale", "stale_after_days", "filtered_out"],
       "properties": {
         "changed": { "type": "boolean", "description": "`--changed` was passed." },
         "watched": { "type": "boolean", "description": "`--watched` was passed." },
+        "stale": { "type": "boolean", "description": "`--stale` was passed." },
+        "stale_after_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Days of waiting that make a PR `stale` (config `stale_after_days`, default 3)."
+        },
         "filtered_out": { "type": "integer", "minimum": 0, "description": "PRs the filters dropped." }
       }
     },
@@ -124,6 +130,8 @@
         "head_oid",
         "created_at",
         "updated_at",
+        "waiting_since",
+        "stale",
         "attention"
       ],
       "properties": {
@@ -202,6 +210,15 @@
         "head_oid": { "type": ["string", "null"] },
         "created_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": ["string", "null"], "format": "date-time" },
+        "waiting_since": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Pickup age: when the PR started waiting for a reviewer (your latest review request, the longest-standing request on your PR, or when it opened or became ready for review); null for drafts and PRs already reviewed."
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "Waited `filters.stale_after_days` or longer at `generated_at` (events: at `at`)."
+        },
         "attention": {
           "type": "object",
           "required": ["watched", "snoozed", "changed", "changes"],

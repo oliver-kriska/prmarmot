@@ -40,6 +40,8 @@ View options:
       --json                Same as --format json
       --changed             Only PRs changed since you last looked in PR Marmot
       --watched             Only PRs you watch in PR Marmot
+      --stale               Only PRs that have waited stale_after_days (default 3)
+                            or longer for a reviewer
       --snoozed             Show snoozed PRs instead of collapsing them
       --pages N             Result pages to load per queue, 1-5 (default 1)
       --no-color            Plain text (also honors NO_COLOR)
@@ -110,6 +112,7 @@ pub struct ViewArgs {
     pub format: Option<Format>,
     pub changed: bool,
     pub watched: bool,
+    pub stale: bool,
     pub snoozed: bool,
     pub pages: u8,
     pub no_color: bool,
@@ -207,6 +210,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut format = None;
     let mut changed = false;
     let mut watched = false;
+    let mut stale = false;
     let mut snoozed = false;
     let mut pages = None;
     let mut no_color = false;
@@ -228,6 +232,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--snoozed" => snoozed = true,
             "--no-color" => no_color = true,
             "--changed" if !watch => changed = true,
+            "--stale" if !watch => stale = true,
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
             "--interval" if watch => interval_secs = Some(parse_interval(&value("--interval")?)?),
             "--events" if watch => max_events = Some(parse_events(&value("--events")?)?),
@@ -252,7 +257,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--until" | "--timeout" => {
                 return Err(format!("{flag} applies to `watch --pr`"));
             }
-            "--changed" | "--pages" => {
+            "--changed" | "--stale" | "--pages" => {
                 return Err(format!(
                     "{flag} applies to `mine` and `review`, not `watch`"
                 ))
@@ -319,6 +324,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             format,
             changed,
             watched,
+            stale,
             snoozed,
             pages: pages.unwrap_or(1),
             no_color,
@@ -488,10 +494,11 @@ mod tests {
 
     #[test]
     fn scope_format_and_filters_parse_in_any_order() {
-        let args = view("review --json --changed --repo acme/api --watched --pages=3 --snoozed");
+        let args =
+            view("review --json --changed --repo acme/api --watched --pages=3 --snoozed --stale");
         assert_eq!(args.scope, Some(BoardScope::Repository("acme/api".into())));
         assert_eq!(args.format, Some(Format::Json));
-        assert!(args.changed && args.watched && args.snoozed);
+        assert!(args.changed && args.watched && args.snoozed && args.stale);
         assert_eq!(args.pages, 3);
         assert_eq!(
             view("mine --repo acme/api --all-repos").scope,

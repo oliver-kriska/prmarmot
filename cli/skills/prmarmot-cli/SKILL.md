@@ -58,6 +58,11 @@ prmarmot-cli review --all-repos --json         # PRs waiting for the user's revi
   `my_review` the user's own (`NONE` if none). A standing review is the latest,
   except that a later comment does not cancel an approval or change request.
 - **`note`:** a one-line human summary.
+- **Pickup age:** `waiting_since` is when the PR started waiting for a
+  reviewer (its review request, or when it opened or became ready for
+  review), null when it isn't waiting (drafts, already reviewed). `stale` is
+  true once it has waited `filters.stale_after_days` (default 3) or longer.
+  Sections that wait on a reviewer list the longest wait first.
 - **`blockers[]`:** typed as `merge_conflict`, `ci_failing`,
   `changes_requested`, `unresolved_comments` (with `count`), or `no_reviewers`
   (with `suggested`).
@@ -79,6 +84,10 @@ prmarmot-cli mine --all-repos --json |
 prmarmot-cli review --all-repos --json |
   jq -r '.sections[] | select(.key == "todo") | .prs[] | "\(.repo)#\(.number) by \(.author)  \(.url)"'
 
+# Reviews that have waited too long, oldest first
+prmarmot-cli review --all-repos --stale --json |
+  jq -r '.sections[] | select(.key == "todo" or .key == "available") | .prs[] | "\(.repo)#\(.number) waiting since \(.waiting_since)  \(.url)"'
+
 # What changed since the user last looked in PR Marmot
 prmarmot-cli mine --all-repos --changed --json |
   jq -r '.sections[].prs[] | "\(.repo)#\(.number): \(.attention.changes | join("; "))"'
@@ -86,6 +95,8 @@ prmarmot-cli mine --all-repos --changed --json |
 
 Other flags:
 - `--watched`: only PRs the user watches in the app.
+- `--stale`: only PRs that have waited `stale_after_days` or longer for a
+  reviewer. Good for "what's been sitting too long?".
 - `--pages N` (1–5): load more results. Use it only when the output says
   `more_pages_available: true`.
 - `--format markdown`: a ready-to-paste report with linked PR tables, useful

@@ -28,7 +28,8 @@ use prmarmot_core::board::{BoardScope, Mode};
 use crate::state::{relative, AppState, SetupStatus};
 use crate::table::{
     changed_marker_tooltip, columns_for, detail_text, label_chip, matches_filter,
-    take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, TableWidthClass,
+    take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule,
+    TableWidthClass,
 };
 use crate::theme::ThemePref;
 use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
@@ -509,12 +510,19 @@ impl RootView {
 
     fn sync_table(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
+        let stale = StaleRule {
+            now: Utc::now(),
+            after_days: state.config.stale_after_days,
+        };
         let matching: Vec<_> = state
             .rows
             .iter()
             .filter(|row| {
-                matches_filter(row, &self.filter_text)
-                    && self.filter_chips.iter().all(|chip| chip.matches(row))
+                matches_filter(row, &self.filter_text, stale)
+                    && self
+                        .filter_chips
+                        .iter()
+                        .all(|chip| chip.matches(row, stale))
             })
             .collect();
         self.changed_count = matching
@@ -552,6 +560,7 @@ impl RootView {
             None => self.selected_row_url(cx),
         };
         self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_stale_after_days(stale.after_days);
             table.delegate_mut().set_rows(rows);
             table
                 .delegate_mut()
@@ -1499,9 +1508,9 @@ impl RootView {
                         .small()
                         .label("Search · /")
                         .tooltip(if cfg!(target_os = "macos") {
-                            "Filter loaded PRs (/ or ⌘F). Type label:, author:, or repo:, or click a label, author, or repository."
+                            "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository."
                         } else {
-                            "Filter loaded PRs (/ or Ctrl F). Type label:, author:, or repo:, or click a label, author, or repository."
+                            "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository."
                         })
                         .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
                 )
@@ -2203,6 +2212,7 @@ impl RootView {
                     if cfg!(target_os = "macos") { "/ or ⌘F" } else { "/ or Ctrl F" },
                 ),
                 ("Search one label, author, or repo", "label: author: repo:"),
+                ("Search PRs waiting too long for a reviewer", "is:stale"),
                 ("Remove the last search filter", "⌫ in empty search"),
                 ("Toggle selected PR details", "Space"),
                 ("Cycle theme", "t"),

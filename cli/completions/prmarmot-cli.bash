@@ -92,10 +92,10 @@ _prmarmot_cli() {
             fi
             ;;
         mine | authored)
-            words="$view --authored --changed --pages"
+            words="$view --authored --changed --stale --pages"
             ;;
         review | reviews)
-            words="$view --changed --pages"
+            words="$view --changed --stale --pages"
             ;;
         watch)
             # A view word only right after `watch`.

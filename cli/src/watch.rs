@@ -862,7 +862,10 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
                     session.mode,
                     session.scope.clone(),
                     session.viewer.clone(),
-                    Filters::default(),
+                    Filters {
+                        stale_after_days: session.board.stale_after_days,
+                        ..Filters::default()
+                    },
                     now,
                 );
                 board.authored_only = session.board.authored_only;
@@ -1373,11 +1376,13 @@ mod tests {
             base_ref_name: "main".into(),
             position: None,
         });
+        row.waiting_since = Some("2026-09-10T10:00:00Z".into());
         let marks = Marks {
             watched: true,
             snoozed: Some("until tomorrow".into()),
             changed: true,
             changes: vec!["CI passed".into()],
+            stale: true,
         };
         let pr = pr_json(&row, &marks);
         let seen = Seen {
