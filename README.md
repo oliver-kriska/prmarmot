@@ -1,4 +1,8 @@
-<img src="assets/branding/icon-256.png" alt="PR Marmot logo" width="96" height="96">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/logo-light.svg">
+  <img src="assets/branding/logo-light.svg" alt="PR Marmot — the marmot standing watch" width="320" height="100">
+</picture>
 
 # PR Marmot
 
@@ -47,9 +51,8 @@ login command, and Retry. You can also prepare it first:
 gh auth login
 ```
 
-PR Marmot's prepared release target is **Apple-silicon macOS only**. Until the
-first signed PR Marmot release is published, build from source. Linux and Intel
-Mac users must build from source for now.
+Prebuilt releases are signed and notarized for **Apple-silicon macOS**. Linux
+and Intel Mac users build from source for now.
 
 ### Apple-silicon macOS
 
@@ -65,17 +68,21 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install
   | sh -s -- --repo owner/name
 ```
 
-Once a signed release exists, the installer downloads the latest macOS arm64 release, installs
+The installer downloads the latest macOS arm64 release, installs
 `~/Applications/prmarmot.app`, verifies the published checksum, Developer ID
 signature, notarization ticket, and Gatekeeper acceptance, and creates the
 config file only when it can resolve an accessible repository. It never
-overwrites an existing config.
+overwrites an existing config. It also links the bundled
+[terminal and agent CLI](#terminal-and-agent-cli) as `~/.local/bin/prmarmot-cli`
+(`--bin-dir <dir>` to choose another directory, `--bin-dir ""` to skip).
 
-Homebrew will use the same signed artifact after the first cask is published:
+Or install the same signed artifact with Homebrew:
 
 ```sh
 brew install --cask oliver-kriska/tap/prmarmot
 ```
+
+The cask links `prmarmot-cli` into Homebrew's `bin` as well.
 
 **Updating? Quit the installed app before running the installer again.**
 
@@ -96,9 +103,10 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install
   | sh -s -- --from-source --repo owner/name
 ```
 
-On macOS this installs `~/Applications/prmarmot.app`; on Linux it installs the
-`prmarmot` binary to `~/.local/bin` by default. There are no prebuilt Linux
-packages yet.
+On macOS this installs `~/Applications/prmarmot.app` and links
+`~/.local/bin/prmarmot-cli` into it (`make install` from a checkout does the
+same); on Linux it installs the `prmarmot` and `prmarmot-cli` binaries to
+`~/.local/bin` by default. There are no prebuilt Linux packages yet.
 
 ## First run
 
@@ -150,8 +158,13 @@ notify_all_needs_action = false         # watched PRs still notify
 dock_badge = true                       # macOS; no-op on Linux
 automatic_update_checks = true          # latest stable release, at most daily
 
-# Static, global suggestions used only in the authored-PR “no reviewers” note.
-default_reviewers = ["alice", "bob"]
+# Suggestions used only in the authored-PR “no reviewers” note.
+default_reviewers = ["alice", "bob"]     # any repository without an entry below
+
+[repo_reviewers]
+"acme" = ["carol", "dave"]               # every repository owned by acme
+"acme/api" = ["erin"]                    # this repository (wins over "acme")
+"acme/sandbox" = []                      # suggest nobody here
 
 [issue_link]
 pattern = "PROJ-[0-9]+"                  # regex matched in PR titles
@@ -164,12 +177,15 @@ height = 860
 
 ### What `default_reviewers` does—and does not do
 
-`default_reviewers` is a static global hint. When one of **your** non-draft PRs
-has no pending reviewer request and no qualifying completed review, its Note
-can say, for example, “assign alice + bob.” PR Marmot does **not** assign those people, validate that they are suitable
-for the repository, read or implement `CODEOWNERS`, or infer GitHub ownership.
-The same list is suggested for every repository. Leave it empty if a global
-suggestion would be misleading.
+`default_reviewers` and `[repo_reviewers]` are static hints. When one of
+**your** non-draft PRs has no pending reviewer request and no qualifying
+completed review, its Note can say, for example, “assign alice + bob.” PR Marmot
+picks the list for the PR's repository (`"owner/name"`), else for its owner
+(`"owner"`), else `default_reviewers`; keys are case-insensitive, and an empty
+list suggests nobody. It does **not** assign those people, validate that they
+are suitable for the repository, read or implement `CODEOWNERS`, or infer GitHub
+ownership. Settings edits `default_reviewers`; edit `[repo_reviewers]` in the
+file. `PRMARMOT_DEFAULT_REVIEWERS` replaces only `default_reviewers`.
 
 Issue links are optional and tracker-agnostic. `{id}` in `url_template` is
 replaced with the first identifier matched by `pattern`; no tracker or project
@@ -252,6 +268,107 @@ file is preserved and reported in the footer rather than overwritten.
 stack layer and base branch. This example uses fictional data; opening the
 panel makes no additional GitHub request.*
 
+## Terminal and agent CLI
+
+`prmarmot-cli` prints the same **My PRs** and **Review queue** views in a
+terminal, as Markdown, or as JSON for coding agents. It uses the app's GraphQL
+query, categorization, Notes, sections, stack grouping, config file, and
+`gh` login. It has no GPUI dependency, so it builds without Metal. The CLI
+reads PR Marmot's watch and snooze state but never writes it, and never clears
+a changed marker.
+
+The app installers above already put it on `PATH` (the binary lives inside
+`prmarmot.app`, so app updates update it). Without the app:
+
+```sh
+cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli
+# or, from a checkout: make cli  (-> target/release/prmarmot-cli)
+```
+
+```sh
+prmarmot-cli mine                      # My PRs (Involving me across all repositories)
+prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any repository
+prmarmot-cli review --all-repos        # Review queue across repositories
+prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
+prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
+prmarmot-cli watch review --events 1   # block until something in the queue changes
+prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
+```
+
+Scope follows the app: `--repo owner/name` or `--all-repos`, then
+`PRMARMOT_REPO` / `PRMARMOT_SCOPE`, then `config.toml`. A repository that doesn't
+exist or that your `gh` account can't see is an error (exit 1), not an empty
+list. `--watched` keeps only
+PRs you watch in the app. `--snoozed` expands the Snoozed group, which is
+otherwise shown as a count. `--pages N` loads up to five result pages, the same
+cap as **Load more**.
+
+**Formats.** The default is a width-aware table on a terminal and Markdown when
+piped. `--format markdown` gives one GitHub-flavored table per section with
+linked PRs. `--json` emits `prmarmot-cli/board@1`:
+
+- **Envelope:** `viewer`, `mode`, `scope`, `count`, `truncated`,
+  `more_pages_available`, `rate_limit`, and `sections`.
+- **Sections:** each has a stable `key` (`approved`, `action`, `await`, `todo`,
+  `available`, `done`, `draft`, `snoozed`), a `label`, and its `prs` in display
+  order.
+- **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
+  `review_decision`, `requested_reviewers`, `reviews`, `unresolved_threads`,
+  `labels`, `issue`, `stack`, typed `blockers`, and the plain-text `note`. It
+  also has an `attention` object with `watched`, `snoozed`, `changed`, and
+  `changes`.
+
+Within `@1`, fields are only ever added.
+
+**Watch.** `prmarmot-cli watch [mine|review]` polls at your `refresh_secs`
+(default five minutes). `--interval` can override it but never goes below 30
+seconds, because the CLI shares your GitHub API budget with the app. Each poll
+is one request, the same as an app refresh. Changes are measured from one poll
+to the next.
+
+The first line is a `ready` event; each change after that is one line. Lines are
+text on a terminal and NDJSON (`prmarmot-cli/event@1`) when piped:
+
+| `type` | When | Payload |
+| --- | --- | --- |
+| `ready` | first successful poll | `count`, `scope`, `interval_secs`, `rate_limit` |
+| `changed` | a semantic transition (commits, CI, conflict, reviews, requests, threads) | `kind` (`merge_conflict`, `changes_requested`, `review_again`, `ci_passed`, `changed`), `title`, `body`, `changes`, full `pr` |
+| `added` | a PR entered the view | full `pr` |
+| `removed` | a PR left the view | `status` (`merged`, `closed`, `open`, `inaccessible`, `unknown`) and `pr` summary |
+| `rate_limited` | budget below the reserve or GitHub refused | `retry_in_secs` (clamped to 60–900) |
+| `error` | a poll failed after `ready` | `message`, `retry_in_secs` |
+
+When a PR is removed, the CLI spends one small extra request to learn whether
+it was merged or closed. `--events N` exits after N `changed`/`added`/`removed`
+events. `--watched` limits events to watched PRs. Snoozed PRs stay quiet unless
+you pass `--snoozed`.
+
+`watch --pr owner/name#N` (or the PR's URL) follows one pull request in any
+repository instead of a view, one small request per poll. Its events are the
+same; the stream ends with `removed` when the PR merges, closes, or becomes
+inaccessible.
+
+**Exit codes:** `0` ok, `1` GitHub, network, or file error, `2` usage error, `3` `gh`
+missing or not signed in, `4` rate limited. Errors go to stderr; stdout carries
+only the view or events.
+
+**Coding agents:** the CLI embeds a skill,
+[`cli/skills/prmarmot-cli/SKILL.md`](cli/skills/prmarmot-cli/SKILL.md). It
+teaches an agent when to reach for the CLI, which JSON fields matter, how to wait
+with `watch`, and what the CLI cannot do.
+
+```sh
+prmarmot-cli skill            # print it
+prmarmot-cli skill install    # install to ~/.claude/skills/prmarmot-cli (or $CLAUDE_CONFIG_DIR/skills)
+prmarmot-cli skill install --agent agents   # ~/.agents/skills: Codex, Copilot, Cursor, Gemini CLI, OpenCode, Amp
+prmarmot-cli skill install --agent all      # both
+```
+
+`skill install` leaves an identical copy alone. It refuses to overwrite an
+edited copy, a copy from another version, or a symlink unless you pass
+`--force`. `--dir DIR` installs into any other skills directory. After an
+upgrade, rerun it with `--force` to refresh the installed copy.
+
 ## Data and queue limits
 
 Repository discovery runs at startup and **Repos** retries it. Discovery is
@@ -283,19 +400,26 @@ layers appear in the same loaded section.
 
 ## Build and develop
 
-The workspace contains the GPUI app and `core/`, a UI-independent crate for
-GitHub transport, categorization, and Note logic. Current UI dependencies are
-`gpui-component 0.6.1` and `gpui-pre` / `gpui-pre-platform 0.3.5`.
+The workspace contains the GPUI app and three UI-independent crates:
+- `core/` holds GitHub transport, categorization, Notes, board layout, and change
+  detection.
+- `local/` holds the config file and attention state, shared by the app and the
+  CLI.
+- `cli/` is `prmarmot-cli`.
+
+Current UI dependencies are `gpui-component 0.6.1` and `gpui-pre` /
+`gpui-pre-platform 0.3.5`.
 
 ```sh
-make check      # fmt check + core clippy -D warnings + core tests (same as CI)
+make check      # fmt check + clippy -D warnings + tests for core, local, cli (same as CI)
 make build      # debug GPUI app build
+make cli        # release build of prmarmot-cli (no Metal)
 make verify     # full-workspace fmt, clippy, and tests
 make hooks      # install repository git hooks
 ```
 
-`make check` and CI intentionally compile only `prmarmot-core`, so they do not
-need Metal. `make build`, `make verify`, and the pre-push hook compile the GPUI
+`make check` and CI intentionally compile only the GPUI-free crates, so they do
+not need Metal. `make build`, `make verify`, and the pre-push hook compile the GPUI
 binary and need the platform graphics toolchain. On macOS, if `metal` is
 missing, run:
 
