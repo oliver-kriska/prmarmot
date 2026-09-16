@@ -5252,7 +5252,7 @@ dependencies = [
 
 [[package]]
 name = "prmarmot"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "dirs 7.0.0",
@@ -5274,7 +5274,7 @@ dependencies = [
 
 [[package]]
 name = "prmarmot-cli"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "jsonschema",
