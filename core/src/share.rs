@@ -284,7 +284,7 @@ fn row_context(row: &BoardRow, mode: Mode) -> String {
         }
         (Mode::Authored, Category::Draft) => match note.strip_prefix("draft · ") {
             Some(problem) => problem.to_string(),
-            None if note == "· draft" => String::new(),
+            None if note == "draft" => String::new(),
             None => note,
         },
         (Mode::Authored, _) => note,
@@ -400,6 +400,7 @@ mod tests {
             labels: Vec::new(),
             ci: Ci::Pass,
             conflict: false,
+            mergeable_unknown: false,
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),
@@ -588,5 +589,10 @@ mod tests {
             row_context(&todo, Mode::Review),
             "by unknown author · CI red — maybe wait for green"
         );
+
+        // The group title already says "draft"; the neutral glyph must not leak.
+        let mut review_draft = row(5, Category::Draft);
+        review_draft.note = "· draft (not ready)".into();
+        assert_eq!(row_context(&review_draft, Mode::Review), "by dana");
     }
 }

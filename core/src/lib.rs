@@ -8,4 +8,5 @@
 pub mod attention;
 pub mod board;
 pub mod github;
+pub mod layout;
 pub mod share;

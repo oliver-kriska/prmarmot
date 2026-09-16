@@ -23,6 +23,7 @@ use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
 use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use prmarmot_core::layout::{layout, LayoutItem, SectionKind};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -481,132 +482,42 @@ impl BoardTableDelegate {
         self.rebuild_display();
     }
 
-    /// Split approved authored PRs out of Await without changing core categories
-    /// or row identities. Prioritize approved Action rows, keeping stack layers
-    /// together in dependency order and otherwise preserving stable ordering.
+    /// Rebuild display rows from the shared core layout (sections, the Approved
+    /// split, stacks, Snoozed), adding the window's own Snoozed wording.
     fn rebuild_display(&mut self) {
-        let mut display = Vec::with_capacity(self.rows.len() + 4);
-        let mut order: Vec<usize> = (0..self.rows.len()).collect();
-        let snoozed_order: Vec<usize> = order
-            .iter()
-            .copied()
-            .filter(|&ix| self.snoozed.contains(&self.rows[ix].id))
-            .collect();
-        order.retain(|&ix| !self.snoozed.contains(&self.rows[ix].id));
-        order.sort_by_key(|&ix| {
-            let row = &self.rows[ix];
-            let section = match row.category {
-                Category::Await if self.is_approved_section(row) => 0,
-                Category::Action | Category::Todo => 1,
-                Category::Available => 2,
-                Category::Await | Category::Done => 3,
-                Category::Draft => 4,
-            };
-            let approved_action = self.mode == Mode::Authored
-                && row.category == Category::Action
-                && row.review_state == ReviewState::Approved;
-            (section, !approved_action)
-        });
-        let mut i = 0;
-        while i < order.len() {
-            let row = &self.rows[order[i]];
-            let cat = row.category;
-            let approved = self.is_approved_section(row);
-            let start = i;
-            while i < order.len()
-                && self.rows[order[i]].category == cat
-                && self.is_approved_section(&self.rows[order[i]]) == approved
-            {
-                i += 1;
-            }
-            display.push(DisplayRow::Header {
-                label: if approved {
-                    "Approved"
+        let show_snoozed = self.show_snoozed;
+        self.display = layout(
+            &self.rows,
+            self.mode,
+            self.all_repos,
+            &self.snoozed,
+            show_snoozed,
+        )
+        .into_iter()
+        .map(|item| match item {
+            LayoutItem::Row(ix) => DisplayRow::Pr(ix),
+            LayoutItem::Header {
+                kind,
+                label,
+                count,
+                detail,
+                members,
+            } => DisplayRow::Header {
+                label,
+                count,
+                detail: if kind == SectionKind::Snoozed {
+                    Some(if show_snoozed {
+                        "shown · use Snoozed to collapse".into()
+                    } else {
+                        "collapsed · use Snoozed to show".into()
+                    })
                 } else {
-                    group_label(self.mode, cat, self.all_repos)
-                }
-                .into(),
-                count: Some(i - start),
-                detail: None,
-                members: Vec::new(),
-            });
-            let header_ix = display.len() - 1;
-            let mut emitted = std::collections::HashSet::new();
-            for &j in &order[start..i] {
-                if let Some(stack) = &self.rows[j].stack {
-                    if !emitted.insert((&self.rows[j].repo, stack.number)) {
-                        continue;
-                    }
-                    let mut members: Vec<usize> = order[start..i]
-                        .iter()
-                        .copied()
-                        .filter(|&k| {
-                            self.rows[k].repo == self.rows[j].repo
-                                && self.rows[k]
-                                    .stack
-                                    .as_ref()
-                                    .is_some_and(|s| s.number == stack.number)
-                        })
-                        .collect();
-                    members.sort_by_key(|&k| {
-                        self.rows[k]
-                            .stack
-                            .as_ref()
-                            .and_then(|s| s.position)
-                            .unwrap_or(u64::MAX)
-                    });
-                    display.push(DisplayRow::Header {
-                        label: if self.all_repos {
-                            format!("{} · Stack #{}", self.rows[j].repo, stack.number)
-                        } else {
-                            format!("Stack #{}", stack.number)
-                        },
-                        count: None,
-                        detail: Some(if members.len() as u64 == stack.size {
-                            format!("{} layers", stack.size)
-                        } else {
-                            format!("{} of {} layers shown", members.len(), stack.size)
-                        }),
-                        members: Vec::new(),
-                    });
-                    display.extend(members.into_iter().map(DisplayRow::Pr));
-                } else {
-                    display.push(DisplayRow::Pr(j));
-                }
-            }
-            let emitted: Vec<usize> = display[header_ix + 1..]
-                .iter()
-                .filter_map(|d| match d {
-                    DisplayRow::Pr(ix) => Some(*ix),
-                    DisplayRow::Header { .. } => None,
-                })
-                .collect();
-            if let DisplayRow::Header { members, .. } = &mut display[header_ix] {
-                *members = emitted;
-            }
-        }
-        if !snoozed_order.is_empty() {
-            display.push(DisplayRow::Header {
-                label: "Snoozed".into(),
-                count: Some(snoozed_order.len()),
-                detail: Some(if self.show_snoozed {
-                    "shown · use Snoozed to collapse".into()
-                } else {
-                    "collapsed · use Snoozed to show".into()
-                }),
-                members: snoozed_order.clone(),
-            });
-            if self.show_snoozed {
-                display.extend(snoozed_order.into_iter().map(DisplayRow::Pr));
-            }
-        }
-        self.display = display;
-    }
-
-    fn is_approved_section(&self, row: &BoardRow) -> bool {
-        self.mode == Mode::Authored
-            && row.category == Category::Await
-            && row.review_state == ReviewState::Approved
+                    detail
+                },
+                members,
+            },
+        })
+        .collect();
     }
 
     /// End the tree at the visible section boundary, even if other layers
@@ -743,23 +654,6 @@ fn review_state_word_aggregate(state: ReviewState) -> &'static str {
         ReviewState::Commented => "commented",
         ReviewState::Waiting => "requested",
         ReviewState::None => "reviewed",
-    }
-}
-
-/// The section label for a category within a mode. Action/Await differ from
-/// Todo/Done even though they share a sort rank.
-fn group_label(mode: Mode, cat: Category, all_repos: bool) -> &'static str {
-    match (mode, cat, all_repos) {
-        (Mode::Authored, Category::Action, true) => "Needs attention",
-        (Mode::Authored, Category::Await, true) => "In progress",
-        (Mode::Authored, Category::Action, false) => "Needs action",
-        (Mode::Authored, Category::Await, false) => "Awaiting review",
-        (Mode::Review, Category::Todo, _) => "Requested from you",
-        (Mode::Review, Category::Available, _) => "Available to review · no reviewer requested",
-        (Mode::Review, Category::Done, _) => "Reviewed",
-        (_, Category::Draft, _) => "Drafts",
-        // Unreachable pairings (Action in Review etc.) — a calm fallback.
-        _ => "Other",
     }
 }
 
@@ -1667,6 +1561,7 @@ mod tests {
     //! They run under `cargo test` (which compiles the GPUI binary), not the
     //! fast core-only `make check`.
     use super::*;
+    use prmarmot_core::layout::group_label;
 
     #[test]
     fn copied_reference_distinguishes_same_number_in_different_repositories() {
@@ -1704,6 +1599,7 @@ mod tests {
             labels: Vec::new(),
             ci: Ci::Pass,
             conflict: false,
+            mergeable_unknown: false,
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),
