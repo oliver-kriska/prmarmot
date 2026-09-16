@@ -320,9 +320,10 @@ file is preserved and reported in the footer rather than overwritten.
 
 ![Selected stacked pull request with its reviewer, label, and stack-layer details](assets/screenshots/pr-details.png)
 
-*Select a row and open Details to inspect its loaded metadata, including the
-stack layer and base branch. This example uses fictional data; opening the
-panel makes no additional GitHub request.*
+*Select a row and open Details to inspect its loaded metadata: labels, the
+Note, author, CI, reviewers, and reviews. Scroll the panel for the rest,
+including the stack layer and base branch. This example uses fictional data;
+opening the panel makes no additional GitHub request.*
 
 ## Terminal and agent CLI
 
