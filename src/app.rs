@@ -24,6 +24,7 @@ use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
 use prmarmot_core::board::{BoardScope, Mode};
+use prmarmot_core::layout::Sort;
 
 use crate::state::{relative, AppState, SetupStatus};
 use crate::table::{
@@ -131,6 +132,9 @@ pub struct RootView {
     col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
     changed_only: bool,
     snoozed_expanded: bool,
+    /// Review queue: list the smallest changes first instead of the longest
+    /// wait.
+    smallest_first: bool,
     /// Loaded PRs matching the search that changed since you looked.
     changed_count: usize,
     /// Snoozed PRs among the rows the table shows.
@@ -411,6 +415,7 @@ impl RootView {
             col_overrides: HashMap::new(),
             changed_only: false,
             snoozed_expanded: false,
+            smallest_first: false,
             changed_count: 0,
             snoozed_count: 0,
             suppress_ack_for: None,
@@ -566,6 +571,11 @@ impl RootView {
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_stale_after_days(stale.after_days);
+            table.delegate_mut().set_sort(if self.smallest_first {
+                Sort::Smallest
+            } else {
+                Sort::Wait
+            });
             table.delegate_mut().set_rows(rows);
             table
                 .delegate_mut()
@@ -1578,6 +1588,27 @@ impl RootView {
                     this.sync_table(cx);
                 })),
             )
+            .when(state.mode == Mode::Review, |bar| {
+                bar.child(
+                    view_toggle(
+                        "smallest-first",
+                        "Smallest first",
+                        0,
+                        self.smallest_first,
+                        None,
+                        cx,
+                    )
+                    .tooltip(if self.smallest_first {
+                        "Listing the smallest changes first. Click to list the longest wait first."
+                    } else {
+                        "List requested and available reviews by size: Small, then Medium, then Large"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.smallest_first = !this.smallest_first;
+                        this.sync_table(cx);
+                    })),
+                )
+            })
             .when(self.search_open, |bar| bar.child(div().flex_1()))
             .when(state.truncated, |bar| {
                 bar.child(

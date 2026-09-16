@@ -17,7 +17,7 @@ def ago(hours):
 
 def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
        mergeable="MERGEABLE", labels=(), requested=(), teams=(), reviews=(), unresolved=0,
-       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None):
+       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None, size=None):
     reviewers = [{"__typename": "User", "login": login} for login in requested] + [
         {"__typename": "Team", "slug": slug} for slug in teams
     ]
@@ -30,6 +30,9 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
                          "createdAt": ago(waited + (1 if reviewers else 0))})
         timeline += [{"__typename": "ReviewRequestedEvent", "createdAt": ago(waited),
                       "requestedReviewer": reviewer} for reviewer in reviewers]
+    # (additions, deletions, changed files); a stable spread unless given.
+    if size is None:
+        size = ((number * 37) % 900 + 4, (number * 13) % 200, number % 40 + 1)
     review_nodes = [
         {"author": {"login": login}, "state": state,
          "submittedAt": f"2026-08-{day:02d}T12:00:00Z"}
@@ -50,6 +53,9 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
         "reviewDecision": decision,
         "mergeable": mergeable,
         "createdAt": f"2026-08-{number % 20 + 1:02d}T09:00:00Z",
+        "additions": size[0],
+        "deletions": size[1],
+        "changedFiles": size[2],
         "author": {"login": author},
         "labels": {"nodes": [{"name": label} for label in labels]},
         "reviewRequests": {"totalCount": len(request_nodes), "nodes": request_nodes},
@@ -97,9 +103,9 @@ AUTHORED = [
 
 REQUESTED = [
     pr(528, "Review secure session handoff", author="river", labels=("bug",),
-       requested=("demo-user",), unresolved=1, waited=3),
+       requested=("demo-user",), unresolved=1, waited=3, size=(64, 18, 4)),
     pr(527, "Polish mobile project switcher", author="taylor", labels=("mobile",),
-       teams=("mobile",), waited=98),
+       teams=("mobile",), waited=98, size=(186, 42, 9)),
     pr(526, "Approve atlas export format", author="jordan", labels=("feature",),
        requested=("demo-user",), decision="APPROVED",
        reviews=(("demo-user", "APPROVED"),)),
@@ -108,9 +114,10 @@ REQUESTED = [
 ]
 
 AVAILABLE = [
-    pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",), waited=30),
+    pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",), waited=30,
+       size=(21, 4, 2)),
     pr(523, "Document atlas import boundaries", author="skyler", labels=("feature",),
-       waited=150),
+       waited=150, size=(512, 131, 17)),
     # Included in the broad alias too; requested provenance must win after merge.
     REQUESTED[1],
 ]
@@ -160,6 +167,7 @@ def scale_nodes(alias, count):
             stack=((900 + i // 3, i % 3 + 1) if alias == "authored" and i % 9 < 3 else None),
             repo=("demo-labs/atlas", "demo-labs/mobile", "demo-labs/web")[i % 3],
             waited=(i * 7) % 150,
+            size=((i * 53) % 700, (i * 11) % 150, i % 45 + 1),
         ))
         if nodes[-1]["stack"]:
             nodes[-1]["stack"]["number"] = 900 + i // 9
@@ -278,6 +286,16 @@ class FixtureTests(unittest.TestCase):
         self.assertGreater(events[1]["createdAt"], "2026-09-01")
         drafts = [item for item in AUTHORED + REQUESTED if item["isDraft"]]
         self.assertTrue(drafts and all(not item["timelineItems"]["nodes"] for item in drafts))
+
+    def test_review_prs_span_every_size_band(self):
+        def band(item):
+            lines, files = item["additions"] + item["deletions"], item["changedFiles"]
+            if lines > 400 or files > 30:
+                return "large"
+            return "small" if lines <= 100 and files <= 10 else "medium"
+        self.assertEqual({band(item) for item in REQUESTED + AVAILABLE},
+                         {"small", "medium", "large"})
+        self.assertTrue(all("changedFiles" in item for item in AUTHORED))
 
     def test_a_single_pull_request_can_be_followed(self):
         resolved = graphql(["api", "graphql", "-f",

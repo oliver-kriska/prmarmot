@@ -9,7 +9,8 @@
 //! latest, except that a comment does not erase an earlier approval or change
 //! request (fixtures 113–116 and 206–210). The pickup age (`waitingSince`,
 //! `core/src/pickup.rs`) is an extension in both as well (fixtures 101–106,
-//! 117–118, 201–205, 211–212).
+//! 117–118, 201–205, 211–212), and so is the size band (`sizeBand`,
+//! `core/src/size.rs`; fixtures 101–106 and 201–203 carry change counts).
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;
@@ -53,6 +54,7 @@ fn authored_json(row: &BoardRow) -> Value {
         "reviews": row.reviews.iter().map(|r| json!({"login": r.login, "state": r.state})).collect::<Vec<_>>(),
         "unresolved": row.unresolved,
         "waitingSince": row.waiting_since,
+        "sizeBand": row.size.map(|size| size.band().key()),
     })
 }
 
@@ -74,6 +76,7 @@ fn review_json(row: &BoardRow) -> Value {
         "unresolved": row.unresolved,
         "createdAt": row.created_at,
         "waitingSince": row.waiting_since,
+        "sizeBand": row.size.map(|size| size.band().key()),
     })
 }
 

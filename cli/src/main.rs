@@ -183,6 +183,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
         Utc::now(),
     );
     board.authored_only = setup.board.authored_only;
+    board.sort = args.sort;
     let format = args.format.unwrap_or(if term::stdout_is_terminal() {
         Format::Table
     } else {

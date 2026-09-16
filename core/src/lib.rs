@@ -11,3 +11,4 @@ pub mod github;
 pub mod layout;
 pub mod pickup;
 pub mod share;
+pub mod size;

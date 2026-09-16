@@ -54,8 +54,11 @@ _prmarmot-cli() {
             '--snoozed[show snoozed PRs instead of collapsing them]'
             '--pages=[result pages to load per queue]:pages:(1 2 3 4 5)'
           )
-          [[ $line[1] == mine || $line[1] == authored ]] &&
+          if [[ $line[1] == mine || $line[1] == authored ]]; then
             board+=('--authored[with --all-repos: only PRs you authored]')
+          else
+            board+=('--sort=[order inside the pickup sections, longest wait or smallest change first]:order:(wait smallest)')
+          fi
           _arguments -s $help $scope $view $board && ret=0
           ;;
         watch)

@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn bash_offers_what_each_position_accepts() {
-        let cases: [(&[&str], &str); 11] = [
+        let cases: [(&[&str], &str); 13] = [
             (&["prmarmot-cli", "wa"], "watch"),
             (&["prmarmot-cli", "--v"], "--version"),
             (&["prmarmot-cli", "watch", ""], "mine review"),
@@ -163,6 +163,8 @@ mod tests {
             (&["prmarmot-cli", "watch", "-f", ""], "text json"),
             (&["prmarmot-cli", "mine", "--format", "=", "j"], "json"),
             (&["prmarmot-cli", "review", "--au"], ""),
+            (&["prmarmot-cli", "review", "--so"], "--sort"),
+            (&["prmarmot-cli", "review", "--sort", "s"], "smallest"),
             (
                 &["prmarmot-cli", "skill", "install", "--agent", "a"],
                 "agents all",
@@ -203,6 +205,13 @@ mod tests {
         assert!(!offers("prmarmot-cli review --")
             .unwrap()
             .contains(&"--authored".to_owned()));
+        assert!(!offers("prmarmot-cli mine --")
+            .unwrap()
+            .contains(&"--sort".to_owned()));
+        assert_eq!(
+            offers("prmarmot-cli review --sort ").unwrap(),
+            ["smallest", "wait"]
+        );
         assert_eq!(
             offers("prmarmot-cli completions ").unwrap(),
             ["bash", "fish", "zsh"]

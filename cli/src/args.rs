@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use prmarmot_core::board::{BoardScope, Mode, MAX_PAGES_PER_ALIAS};
+use prmarmot_core::layout::Sort;
 
 use crate::completions::Shell;
 use crate::skill::Agent;
@@ -43,6 +44,9 @@ View options:
       --stale               Only PRs that have waited stale_after_days (default 3)
                             or longer for a reviewer
       --snoozed             Show snoozed PRs instead of collapsing them
+      --sort ORDER          review: wait (default: longest wait first) or smallest
+                            (Small, then Medium, then Large changes; see the
+                            size band in the README)
       --pages N             Result pages to load per queue, 1-5 (default 1)
       --no-color            Plain text (also honors NO_COLOR)
 
@@ -114,6 +118,8 @@ pub struct ViewArgs {
     pub watched: bool,
     pub stale: bool,
     pub snoozed: bool,
+    /// `--sort`: the order inside the review queue's pickup sections.
+    pub sort: Sort,
     pub pages: u8,
     pub no_color: bool,
 }
@@ -212,6 +218,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut watched = false;
     let mut stale = false;
     let mut snoozed = false;
+    let mut sort = Sort::Wait;
     let mut pages = None;
     let mut no_color = false;
     let mut interval_secs = None;
@@ -234,6 +241,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--changed" if !watch => changed = true,
             "--stale" if !watch => stale = true,
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
+            "--sort" if watch => return Err("--sort applies to `review`, not `watch`".into()),
+            "--sort" if mode == Mode::Review => sort = parse_sort(&value("--sort")?)?,
+            "--sort" => return Err("--sort applies to `review`, not `mine`".into()),
             "--interval" if watch => interval_secs = Some(parse_interval(&value("--interval")?)?),
             "--events" if watch => max_events = Some(parse_events(&value("--events")?)?),
             "--pr" if watch => pr = Some(parse_pr(&value("--pr")?)?),
@@ -326,9 +336,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             watched,
             stale,
             snoozed,
+            sort,
             pages: pages.unwrap_or(1),
             no_color,
         }))
+    }
+}
+
+fn parse_sort(word: &str) -> Result<Sort, String> {
+    match word {
+        "wait" => Ok(Sort::Wait),
+        "smallest" => Ok(Sort::Smallest),
+        other => Err(format!("unknown sort: {other} (use wait or smallest)")),
     }
 }
 
@@ -505,6 +524,25 @@ mod tests {
             Some(BoardScope::AllRepositories)
         );
         assert_eq!(view("mine -f md").format, Some(Format::Markdown));
+    }
+
+    #[test]
+    fn sort_orders_the_review_queue_only() {
+        assert_eq!(view("review").sort, Sort::Wait);
+        assert_eq!(view("review --sort smallest").sort, Sort::Smallest);
+        assert_eq!(view("review --sort=wait").sort, Sort::Wait);
+        assert_eq!(
+            parse_str("review --sort size").unwrap_err(),
+            "unknown sort: size (use wait or smallest)"
+        );
+        assert_eq!(
+            parse_str("mine --sort smallest").unwrap_err(),
+            "--sort applies to `review`, not `mine`"
+        );
+        assert_eq!(
+            parse_str("watch review --sort smallest").unwrap_err(),
+            "--sort applies to `review`, not `watch`"
+        );
     }
 
     #[test]

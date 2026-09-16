@@ -523,6 +523,7 @@ mod tests {
             blockers: Vec::new(),
             created_at: String::new(),
             waiting_since: None,
+            size: None,
             note: "needs your review".into(),
         }
     }

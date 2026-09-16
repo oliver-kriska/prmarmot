@@ -56,11 +56,13 @@ pub fn global_available_search_string(who: &str) -> String {
 /// `timelineItems` window dates the current review requests and the last
 /// "ready for review" for the pickup age (`crate::pickup`); it adds one point
 /// to a two-alias review query's `rateLimit.cost` (7 → 8) and nothing to a
-/// single search (4).
+/// single search (4). `additions deletions changedFiles` feed the size band
+/// (`crate::size`) and cost nothing.
 macro_rules! pr_fields {
     () => {
         r#"id url repository { nameWithOwner } updatedAt headRefOid
   number title isDraft reviewDecision mergeable createdAt
+  additions deletions changedFiles
   stack { number size baseRefName }
   stackEntry { position }
   author{ login }
@@ -448,6 +450,13 @@ pub struct RawPr {
     #[serde(default)]
     pub mergeable: Option<String>,
     pub created_at: String,
+    /// Change counts for the size band. Absent in prototype fixtures.
+    #[serde(default)]
+    pub additions: Option<u64>,
+    #[serde(default)]
+    pub deletions: Option<u64>,
+    #[serde(default)]
+    pub changed_files: Option<u64>,
     #[serde(default)]
     pub stack: Option<RawStack>,
     #[serde(default)]

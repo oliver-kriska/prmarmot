@@ -28,6 +28,15 @@ def request_time($r): [.timelineItems.nodes[]?
   | .createdAt] | max;
 def ready_time: [.timelineItems.nodes[]? | select(. != null and .__typename == "ReadyForReviewEvent") | .createdAt] | max;
 def pickup($start): [$start, ready_time] | max;
+# Size band, also a deliberate extension; core/src/size.rs implements the
+# same rule. null unless GitHub reported every count.
+def size_band:
+  if .additions == null or .deletions == null or .changedFiles == null then null
+  else (.additions + .deletions) as $lines
+    | if $lines > 400 or .changedFiles > 30 then "large"
+      elif $lines <= 100 and .changedFiles <= 10 then "small"
+      else "medium" end
+  end;
 [ .data.search.nodes[]
   | ([.labels.nodes[].name] | index("bug")) as $bug
   | ([.reviewThreads.nodes[] | select(.isResolved==false)] | length) as $unres
@@ -69,7 +78,8 @@ def pickup($start): [$start, ready_time] | max;
       requested: $req,
       reviews: $rv,
       unresolved: $unres,
-      waitingSince: $waiting
+      waitingSince: $waiting,
+      sizeBand: size_band
     }
 ]
 | sort_by( (if .category=="action" then 0 elif .category=="await" then 1 else 2 end), (- .number) )

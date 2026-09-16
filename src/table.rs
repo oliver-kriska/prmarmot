@@ -24,9 +24,10 @@ use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
 use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
-use prmarmot_core::layout::{layout, LayoutItem, SectionKind};
+use prmarmot_core::layout::{layout, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
+use prmarmot_core::size::ChangeSize;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -592,6 +593,17 @@ pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
     })
 }
 
+/// "Small · 42 changed lines in 3 files (+30 −12)".
+fn size_text(size: ChangeSize) -> String {
+    format!(
+        "{} · {} (+{} −{})",
+        size.band().label(),
+        size.lines_and_files(),
+        size.additions,
+        size.deletions
+    )
+}
+
 /// Full, unelided snapshot details; no secondary network request or hidden cache.
 pub fn detail_text(row: &BoardRow) -> String {
     let mut lines = vec![
@@ -634,6 +646,9 @@ pub fn detail_text(row: &BoardRow) -> String {
     }
     if let Some(since) = &row.waiting_since {
         lines.push(format!("Waiting for a reviewer since {since}"));
+    }
+    if let Some(size) = row.size {
+        lines.push(format!("Size: {}", size_text(size)));
     }
     if !row.labels.is_empty() {
         lines.push(format!("Labels: {}", row.labels.join(", ")));
@@ -722,6 +737,8 @@ pub struct BoardTableDelegate {
     show_snoozed: bool,
     /// A wait this many days long shows as stale.
     stale_after_days: u64,
+    /// The order inside the review queue's pickup sections.
+    sort: Sort,
     pub on_row_action: Option<RowActionHandler>,
     pub on_group_copy: Option<GroupCopyHandler>,
     /// A label, author, or repository was clicked: add it to the search.
@@ -749,6 +766,7 @@ impl BoardTableDelegate {
             snoozed: HashSet::new(),
             show_snoozed: false,
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
+            sort: Sort::Wait,
             on_row_action: None,
             on_group_copy: None,
             on_filter_click: None,
@@ -798,6 +816,11 @@ impl BoardTableDelegate {
         self.stale_after_days = days;
     }
 
+    /// Takes effect with the next `set_rows`.
+    pub fn set_sort(&mut self, sort: Sort) {
+        self.sort = sort;
+    }
+
     pub fn set_rows(&mut self, rows: Vec<BoardRow>) {
         self.rows = rows;
         self.rebuild_display();
@@ -827,6 +850,7 @@ impl BoardTableDelegate {
             self.all_repos,
             &self.snoozed,
             show_snoozed,
+            self.sort,
         )
         .into_iter()
         .map(|item| match item {
@@ -1941,6 +1965,12 @@ impl TableDelegate for BoardTableDelegate {
                         if *stale { " (stale)" } else { "" }
                     ));
                 }
+                // In the review queue the size band trails last, muted.
+                let size = row.size.filter(|_| self.mode == Mode::Review);
+                if let Some(size) = size {
+                    tooltip.push_str(&format!("\nSize: {}", size_text(size)));
+                }
+                let size = size.map(|size| format!(" · {}", size.band().label()));
                 let (dot_color, primary_color) = match tone {
                     NoteTone::Danger => (Some(theme.danger), theme.danger),
                     NoteTone::Warning => (Some(theme.warning), muted),
@@ -1982,6 +2012,9 @@ impl TableDelegate for BoardTableDelegate {
                 let wait_w = wait
                     .as_ref()
                     .map_or(px(0.), |(label, _)| measure_width(window, label));
+                let size_w = size
+                    .as_ref()
+                    .map_or(px(0.), |label| measure_width(window, label));
                 cell = cell.child(
                     div()
                         .flex_shrink_0()
@@ -1993,7 +2026,8 @@ impl TableDelegate for BoardTableDelegate {
                     let avail = col_w
                         - primary_w
                         - wait_w
-                        - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 2. + ELIDE_SAFETY);
+                        - size_w
+                        - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
                     let tail = elide(window, &tail, avail);
                     cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
                 }
@@ -2004,6 +2038,9 @@ impl TableDelegate for BoardTableDelegate {
                             .text_color(if stale { theme.warning } else { muted })
                             .child(label),
                     );
+                }
+                if let Some(label) = size {
+                    cell = cell.child(div().flex_shrink_0().text_color(muted).child(label));
                 }
                 return cell
                     .id(("note", row_ix))
@@ -2117,6 +2154,7 @@ mod tests {
             blockers: Vec::new(),
             created_at: String::new(),
             waiting_since: None,
+            size: None,
             note: String::new(),
         }
     }
@@ -2787,6 +2825,33 @@ mod tests {
             (vec![chip], String::new())
         );
         assert!(detail_text(&r).contains("Waiting for a reviewer since 2026-09-12T12:00:00Z"));
+    }
+
+    #[test]
+    fn smallest_first_reorders_the_review_queue_and_details_name_the_size() {
+        let sized = |number, additions| BoardRow {
+            size: Some(ChangeSize {
+                additions,
+                deletions: 2,
+                changed_files: 3,
+            }),
+            ..row(number, Category::Todo)
+        };
+        let mut d = BoardTableDelegate::new(Mode::Review, false);
+        d.set_rows(vec![sized(1, 700), sized(2, 40)]);
+        let numbers = |d: &BoardTableDelegate| -> Vec<u64> {
+            (0..d.display_len())
+                .filter_map(|i| d.row(i))
+                .map(|r| r.number)
+                .collect()
+        };
+        assert_eq!(numbers(&d), [1, 2]);
+        d.set_sort(Sort::Smallest);
+        d.set_rows(vec![sized(1, 700), sized(2, 40)]);
+        assert_eq!(numbers(&d), [2, 1]);
+        assert!(detail_text(&sized(2, 40))
+            .contains("Size: Small · 42 changed lines in 3 files (+40 −2)"));
+        assert!(!detail_text(&row(3, Category::Todo)).contains("Size:"));
     }
 
     #[test]

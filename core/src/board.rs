@@ -18,6 +18,7 @@ use crate::github::query::{
 use crate::github::rate_limit::RateLimitInfo;
 use crate::github::{GhError, GithubTransport};
 use crate::pickup::pickup_since;
+use crate::size::ChangeSize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -292,6 +293,9 @@ pub struct BoardRow {
     /// When the PR started waiting for a reviewer, or `None` when it is not
     /// waiting; see [`crate::pickup`].
     pub waiting_since: Option<String>,
+    /// Change counts, `None` when GitHub did not report them; see
+    /// [`crate::size`].
+    pub size: Option<ChangeSize>,
     pub note: String,
 }
 
@@ -1065,6 +1069,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
         waiting_since: None,
+        size: ChangeSize::from_counts(pr.additions, pr.deletions, pr.changed_files),
         note: String::new(),
     };
 

@@ -8,7 +8,7 @@ use prmarmot_core::board::{
     strip_note_glyphs, Blocker, BoardRow, BoardScope, Category, Ci, Mode, QueueProvenance,
     ReviewState,
 };
-use prmarmot_core::layout::{LayoutItem, SectionKind};
+use prmarmot_core::layout::{LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
 use serde_json::{json, Value};
 
@@ -38,6 +38,13 @@ pub fn scope_label(scope: &BoardScope) -> String {
     match scope {
         BoardScope::AllRepositories => "all repositories".into(),
         BoardScope::Repository(repo) => repo.clone(),
+    }
+}
+
+pub fn sort_key(sort: Sort) -> &'static str {
+    match sort {
+        Sort::Wait => "wait",
+        Sort::Smallest => "smallest",
     }
 }
 
@@ -123,6 +130,12 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         "updated_at": row.updated_at,
         "waiting_since": row.waiting_since,
         "stale": marks.stale,
+        "size": row.size.map(|size| json!({
+            "band": size.band().key(),
+            "additions": size.additions,
+            "deletions": size.deletions,
+            "changed_files": size.changed_files,
+        })),
         "attention": {
             "watched": marks.watched,
             "snoozed": marks.snoozed.as_ref().map(|description| json!({ "description": description })),
@@ -177,6 +190,7 @@ pub fn board_json(view: &BoardView) -> Value {
         "mode": mode_key(view.mode),
         "view": view_title(view.mode, &view.scope, view.authored_only),
         "scope": scope_json(&view.scope),
+        "sort": sort_key(view.sort),
         "count": view.rows.len(),
         "filters": {
             "changed": view.filters.changed,
@@ -360,8 +374,8 @@ pub fn note(row: &BoardRow) -> Note {
     }
 }
 
-/// The Note plus how long the PR has waited for a reviewer; a stale wait
-/// warns.
+/// The Note plus how long the PR has waited for a reviewer (a stale wait
+/// warns) and, in the review queue, the size band.
 fn note_for(view: &BoardView, ix: usize) -> Note {
     let row = &view.rows[ix];
     let mut note = note(row);
@@ -374,6 +388,9 @@ fn note_for(view: &BoardView, ix: usize) -> Note {
                 note.tone = Tone::Warning;
             }
         }
+    }
+    if let Some(size) = row.size.filter(|_| view.mode == Mode::Review) {
+        note.text.push_str(&format!(" · {}", size.band().label()));
     }
     note
 }
@@ -391,6 +408,9 @@ fn status_line(view: &BoardView) -> String {
             view.generated_at.with_timezone(&Local).format("%H:%M")
         ),
     ];
+    if view.sort == Sort::Smallest {
+        parts.push("smallest first".into());
+    }
     if let Some(rate) = &view.rate {
         parts.push(format!("API {}/{}", rate.remaining, rate.limit));
     }
@@ -795,6 +815,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use prmarmot_core::attention::SnapshotNamespace;
     use prmarmot_core::board::{Category, StackInfo};
+    use prmarmot_core::size::ChangeSize;
     use prmarmot_local::attention_state::{AttentionState, SnoozeCondition};
 
     fn sample_view(mode: Mode) -> BoardView {
@@ -804,6 +825,11 @@ mod tests {
         action.blockers = vec![Blocker::UnresolvedComments(2), Blocker::CiFailing];
         action.note = "🔴 CI failing · 2 unresolved".into();
         action.title = "Fix | pipes in titles".into();
+        action.size = Some(ChangeSize {
+            additions: 30,
+            deletions: 12,
+            changed_files: 3,
+        });
         let mut approved = row(11, Category::Await);
         approved.review_state = ReviewState::Approved;
         approved.reviews[0].state = "APPROVED".into();
@@ -894,6 +920,12 @@ mod tests {
             json!([{"type": "unresolved_comments", "count": 2}, {"type": "ci_failing"}])
         );
         assert_eq!(action[0]["note"], "CI failing · 2 unresolved");
+        assert_eq!(
+            action[0]["size"],
+            json!({"band": "small", "additions": 30, "deletions": 12, "changed_files": 3})
+        );
+        assert_eq!(action[1]["size"], Value::Null);
+        assert_eq!(value["sort"], "wait");
         assert_eq!(value["sections"][2]["prs"][0]["number"], 14);
         assert!(
             value["sections"][2]["prs"][0]["attention"]["snoozed"]["description"]
@@ -1022,6 +1054,70 @@ mod tests {
         assert_eq!(
             filter_line(&view).as_deref(),
             Some("Filter: stale (3d+ waiting) · 0 hidden")
+        );
+    }
+
+    #[test]
+    fn the_review_queue_shows_size_bands_and_can_list_the_smallest_first() {
+        let sized = |number, lines| {
+            let mut pr = row(number, Category::Todo);
+            pr.note = "🔵 needs your review".into();
+            pr.size = Some(ChangeSize {
+                additions: lines,
+                deletions: 0,
+                changed_files: 1,
+            });
+            pr
+        };
+        let fetch = || fetch_of(vec![sized(1, 900), row(2, Category::Todo), sized(3, 20)]);
+        let mut view = build(
+            fetch(),
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::Review,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters::default(),
+            Utc::now(),
+        );
+        assert_eq!(note_for(&view, 0).text, "needs your review · Large");
+        assert_eq!(note_for(&view, 2).text, "needs your review · Small");
+        let order = |view: &BoardView| -> Vec<u64> {
+            view.layout(false)
+                .iter()
+                .filter_map(|item| match item {
+                    LayoutItem::Row(ix) => Some(view.rows[*ix].number),
+                    LayoutItem::Header { .. } => None,
+                })
+                .collect()
+        };
+        assert_eq!(order(&view), [1, 2, 3]);
+        view.sort = Sort::Smallest;
+        assert_eq!(order(&view), [3, 1, 2]);
+        assert_eq!(board_json(&view)["sort"], "smallest");
+        let text = table(&view, 120, Paint::new(false), false);
+        assert!(
+            text.lines().next().unwrap().ends_with(" · smallest first"),
+            "{text}"
+        );
+        assert!(markdown(&view, false).contains("| needs your review · Small |"));
+
+        // My PRs keep the band in JSON only.
+        let mut mine = sized(4, 20);
+        mine.category = Category::Await;
+        mine.note = "🟡 waiting on bob".into();
+        let view = build(
+            fetch_of(vec![mine]),
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::Authored,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters::default(),
+            Utc::now(),
+        );
+        assert_eq!(note_for(&view, 0).text, "waiting on bob");
+        assert_eq!(
+            board_json(&view)["sections"][0]["prs"][0]["size"]["band"],
+            "small"
         );
     }
 

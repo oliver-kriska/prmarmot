@@ -8,7 +8,7 @@
 _prmarmot_cli() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     local command="" action="" flagged="" word words i
-    local value_flags=" --repo -f --format --pages --interval --events --pr --until --timeout --agent --dir "
+    local value_flags=" --repo -f --format --pages --sort --interval --events --pr --until --timeout --agent --dir "
 
     # The command and its first word, skipping flag values
     # (`--flag value`, or `--flag = value` once bash splits at "=").
@@ -62,6 +62,10 @@ _prmarmot_cli() {
             COMPREPLY=($(compgen -W "1 2 3 4 5" -- "$cur"))
             return
             ;;
+        --sort)
+            COMPREPLY=($(compgen -W "wait smallest" -- "$cur"))
+            return
+            ;;
         --timeout)
             COMPREPLY=($(compgen -W "90s 5m 30m 1h 2h" -- "$cur"))
             return
@@ -95,7 +99,7 @@ _prmarmot_cli() {
             words="$view --authored --changed --stale --pages"
             ;;
         review | reviews)
-            words="$view --changed --stale --pages"
+            words="$view --changed --stale --sort --pages"
             ;;
         watch)
             # A view word only right after `watch`.

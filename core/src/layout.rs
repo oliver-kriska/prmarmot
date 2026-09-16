@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use crate::board::{BoardRow, Category, Mode, ReviewState};
+use crate::size::ChangeSize;
 
 /// Which band a header introduces. Stack sub-headers sit inside a band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,18 @@ impl SectionKind {
     }
 }
 
+/// How rows are ordered inside a section. Section order never changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Where a section is about getting picked up, the longest wait first.
+    #[default]
+    Wait,
+    /// Review queue only: Requested from you and Available to review list the
+    /// smallest size band first, then fewer changed lines, then the longest
+    /// wait; rows without a size follow. Other sections sort as for `Wait`.
+    Smallest,
+}
+
 /// One line of a board view: a header, or a PR as an index into the input rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutItem {
@@ -50,14 +63,16 @@ pub enum LayoutItem {
 /// Lay out `rows` for `mode`. Snoozed rows (by PR id) move to a trailing
 /// Snoozed group whose members are listed but only emitted as rows when
 /// `show_snoozed` is set. Requested from you, Available to review, and
-/// Awaiting review (In progress) list the longest pickup wait first; every
-/// other order within a section is the incoming one.
+/// Awaiting review (In progress) list the longest pickup wait first, unless
+/// `sort` says otherwise; every other order within a section is the incoming
+/// one.
 pub fn layout<'a>(
     rows: &'a [BoardRow],
     mode: Mode,
     all_repos: bool,
     snoozed: &HashSet<String>,
     show_snoozed: bool,
+    sort: Sort,
 ) -> Vec<LayoutItem> {
     let mut display = Vec::with_capacity(rows.len() + 4);
     let mut order: Vec<usize> = (0..rows.len()).collect();
@@ -87,7 +102,18 @@ pub fn layout<'a>(
             _ => false,
         };
         let wait = row.waiting_since.as_deref().filter(|_| picked_up_by_wait);
-        (section, !approved_action, wait.is_none(), wait)
+        let by_size = sort == Sort::Smallest
+            && mode == Mode::Review
+            && matches!(row.category, Category::Todo | Category::Available);
+        // Without the size sort every row ties here; with it, rows without a
+        // size go last.
+        let size = row.size.filter(|_| by_size);
+        let size = (
+            by_size && size.is_none(),
+            size.map(ChangeSize::band),
+            size.map(ChangeSize::lines),
+        );
+        (section, !approved_action, size, wait.is_none(), wait)
     };
     order.sort_by(|&a, &b| key(&rows[a]).cmp(&key(&rows[b])));
     let mut i = 0;
@@ -252,6 +278,7 @@ mod tests {
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
+            size: None,
             note: String::new(),
         }
     }
@@ -298,7 +325,14 @@ mod tests {
             approved_action,
             approved_await,
         ];
-        let items = layout(&rows, Mode::Authored, false, &HashSet::new(), false);
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
         assert_eq!(
             outline(&rows, &items),
             [
@@ -321,7 +355,15 @@ mod tests {
             }
             other => panic!("expected a header, got {other:?}"),
         }
-        assert!(layout(&[], Mode::Authored, false, &HashSet::new(), true).is_empty());
+        assert!(layout(
+            &[],
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            true,
+            Sort::Wait
+        )
+        .is_empty());
     }
 
     fn waiting(mut pr: BoardRow, since: Option<&str>) -> BoardRow {
@@ -340,7 +382,14 @@ mod tests {
             row(6, Category::Done),
             row(7, Category::Done),
         ];
-        let items = layout(&rows, Mode::Review, false, &HashSet::new(), false);
+        let items = layout(
+            &rows,
+            Mode::Review,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
         assert_eq!(
             outline(&rows, &items),
             [
@@ -375,7 +424,14 @@ mod tests {
                 Some("2026-09-05T09:00:00Z"),
             ),
         ];
-        let items = layout(&rows, Mode::Authored, false, &HashSet::new(), false);
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
         assert_eq!(
             outline(&rows, &items),
             [
@@ -393,13 +449,103 @@ mod tests {
     }
 
     #[test]
+    fn smallest_first_orders_the_pickup_sections_by_size_then_wait() {
+        let sized = |pr: BoardRow, lines: u64, files: u64| BoardRow {
+            size: Some(ChangeSize {
+                additions: lines,
+                deletions: 0,
+                changed_files: files,
+            }),
+            ..pr
+        };
+        let rows = vec![
+            sized(row(1, Category::Todo), 500, 2),
+            row(2, Category::Todo),
+            sized(row(3, Category::Todo), 90, 40),
+            sized(row(4, Category::Todo), 30, 1),
+            sized(
+                waiting(row(5, Category::Todo), Some("2026-09-03T10:00:00Z")),
+                150,
+                2,
+            ),
+            sized(
+                waiting(row(6, Category::Todo), Some("2026-09-01T10:00:00Z")),
+                150,
+                2,
+            ),
+            sized(row(7, Category::Todo), 120, 3),
+            sized(row(8, Category::Available), 800, 3),
+            sized(row(9, Category::Available), 10, 1),
+            sized(row(10, Category::Done), 800, 3),
+            sized(row(11, Category::Done), 10, 1),
+        ];
+        let items = layout(
+            &rows,
+            Mode::Review,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Smallest,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Requested from you (7)",
+                "4",
+                "7",
+                "6",
+                "5",
+                "3",
+                "1",
+                "2",
+                "Available to review · no reviewer requested (2)",
+                "9",
+                "8",
+                "Reviewed (2)",
+                "10",
+                "11"
+            ]
+        );
+
+        // Your PRs keep the wait order.
+        let rows = vec![
+            sized(
+                waiting(row(1, Category::Await), Some("2026-09-03T10:00:00Z")),
+                900,
+                2,
+            ),
+            sized(
+                waiting(row(2, Category::Await), Some("2026-09-01T10:00:00Z")),
+                5,
+                2,
+            ),
+        ];
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Smallest,
+        );
+        assert_eq!(outline(&rows, &items), ["Awaiting review (2)", "2", "1"]);
+    }
+
+    #[test]
     fn review_sections_and_all_repository_labels() {
         let rows = vec![
             row(1, Category::Done),
             row(2, Category::Available),
             row(3, Category::Todo),
         ];
-        let items = layout(&rows, Mode::Review, true, &HashSet::new(), false);
+        let items = layout(
+            &rows,
+            Mode::Review,
+            true,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
         assert_eq!(
             outline(&rows, &items),
             [
@@ -425,7 +571,14 @@ mod tests {
             stacked(row(11, Category::Action), "acme/widgets", 9, 3, 1),
             stacked(row(30, Category::Action), "acme/gears", 9, 1, 1),
         ];
-        let items = layout(&rows, Mode::Authored, true, &HashSet::new(), false);
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            true,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
         assert_eq!(
             outline(&rows, &items),
             [
@@ -448,7 +601,7 @@ mod tests {
     fn snoozed_rows_trail_in_their_own_group_listed_even_when_collapsed() {
         let rows = vec![row(1, Category::Action), row(2, Category::Await)];
         let snoozed = HashSet::from(["PR_1".to_string()]);
-        let collapsed = layout(&rows, Mode::Authored, false, &snoozed, false);
+        let collapsed = layout(&rows, Mode::Authored, false, &snoozed, false, Sort::Wait);
         assert_eq!(
             outline(&rows, &collapsed),
             ["Awaiting review (1)", "2", "Snoozed (1)"]
@@ -460,7 +613,7 @@ mod tests {
             }
             other => panic!("expected the Snoozed header, got {other:?}"),
         }
-        let shown = layout(&rows, Mode::Authored, false, &snoozed, true);
+        let shown = layout(&rows, Mode::Authored, false, &snoozed, true, Sort::Wait);
         assert_eq!(
             outline(&rows, &shown),
             ["Awaiting review (1)", "2", "Snoozed (1)", "1"]

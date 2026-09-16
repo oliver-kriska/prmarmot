@@ -63,6 +63,10 @@ prmarmot-cli review --all-repos --json         # PRs waiting for the user's revi
   review), null when it isn't waiting (drafts, already reviewed). `stale` is
   true once it has waited `filters.stale_after_days` (default 3) or longer.
   Sections that wait on a reviewer list the longest wait first.
+- **`size`:** `band` (`small`: at most 100 changed lines and 10 files;
+  `large`: more than 400 lines or 30 files; otherwise `medium`),
+  `additions`, `deletions`, and `changed_files`. It is null when GitHub
+  didn't report the counts. Don't turn a band into a time estimate.
 - **`blockers[]`:** typed as `merge_conflict`, `ci_failing`,
   `changes_requested`, `unresolved_comments` (with `count`), or `no_reviewers`
   (with `suggested`).
@@ -88,6 +92,10 @@ prmarmot-cli review --all-repos --json |
 prmarmot-cli review --all-repos --stale --json |
   jq -r '.sections[] | select(.key == "todo" or .key == "available") | .prs[] | "\(.repo)#\(.number) waiting since \(.waiting_since)  \(.url)"'
 
+# Requested and available PRs, smallest change first
+prmarmot-cli review --all-repos --sort smallest --json |
+  jq -r '.sections[] | select(.key == "todo" or .key == "available") | .prs[] | "\(.repo)#\(.number) \(.size.band // "unknown")  \(.url)"'
+
 # What changed since the user last looked in PR Marmot
 prmarmot-cli mine --all-repos --changed --json |
   jq -r '.sections[].prs[] | "\(.repo)#\(.number): \(.attention.changes | join("; "))"'
@@ -97,6 +105,9 @@ Other flags:
 - `--watched`: only PRs the user watches in the app.
 - `--stale`: only PRs that have waited `stale_after_days` or longer for a
   reviewer. Good for "what's been sitting too long?".
+- `--sort smallest` (`review` only): list requested and available PRs by
+  size band, then changed lines, then longest wait. The default is
+  `--sort wait`. The envelope's `sort` says which order was used.
 - `--pages N` (1–5): load more results. Use it only when the output says
   `more_pages_available: true`.
 - `--format markdown`: a ready-to-paste report with linked PR tables, useful

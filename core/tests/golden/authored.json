@@ -20,7 +20,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": "2026-07-24T08:00:00Z"
+    "waitingSince": "2026-07-24T08:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 114,
@@ -43,7 +44,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 112,
@@ -66,7 +68,8 @@
       }
     ],
     "unresolved": 2,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 108,
@@ -84,7 +87,8 @@
     "requested": [],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": "2026-07-21T11:00:00Z"
+    "waitingSince": "2026-07-21T11:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 105,
@@ -107,7 +111,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": "large"
   },
   {
     "number": 104,
@@ -127,7 +132,8 @@
     ],
     "reviews": [],
     "unresolved": 3,
-    "waitingSince": "2026-07-20T10:30:00Z"
+    "waitingSince": "2026-07-20T10:30:00Z",
+    "sizeBand": "large"
   },
   {
     "number": 103,
@@ -145,7 +151,8 @@
     "requested": [],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": "2026-07-22T09:00:00Z"
+    "waitingSince": "2026-07-22T09:00:00Z",
+    "sizeBand": "medium"
   },
   {
     "number": 118,
@@ -165,7 +172,8 @@
     ],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": "2026-07-26T08:00:00Z"
+    "waitingSince": "2026-07-26T08:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 117,
@@ -185,7 +193,8 @@
     ],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": "2026-07-25T09:00:00Z"
+    "waitingSince": "2026-07-25T09:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 116,
@@ -208,7 +217,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 113,
@@ -231,7 +241,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 111,
@@ -256,7 +267,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 110,
@@ -279,7 +291,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 109,
@@ -306,7 +319,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 102,
@@ -327,7 +341,8 @@
     ],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": "2026-07-20T12:00:00Z"
+    "waitingSince": "2026-07-20T12:00:00Z",
+    "sizeBand": "medium"
   },
   {
     "number": 101,
@@ -350,7 +365,8 @@
       }
     ],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": "small"
   },
   {
     "number": 107,
@@ -368,7 +384,8 @@
     "requested": [],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 106,
@@ -386,6 +403,7 @@
     "requested": [],
     "reviews": [],
     "unresolved": 0,
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": "small"
   }
 ]

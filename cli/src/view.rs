@@ -11,7 +11,7 @@ use prmarmot_core::board::{
 };
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
-use prmarmot_core::layout::{layout, LayoutItem};
+use prmarmot_core::layout::{layout, LayoutItem, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_local::attention_state::AttentionState;
 use prmarmot_local::config::{self, FileConfig};
@@ -109,6 +109,9 @@ pub struct BoardView {
     /// All-repositories My PRs searched only your PRs (`--authored`); set by
     /// the caller from the `BoardConfig` it fetched with.
     pub authored_only: bool,
+    /// The order inside the review queue's pickup sections (`--sort`); set by
+    /// the caller.
+    pub sort: Sort,
 }
 
 impl BoardView {
@@ -132,6 +135,7 @@ impl BoardView {
             self.all_repos(),
             &self.snoozed_ids(),
             show_snoozed,
+            self.sort,
         )
     }
 }
@@ -198,6 +202,7 @@ pub fn build(
         attention_error: attention.storage_error.clone(),
         filters,
         authored_only: false,
+        sort: Sort::Wait,
     }
 }
 
@@ -269,6 +274,7 @@ pub mod tests {
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
+            size: None,
             note: "🟡 waiting on bob".into(),
         }
     }

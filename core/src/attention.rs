@@ -1087,6 +1087,7 @@ mod tests {
             blockers: Vec::new(),
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
+            size: None,
             note: String::new(),
         }
     }

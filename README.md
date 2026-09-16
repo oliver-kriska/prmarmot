@@ -248,6 +248,19 @@ require a restart; changes saved in Settings do not.
   review** list the longest wait first. When only a team was asked and nobody
   has reviewed, the Note says "team requested, nobody responded"; with nobody
   asked at all, your PR's Note says "no reviewers".
+- **Size band:** in the **Review queue**, the Note ends with how big the change
+  is: **Small** (at most 100 changed lines and at most 10 files), **Large**
+  (more than 400 lines or more than 30 files), or **Medium** otherwise. Changed
+  lines are additions plus deletions, as GitHub counts them, so lockfiles and
+  generated files count too. A PR whose counts GitHub didn't report shows no
+  band. Hover the Note or open Details for the line and file counts. The band
+  is never turned into a time estimate. The thresholds follow Google's
+  [small-change guidance](https://google.github.io/eng-practices/review/developer/small-cls.html)
+  and the SmartBear/Cisco finding that reviews catch less beyond 200–400 lines.
+  **Smallest first** (Review queue toolbar) lists **Requested from you** and
+  **Available to review** by band, then by changed lines, then longest wait;
+  PRs without a band come last, and other sections keep their order. It lasts
+  until you quit.
 - **Changes:** a blue row marker survives restarts until you actually select the
   PR; hover it to see what changed (new commits, CI, reviews, requests, threads).
   **Changed** (with the count of changed PRs matching the search) filters the
@@ -332,6 +345,7 @@ prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any reposit
 prmarmot-cli review --all-repos        # Review queue across repositories
 prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
 prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
+prmarmot-cli review --sort smallest    # small changes first, by the app's size band
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
@@ -345,7 +359,10 @@ list. `--watched` keeps only
 PRs you watch in the app. `--stale` keeps only PRs that have waited
 `stale_after_days` (default 3) or longer for a reviewer, by the app's
 **Pickup age** rule; table and Markdown Notes end with the wait
-(`· waiting 3d`, marked `(stale)`). `--snoozed` expands the Snoozed group, which is
+(`· waiting 3d`, marked `(stale)`). In `review`, Notes also end with the
+**Size band** (`· Small`), and `--sort smallest` lists the pickup sections the
+way **Smallest first** does (`--sort wait`, the default, lists the longest wait
+first). `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
 cap as **Load more**.
 
@@ -353,7 +370,8 @@ cap as **Load more**.
 piped. `--format markdown` gives one GitHub-flavored table per section with
 linked PRs. `--json` emits `prmarmot-cli/board@1`:
 
-- **Envelope:** `viewer`, `mode`, `scope`, `count`, `truncated`,
+- **Envelope:** `viewer`, `mode`, `scope`, `sort` (`wait` or `smallest`),
+  `count`, `truncated`,
   `more_pages_available`, `rate_limit`, and `sections`.
 - **Sections:** each has a stable `key` (`approved`, `action`, `await`, `todo`,
   `available`, `done`, `draft`, `snoozed`), a `label`, and its `prs` in display
@@ -363,7 +381,9 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   `unresolved_threads`, `labels`, `issue`, `stack`, typed `blockers`, and the
   plain-text `note`. `waiting_since` is the pickup age's start (null when the
   PR isn't waiting for a reviewer) and `stale` says whether it has waited
-  `filters.stale_after_days` or longer. It also has an `attention` object with
+  `filters.stale_after_days` or longer. `size` has `band` (`small`,
+  `medium`, `large`), `additions`, `deletions`, and `changed_files`, or is
+  null when GitHub didn't report the counts. It also has an `attention` object with
   `watched`, `snoozed`, `changed`, and `changes`.
 - **Reviews:** `reviews` has one standing review per other reviewer, and
   `my_review` is yours (`NONE` if you haven't reviewed). A standing review is
@@ -509,7 +529,10 @@ the rows already loaded.
 Pickup age comes from each PR's latest 10 review-request and ready-for-review
 timeline events, fetched in the same request (the review-queue refresh costs 8
 GraphQL points instead of 7; My PRs still costs 4). A request older than those
-10 events counts from when the PR opened.
+10 events counts from when the PR opened. The size band's `additions`,
+`deletions`, and `changedFiles` are plain fields and cost nothing; per-file
+data (to leave lockfiles or generated files out) would need a request per PR,
+so the band doesn't use it.
 
 Search and Details operate on the loaded snapshot and make no per-PR request.
 Reviewer, label, thread, and stack information is subject to the GraphQL

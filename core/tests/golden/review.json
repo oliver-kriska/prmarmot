@@ -14,7 +14,8 @@
     "myReview": "NONE",
     "unresolved": 0,
     "createdAt": "2026-07-18T09:00:00Z",
-    "waitingSince": "2026-07-18T12:00:00Z"
+    "waitingSince": "2026-07-18T12:00:00Z",
+    "sizeBand": "small"
   },
   {
     "number": 203,
@@ -31,7 +32,8 @@
     "myReview": "NONE",
     "unresolved": 1,
     "createdAt": "2026-07-20T09:00:00Z",
-    "waitingSince": "2026-07-20T09:30:00Z"
+    "waitingSince": "2026-07-20T09:30:00Z",
+    "sizeBand": "large"
   },
   {
     "number": 204,
@@ -48,7 +50,8 @@
     "myReview": "NONE",
     "unresolved": 0,
     "createdAt": "2026-07-20T10:00:00Z",
-    "waitingSince": "2026-07-21T08:00:00Z"
+    "waitingSince": "2026-07-21T08:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 209,
@@ -65,7 +68,8 @@
     "myReview": "DISMISSED",
     "unresolved": 0,
     "createdAt": "2026-07-24T08:00:00Z",
-    "waitingSince": "2026-07-24T08:00:00Z"
+    "waitingSince": "2026-07-24T08:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 211,
@@ -82,7 +86,8 @@
     "myReview": "NONE",
     "unresolved": 0,
     "createdAt": "2026-07-25T08:00:00Z",
-    "waitingSince": "2026-07-25T10:00:00Z"
+    "waitingSince": "2026-07-25T10:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 212,
@@ -99,7 +104,8 @@
     "myReview": "NONE",
     "unresolved": 0,
     "createdAt": "2026-07-26T08:00:00Z",
-    "waitingSince": "2026-07-26T08:00:00Z"
+    "waitingSince": "2026-07-26T08:00:00Z",
+    "sizeBand": null
   },
   {
     "number": 202,
@@ -116,7 +122,8 @@
     "myReview": "APPROVED",
     "unresolved": 0,
     "createdAt": "2026-07-19T09:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": "medium"
   },
   {
     "number": 206,
@@ -133,7 +140,8 @@
     "myReview": "CHANGES_REQUESTED",
     "unresolved": 1,
     "createdAt": "2026-07-21T10:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 207,
@@ -150,7 +158,8 @@
     "myReview": "CHANGES_REQUESTED",
     "unresolved": 1,
     "createdAt": "2026-07-22T09:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 208,
@@ -167,7 +176,8 @@
     "myReview": "APPROVED",
     "unresolved": 0,
     "createdAt": "2026-07-24T08:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 210,
@@ -184,7 +194,8 @@
     "myReview": "COMMENTED",
     "unresolved": 0,
     "createdAt": "2026-07-24T08:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   },
   {
     "number": 205,
@@ -201,6 +212,7 @@
     "myReview": "NONE",
     "unresolved": 0,
     "createdAt": "2026-07-21T09:00:00Z",
-    "waitingSince": null
+    "waitingSince": null,
+    "sizeBand": null
   }
 ]
