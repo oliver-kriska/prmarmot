@@ -92,6 +92,8 @@ historical release assets keep their old names.
 - [x] Watch a PR → notifications on Note *transitions* ("Ready for you — CI passed and Alice approved"), never on every refresh; quiet on first refresh and while you are looking at the row.
 - [x] Snooze / follow-up with automatic return when the condition is met.
 - [ ] Onboarding when `gh` is missing or not logged in: detect, explain, one-click copy of `gh auth login`, Retry.
+- [x] Click a label, author or repo to filter by it: `label:` / `author:` / `repo:` qualifiers in the search field, active qualifiers shown as removable chips (on main, unreleased).
+- [x] ⌘F (Ctrl+F on Linux) opens the search field, same as `/` (on main, unreleased).
 
 ## Phase 3 — Launch
 
@@ -122,10 +124,10 @@ reorder this list.
 | 1 | **Agent-authored PR lane** — detect bot/agent authors (`Bot` accounts + configurable patterns), own collapsed group, `--agent/--no-agent` CLI filter, "no human has looked yet" | core → app + CLI | S–M | The most-upvoted request in GitHub's community forum (1,834 👍); five named agents opened over 159,000 public PRs in August 2026; GitHub only folds agent PRs *into* `author:` with no exclude filter |
 | 2 | **Re-review delta anchored to your last review** — "3 commits, 4 files, 1 thread reopened since you approved" | core → both | M | GitHub shows only an unread dot; the reviewed commit is already in the query |
 | 3 | **Evidence behind the Note** — the failing check's name and run URL, who requested changes, which thread; same words in app, CLI, badge and notification | core → both | M | `gh run watch` log streaming has 76 👍; GitHub's merge-status panel is per-PR and still in preview |
-| 4 | **Wait time on the current turn** + `stale` filter + sort by wait; review queue "waiting 16 h, nobody has looked"; zero reviewers vs team-requested-none-responded | core → both | S / M | GitHub's reminders are Slack-only and org-scoped; industry data puts first pickup of agent PRs above 16 hours |
-| 5 | **Deterministic size band** Quick / Medium / Deep dive, "quick wins" sort; lockfile/generated discounts later | core → both | S / M | No AI, never minutes; GitHub has no per-row size signal |
+| 4 | **Built, on main (unreleased):** wait time on the current turn ("· 3d" after the Note, amber when stale), `is:stale` / `--stale` with `stale_after_days` (default 3), longest wait first inside a section, "team requested, nobody responded" vs "no reviewers" | core → both | S / M | GitHub's reminders are Slack-only and org-scoped; industry data puts first pickup of agent PRs above 16 hours |
+| 5 | **Built, on main (unreleased):** deterministic size band Small / Medium / Large from lines changed and files touched, "Smallest first" toggle / `review --sort smallest`; lockfile/generated discounts later | core → both | S / M | No AI, never minutes; GitHub has no per-row size signal |
 | 6 | **Ownership edge cases** — a conflicted teammate PR waits on its author; an outdated thread comes back to you; your reply clears your turn, the author's reply returns it; a re-run check that passed clears "fix CI" | core rules + golden tests | S each | GitHub has no ownership model at all |
-| 7 | **`prmarmot-cli watch --until ci-pass\|approved\|mergeable\|merged --timeout`** with outcome exit codes (0 met / 5 failed terminal / 6 timeout) | CLI | S | `gh pr wait` has 38 👍; agents hand-roll polling loops that burn the 5,000 req/h budget |
+| 7 | **Built, on main (unreleased):** `prmarmot-cli watch --until ci-pass\|approved\|mergeable\|merged --timeout` with outcome exit codes (0 met / 5 failed terminal / 6 timeout); a merge ends any wait as met | CLI | S | `gh pr wait` has 38 👍; agents hand-roll polling loops that burn the 5,000 req/h budget |
 | 8 | **Merge-queue state** ("in merge queue, position 2") — today a queued PR reads as "approved, press merge" | core → both | S | One GraphQL field; fixes a wrong Note |
 | 9 | **Multi-account** — two `gh` identities, one board, account badge per row | core → both | M | 981 👍 on GitHub Desktop and 354 👍 on the GitHub CLI, both open for years; cheap after the Phase 4 transport |
 | 10 | **Notification policy** — digest at times you pick, catch-up on launch, silence when nothing needs you, per-repo mute | app | M | Off by default; reuses the transition engine |
@@ -133,7 +135,7 @@ reorder this list.
 | 12 | **Stack ordering inside the queue** — which layer to open first, "ancestor unmerged" as a blocker | core → app | S | GitHub ships stack *creation*; ordering in a queue is still nobody's |
 | 13 | **`prmarmot-cli report --since`** standup Markdown (merged / opened / still blocked) | CLI | S | Nearly free on the existing formatter |
 | 14 | Up to **three saved views** (capped) | app | L | Reserve; only if Ideas votes demand it |
-| 15 | JSON Schema for the `board@1` output + shell completions | CLI | S | Hygiene, with a CLI release |
+| 15 | **Built, on main (unreleased):** JSON Schema for `board@1` and `event@1` (`cli/schema/`) + `prmarmot-cli completions bash\|zsh\|fish` | CLI | S | Hygiene, with a CLI release |
 
 **Not on the list, on purpose:** filtered lists and saved-view systems (GitHub does that, free); stack
 creation, rebasing, merging (GitHub, 2026-07-30); AI review, summaries or estimates (Copilot approves
