@@ -5102,10 +5102,23 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "prmarmot-core",
+ "prmarmot-local",
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
+]
+
+[[package]]
+name = "prmarmot-cli"
+version = "0.6.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "prmarmot-core",
+ "prmarmot-local",
+ "serde_json",
+ "unicode-width",
 ]
 
 [[package]]
@@ -5117,6 +5130,18 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "prmarmot-local"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 7.0.0",
+ "prmarmot-core",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

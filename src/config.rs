@@ -8,79 +8,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use prmarmot_core::board::BoardScope;
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-pub struct FileConfig {
-    /// Default repo (`owner/name`) when neither `--repo` nor `PRMARMOT_REPO` is set.
-    pub repo: Option<String>,
-    /// `all` or `repo`. Absent keeps old configs compatible: a saved repo is
-    /// specific, while a clean config defaults to all repositories.
-    pub scope: Option<String>,
-    /// Entries for the repo picker; the active repo is always included.
-    #[serde(default)]
-    pub repos: Vec<String>,
-    #[serde(default)]
-    pub pinned_repos: Vec<String>,
-    pub refresh_secs: Option<u64>,
-    /// `system` | `light` | `dark`.
-    pub theme: Option<String>,
-    /// `authored` | `review` — the view to open with.
-    pub view: Option<String>,
-    #[serde(default)]
-    pub default_reviewers: Vec<String>,
-    pub issue_link: Option<IssueLinkSection>,
-    pub window: Option<WindowSection>,
-    #[serde(default = "default_true")]
-    pub notifications: bool,
-    #[serde(default = "default_true")]
-    pub notification_sound: bool,
-    #[serde(default)]
-    pub notify_all_needs_action: bool,
-    #[serde(default = "default_true")]
-    pub dock_badge: bool,
-    /// Check GitHub's latest stable release on launch, at most once per day.
-    #[serde(default = "default_true")]
-    pub automatic_update_checks: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for FileConfig {
-    fn default() -> Self {
-        Self {
-            repo: None,
-            scope: None,
-            repos: Vec::new(),
-            pinned_repos: Vec::new(),
-            refresh_secs: None,
-            theme: None,
-            view: None,
-            default_reviewers: Vec::new(),
-            issue_link: None,
-            window: None,
-            notifications: true,
-            notification_sound: true,
-            notify_all_needs_action: false,
-            dock_badge: true,
-            automatic_update_checks: true,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WindowSection {
-    pub width: f32,
-    pub height: f32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct IssueLinkSection {
-    pub pattern: String,
-    pub url_template: String,
-}
+pub use prmarmot_local::config::{
+    config_path, load, normalized_pins, resolve_scope, FileConfig, MAX_PINNED_REPOS,
+};
 
 /// Editable values from the Settings dialog. `None` means an environment
 /// variable owns that field, so saving must leave its TOML value untouched.
@@ -161,16 +92,6 @@ fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> 
     }
     std::fs::write(path, doc.to_string())
         .map_err(|e| format!("could not save {}: {e}", path.display()))
-}
-
-pub fn config_path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("prmarmot")
-        .join("config.toml")
 }
 
 /// Copy legacy directories once, leaving the originals untouched. Stage the
@@ -269,22 +190,6 @@ pub fn update_paths() -> UpdatePaths {
     }
 }
 
-/// Missing file → defaults; unparseable file → defaults with a warning
-/// (a typo in the config must never make the app unlaunchable).
-pub fn load() -> FileConfig {
-    let path = config_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return FileConfig::default();
-    };
-    match toml::from_str(&text) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("prmarmot: ignoring invalid {}: {e}", path.display());
-            FileConfig::default()
-        }
-    }
-}
-
 /// Persist one top-level string key (repo/theme/view) back to the config
 /// file so a closed-and-reopened app comes back the same. `toml_edit` keeps
 /// the user's comments and formatting intact; failures are logged, never
@@ -295,22 +200,6 @@ pub fn persist_str(key: &str, value: &str) {
     });
 }
 
-pub const MAX_PINNED_REPOS: usize = 12;
-
-pub fn normalized_pins(repos: &[String]) -> Vec<String> {
-    let mut pins: Vec<String> = Vec::new();
-    for repo in repos {
-        let repo = repo.trim();
-        if !repo.is_empty() && !pins.iter().any(|pin| pin.eq_ignore_ascii_case(repo)) {
-            pins.push(repo.to_owned());
-            if pins.len() == MAX_PINNED_REPOS {
-                break;
-            }
-        }
-    }
-    pins
-}
-
 pub fn persist_pins(pins: &[String]) {
     persist(|doc| {
         doc["pinned_repos"] = toml_edit::value(
@@ -319,43 +208,6 @@ pub fn persist_pins(pins: &[String]) {
                 .collect::<toml_edit::Array>(),
         );
     });
-}
-
-pub fn resolve_scope(
-    cli: Option<BoardScope>,
-    env_repo: Option<String>,
-    env_scope: Option<&str>,
-    file: &FileConfig,
-) -> BoardScope {
-    if let Some(scope) = cli {
-        return scope;
-    }
-    if let Some(repo) = env_repo.filter(|repo| !repo.trim().is_empty()) {
-        return BoardScope::Repository(repo);
-    }
-    if env_scope.is_some_and(|scope| scope.eq_ignore_ascii_case("all")) {
-        return BoardScope::AllRepositories;
-    }
-    if env_scope.is_some_and(|scope| scope.eq_ignore_ascii_case("repo")) {
-        if let Some(repo) = file.repo.clone().filter(|repo| !repo.trim().is_empty()) {
-            return BoardScope::Repository(repo);
-        }
-    }
-    match file.scope.as_deref() {
-        Some(scope) if scope.eq_ignore_ascii_case("all") => BoardScope::AllRepositories,
-        Some(scope) if scope.eq_ignore_ascii_case("repo") => file
-            .repo
-            .clone()
-            .filter(|repo| !repo.trim().is_empty())
-            .map(BoardScope::Repository)
-            .unwrap_or(BoardScope::AllRepositories),
-        _ => file
-            .repo
-            .clone()
-            .filter(|repo| !repo.trim().is_empty())
-            .map(BoardScope::Repository)
-            .unwrap_or(BoardScope::AllRepositories),
-    }
 }
 
 pub fn persist_scope(scope: &BoardScope) {
@@ -505,38 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn scope_precedence_and_clean_default_are_explicit() {
-        let clean = FileConfig::default();
-        assert_eq!(
-            resolve_scope(None, None, None, &clean),
-            BoardScope::AllRepositories
-        );
-        let old: FileConfig = toml::from_str("repo = 'acme/legacy'").unwrap();
-        assert_eq!(
-            resolve_scope(None, None, None, &old),
-            BoardScope::Repository("acme/legacy".into())
-        );
-        let all: FileConfig = toml::from_str("scope = 'all'\nrepo = 'acme/remembered'").unwrap();
-        assert_eq!(
-            resolve_scope(None, None, None, &all),
-            BoardScope::AllRepositories
-        );
-        assert_eq!(
-            resolve_scope(None, Some("env/repo".into()), Some("all"), &all),
-            BoardScope::Repository("env/repo".into())
-        );
-        assert_eq!(
-            resolve_scope(
-                Some(BoardScope::AllRepositories),
-                Some("env/repo".into()),
-                Some("repo"),
-                &old
-            ),
-            BoardScope::AllRepositories
-        );
-    }
-
-    #[test]
     fn persisted_all_scope_keeps_the_last_repository_for_switch_back() {
         let mut doc = "repo = 'acme/remembered'\n"
             .parse::<toml_edit::DocumentMut>()
@@ -557,7 +377,8 @@ mod tests {
         let path = temp_config("preserve");
         std::fs::write(
             &path,
-            "# mine\nrepo = 'acme/api'\nrefresh_secs = 99\ntheme = 'dark'\n",
+            "# mine\nrepo = 'acme/api'\nrefresh_secs = 99\ntheme = 'dark'\n\n\
+             [repo_reviewers]\n\"acme\" = [\"olga\"]\n",
         )
         .unwrap();
         save_settings_at(
@@ -576,6 +397,10 @@ mod tests {
         assert!(saved.contains("repo = 'acme/api'"));
         assert!(saved.contains("refresh_secs = 99"));
         assert!(saved.contains("theme = \"light\""));
+        // New top-level keys must not land inside a trailing table.
+        let parsed: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(parsed.default_reviewers, ["alice"]);
+        assert_eq!(parsed.repo_reviewers["acme"], ["olga"]);
         let _ = std::fs::remove_file(path);
     }
 

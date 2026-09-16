@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
 use gpui::{Context, Subscription};
-use prmarmot_core::attention::{ObservationKind, SnapshotNamespace, MAX_SNAPSHOTS};
+use prmarmot_core::attention::{
+    semantic_needs_action, semantic_notice, ObservationKind, SnapshotNamespace, MAX_SNAPSHOTS,
+};
 use prmarmot_core::board::{
-    fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig, BoardFetch,
-    BoardPagination, BoardRow, BoardScope, Mode, TrackedPr, TrackedPrStatus,
+    carry_forward_conflicts, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
+    BoardFetch, BoardPagination, BoardRow, BoardScope, Mode, TrackedPr, TrackedPrStatus,
 };
 use prmarmot_core::github::gh_cli::current_login;
 use prmarmot_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
@@ -542,7 +544,18 @@ impl AppState {
                 }
                 state.syncing = false;
                 match fetched {
-                    Ok(board) => {
+                    Ok(mut board) => {
+                        state.keep_known_conflicts(&mut board.rows, mode);
+                        for tracked in &mut board.tracked {
+                            if let Some(row) = tracked.row.as_mut() {
+                                // Tracked rows read as in Involving me: your PRs as
+                                // authored, anyone else's as another author's.
+                                state.keep_known_conflicts(
+                                    std::slice::from_mut(row),
+                                    Mode::Authored,
+                                );
+                            }
+                        }
                         state.tracked_loaded = board.tracked.len();
                         state.process_tracked(&board.tracked, cx);
                         let mut observed_rows = board.rows.clone();
@@ -656,7 +669,8 @@ impl AppState {
                 }
                 state.syncing = false;
                 match fetched {
-                    Ok(board) => {
+                    Ok(mut board) => {
+                        state.keep_known_conflicts(&mut board.rows, mode);
                         state.process_accepted_rows(&board.rows, cx);
                         state.rows = board.rows;
                         state.rate = board.rate;
@@ -682,6 +696,23 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// GitHub reports mergeability as UNKNOWN while it recomputes (after
+    /// every base-branch push); keep the conflict it reported last time so the
+    /// row doesn't flicker and the attention state doesn't record a phantom
+    /// "changed, then changed back".
+    fn keep_known_conflicts(&self, rows: &mut [BoardRow], mode: Mode) {
+        let (Some(attention), Some(me)) = (self.attention.as_ref(), self.me.as_deref()) else {
+            return;
+        };
+        carry_forward_conflicts(
+            rows,
+            |id| attention.snapshots.last_conflict(id),
+            mode,
+            me,
+            &self.config,
+        );
     }
 
     fn process_tracked(&mut self, tracked: &[TrackedPr], cx: &mut Context<Self>) {
@@ -811,8 +842,8 @@ impl AppState {
             {
                 continue;
             }
-            if let Some((title, body)) = semantic_notification(previous.as_ref(), row) {
-                notices.push((title, body, row.id.clone()));
+            if let Some(notice) = semantic_notice(previous.as_ref(), row) {
+                notices.push((notice.title, notice.body, row.id.clone()));
             }
         }
         for (title, body, pr_id) in notices {
@@ -966,64 +997,6 @@ fn loaded_badge_sources<'a>(
     sources
 }
 
-fn semantic_needs_action(observation: &prmarmot_core::attention::Observation) -> bool {
-    let semantic = &observation.semantic;
-    semantic.conflict
-        || semantic.ci == prmarmot_core::attention::ObservedCi::Fail
-        || semantic.review_decision.as_deref() == Some("CHANGES_REQUESTED")
-        || semantic.unresolved > 0
-}
-
-fn semantic_notification(
-    previous: Option<&prmarmot_core::attention::Observation>,
-    row: &BoardRow,
-) -> Option<(String, String)> {
-    let old = &previous?.semantic;
-    if !old.conflict && row.conflict {
-        return Some((
-            "Merge conflict".into(),
-            format!(
-                "{} #{} now conflicts with its base branch",
-                row.repo, row.number
-            ),
-        ));
-    }
-    if old.review_decision.as_deref() != Some("CHANGES_REQUESTED")
-        && row.review_decision.as_deref() == Some("CHANGES_REQUESTED")
-    {
-        return Some((
-            "Needs you — changes requested".into(),
-            format!("{} #{} · {}", row.repo, row.number, row.title),
-        ));
-    }
-    if old.head_oid != row.head_oid
-        && row.reviewed_oid.is_some()
-        && row.reviewed_oid != row.head_oid
-    {
-        return Some((
-            "Review again — new commits".into(),
-            format!("{} #{} changed since your review", row.repo, row.number),
-        ));
-    }
-    if old.ci != prmarmot_core::attention::ObservedCi::Pass
-        && row.ci == prmarmot_core::board::Ci::Pass
-    {
-        let approval = if row.review_decision.as_deref() == Some("APPROVED") {
-            " and is approved"
-        } else {
-            ""
-        };
-        return Some((
-            "Ready for you — CI passed".into(),
-            format!("{} #{} passed CI{approval}", row.repo, row.number),
-        ));
-    }
-    Some((
-        "Pull request changed".into(),
-        format!("{} #{} · {}", row.repo, row.number, row.title),
-    ))
-}
-
 /// "just now" / "3m ago" / "2h 15m ago" — static text, recomputed on notify.
 pub fn relative(since: DateTime<Local>) -> String {
     let secs = (Local::now() - since).num_seconds().max(0);
@@ -1034,17 +1007,8 @@ pub fn relative(since: DateTime<Local>) -> String {
     }
 }
 
-/// Refresh interval: `PRMARMOT_REFRESH_SECS` > config file > default, always
-/// clamped to the hard floor.
 pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
-    use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
-    let secs = std::env::var("PRMARMOT_REFRESH_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .or(config_secs)
-        .unwrap_or(DEFAULT_REFRESH_SECS)
-        .max(MIN_REFRESH_SECS);
-    Duration::from_secs(secs)
+    prmarmot_local::config::refresh_interval(config_secs)
 }
 
 #[cfg(test)]

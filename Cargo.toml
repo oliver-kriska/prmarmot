@@ -1,5 +1,5 @@
 [workspace]
-members = ["core"]
+members = ["core", "local", "cli"]
 
 [package]
 name = "prmarmot"
@@ -13,6 +13,7 @@ homepage = "https://github.com/oliver-kriska/prmarmot"
 
 [dependencies]
 prmarmot-core = { path = "core" }
+prmarmot-local = { path = "local" }
 # GPUI Kit 0.6 uses the published gpui-pre runtime and platform split.
 gpui = { package = "gpui-pre", version = "=0.3.5" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.5", features = ["font-kit", "wayland", "x11"] }

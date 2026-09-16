@@ -1,0 +1,22 @@
+[package]
+name = "prmarmot-cli"
+# Kept equal to the app's version (enforced by a unit test in src/main.rs).
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "PR Marmot's My PRs and Review queue views for terminals and coding agents"
+homepage = "https://github.com/oliver-kriska/prmarmot"
+repository = "https://github.com/oliver-kriska/prmarmot"
+
+[[bin]]
+name = "prmarmot-cli"
+path = "src/main.rs"
+
+[dependencies]
+prmarmot-core = { path = "../core" }
+prmarmot-local = { path = "../local" }
+chrono = "0.4"
+libc = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+unicode-width = "0.2"

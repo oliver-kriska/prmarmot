@@ -1,0 +1,148 @@
+---
+name: prmarmot-cli
+description: Read the user's GitHub pull-request dashboard with `prmarmot-cli` — their own PRs and what blocks them (CI, conflicts, reviews, unresolved comments, missing reviewers), their review queue, what changed since they last looked, and a blocking watch that waits for a PR event such as CI passing or a review arriving. Use it whenever the user asks "what's the status of my PRs", "what needs my attention", "what should I review", "anything waiting on me", "did CI pass", "tell me when this PR is approved/merged", or wants a PR summary for standup or a report. Prefer it over hand-written `gh pr list` or `gh api` loops, because it applies PR Marmot's categorization and costs one GraphQL request per view. Read-only: it cannot comment, approve, merge, watch, or snooze.
+---
+
+# prmarmot-cli
+
+`prmarmot-cli` prints PR Marmot's two views, **My PRs** and the **Review queue**.
+It uses the same GitHub query, categories, Notes, and sections as the desktop
+app. Authentication comes from `gh`.
+
+## Before the first call
+
+Run `prmarmot-cli --version`. If the command is missing, tell the user. The PR
+Marmot app installers (Homebrew cask, `install.sh`, `make install`) put it on
+`PATH`; without the app it installs with
+`cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli`.
+
+This skill is built into the binary. If a flag here is rejected, run
+`prmarmot-cli skill` to read the copy that matches the installed version.
+`prmarmot-cli skill install --force` refreshes the user-level copy, but ask the
+user before running it.
+
+## Snapshot: what is the state right now
+
+Always pass `--json`; its shape is stable (`prmarmot-cli/board@1`). Pass a scope
+explicitly, because the default comes from the user's config:
+
+```sh
+prmarmot-cli mine   --repo owner/name --json   # PRs the user authored in one repo
+prmarmot-cli mine   --all-repos --authored --json   # PRs the user authored, any repo
+prmarmot-cli mine   --all-repos --json         # every open PR involving the user
+prmarmot-cli review --all-repos --json         # PRs waiting for the user's review
+```
+
+**Structure:**
+- The top level has `sections[]`, in the app's display order.
+- Each section has a stable `key`, a `label`, and `prs[]`.
+- Section keys:
+
+| Key | Meaning |
+| --- | --- |
+| `approved` | the user's PRs that are approved and waiting to merge |
+| `action` | the user's PRs blocked on the user; see `blockers` |
+| `await` | the user's PRs waiting on others |
+| `todo` | review requested from the user |
+| `available` | nobody requested yet |
+| `done` | already reviewed |
+| `draft` | drafts |
+| `snoozed` | snoozed in the app; mention them only if asked |
+
+**Each PR has:**
+- **Identity:** `repo`, `number`, `url`, `title`, `author`.
+- **State:** `ci` (`pass`, `fail`, `running`, `none`), `conflict`,
+  `review_decision`, `requested_reviewers`, `reviews[]`, `unresolved_threads`,
+  `labels`, `issue`, `stack`.
+- **`note`:** a one-line human summary.
+- **`blockers[]`:** typed as `merge_conflict`, `ci_failing`,
+  `changes_requested`, `unresolved_comments` (with `count`), or `no_reviewers`
+  (with `suggested`).
+- **`attention`:** `watched`, `snoozed`, `changed`, and `changes[]`, the
+  phrases for what changed.
+
+Useful filters:
+
+```sh
+# What needs the user's action
+prmarmot-cli mine --all-repos --json |
+  jq -r '.sections[] | select(.key == "action") | .prs[] | "\(.repo)#\(.number)  \(.note)  \(.url)"'
+
+# Reviews to do
+prmarmot-cli review --all-repos --json |
+  jq -r '.sections[] | select(.key == "todo") | .prs[] | "\(.repo)#\(.number) by \(.author)  \(.url)"'
+
+# What changed since the user last looked in PR Marmot
+prmarmot-cli mine --all-repos --changed --json |
+  jq -r '.sections[].prs[] | "\(.repo)#\(.number): \(.attention.changes | join("; "))"'
+```
+
+Other flags:
+- `--watched`: only PRs the user watches in the app.
+- `--pages N` (1–5): load more results. Use it only when the output says
+  `more_pages_available: true`.
+- `--format markdown`: a ready-to-paste report with linked PR tables, useful
+  when the user wants the dashboard itself rather than an answer.
+
+## Watch: wait for something to happen
+
+`watch` blocks. It prints one JSON line per event and exits after `--events N`
+events. Run it as a background task, not a foreground command that can time
+out:
+
+```sh
+# Wait for the next change to one of the user's PRs in a repo (checks every 60 s)
+prmarmot-cli watch mine --repo owner/name --json --interval 60 --events 1
+
+# Follow one PR (any repo, any author) until it merges or closes
+prmarmot-cli watch --pr owner/name#123 --json --interval 60
+```
+
+The first line is `{"type":"ready",...}`. After that, each line is one of:
+- `changed`: `kind` is `merge_conflict`, `changes_requested`, `review_again`,
+  `ci_passed`, or `changed`. The line also has `title`, `body`, `changes[]`,
+  and the full `pr`.
+- `added`: a PR entered the view.
+- `removed`: a PR left the view. `status` is `merged`, `closed`, `open`,
+  `inaccessible`, or `unknown`. With `--pr` this is the last line: the watch
+  exits 0 once the PR merges, closes, or becomes inaccessible (at once if it
+  already has).
+- `rate_limited` or `error`: informational. The watch retries by itself; these
+  don't count toward `--events`.
+
+To wait for one specific PR, use `--pr owner/name#123` (a PR URL works too)
+rather than filtering a view. Add `--events 1` to return on its first change
+instead of when it closes. `--pr` can't be combined with `--repo`,
+`--all-repos`, `--watched`, or `--authored`; a PR or repository that doesn't
+exist or isn't visible to `gh` exits 1 before the first event.
+
+Don't pipe the stream into `head` or a read loop: the pipe only closes when the
+next event arrives.
+
+Keep polling cheap:
+- `--interval` can't go below 30 seconds, and the default is five minutes.
+- Never loop snapshot commands to poll; use `watch`.
+
+## Exit codes
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `0` | ok | continue |
+| `1` | GitHub or network error, or `--repo` not found / not accessible | read stderr; fix the repo name, or retry once later |
+| `2` | bad arguments | read `prmarmot-cli --help` |
+| `3` | `gh` missing or not signed in | ask the user to run `gh auth login`; never handle credentials yourself |
+| `4` | rate limited | stop and report; don't retry in a loop |
+
+Errors go to stderr, and stdout carries only data.
+
+## Limits to respect
+
+- **Read-only.** To comment, review, or merge, use `gh`, and only when the user
+  asks. Watch, snooze, and "mark as seen" happen in the desktop app. Never claim
+  you changed them.
+- **`attention.changed`** means changed since the user last selected the PR in
+  PR Marmot. The CLI never clears it.
+- **Watch events** are measured from one check to the next, starting when the
+  watch starts.
+- **Truncation.** If `truncated` or `more_pages_available` is true, the list is
+  incomplete. Say so rather than presenting it as everything.

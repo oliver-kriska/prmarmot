@@ -19,7 +19,7 @@ use std::sync::Arc;
 use gpui::{
     px, size, App, AppContext, KeyBinding, Menu, MenuItem, WindowBounds, WindowKind, WindowOptions,
 };
-use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule, Mode};
+use prmarmot_core::board::{BoardConfig, BoardScope, Mode};
 use prmarmot_core::github::gh_cli::GhCliTransport;
 
 use crate::app::RootView;
@@ -62,7 +62,8 @@ in ~/.config/prmarmot/config.toml. A clean config opens All repositories.
 Authentication is checked inside the window; setup failures are retryable.
 
 Config file (~/.config/prmarmot/config.toml): repo, repos = [..] for the
-repo picker, refresh_secs, theme, view, default_reviewers, [issue_link],
+repo picker, refresh_secs, theme, view, default_reviewers, [repo_reviewers],
+[issue_link],
 [window], automatic_update_checks. Repo/theme/view/window-size changes made
 in-app are saved back.
 Env vars override the file:
@@ -72,7 +73,8 @@ Env vars override the file:
   PRMARMOT_THEME               system | light | dark (default system; `t` cycles)
   PRMARMOT_ISSUE_PATTERN       e.g. PROJ-[0-9]+
   PRMARMOT_ISSUE_URL_TEMPLATE  e.g. https://tracker.example.com/issues/{id}
-  PRMARMOT_DEFAULT_REVIEWERS   comma-separated logins for the no-reviewer note";
+  PRMARMOT_DEFAULT_REVIEWERS   comma-separated logins for the no-reviewer note
+                               (replaces default_reviewers; [repo_reviewers] still apply)";
 
 fn parse_args() -> Result<(Option<BoardScope>, Option<Mode>), String> {
     parse_args_from(std::env::args().skip(1))
@@ -101,31 +103,9 @@ fn parse_args_from(
 }
 
 fn board_config(file: &config::FileConfig) -> BoardConfig {
-    let mut config = BoardConfig::default();
-    if !file.default_reviewers.is_empty() {
-        config.default_reviewers = file.default_reviewers.clone();
-    }
-    if let Some(reviewers) = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        config.default_reviewers = reviewers.split(',').map(|s| s.trim().to_string()).collect();
-    }
-    let issue_rule = match (
-        std::env::var("PRMARMOT_ISSUE_PATTERN"),
-        std::env::var("PRMARMOT_ISSUE_URL_TEMPLATE"),
-    ) {
-        (Ok(pattern), Ok(template)) => Some((pattern, template)),
-        _ => file
-            .issue_link
-            .as_ref()
-            .map(|l| (l.pattern.clone(), l.url_template.clone())),
-    };
-    if let Some((pattern, template)) = issue_rule {
-        match IssueLinkRule::new(&pattern, &template) {
-            Ok(rule) => config.issue_link = Some(rule),
-            Err(e) => eprintln!("prmarmot: ignoring bad issue-link pattern: {e}"),
-        }
+    let (config, warning) = prmarmot_local::config::board_config(file);
+    if let Some(warning) = warning {
+        eprintln!("prmarmot: {warning}");
     }
     config
 }
