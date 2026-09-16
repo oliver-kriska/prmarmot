@@ -323,10 +323,15 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   `available`, `done`, `draft`, `snoozed`), a `label`, and its `prs` in display
   order.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
-  `review_decision`, `requested_reviewers`, `reviews`, `unresolved_threads`,
-  `labels`, `issue`, `stack`, typed `blockers`, and the plain-text `note`. It
-  also has an `attention` object with `watched`, `snoozed`, `changed`, and
-  `changes`.
+  `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
+  `unresolved_threads`, `labels`, `issue`, `stack`, typed `blockers`, and the
+  plain-text `note`. It also has an `attention` object with `watched`,
+  `snoozed`, `changed`, and `changes`.
+- **Reviews:** `reviews` has one standing review per other reviewer, and
+  `my_review` is yours (`NONE` if you haven't reviewed). A standing review is
+  the reviewer's latest, except that a later comment doesn't cancel an
+  approval or a change request. A later change request or a dismissal does.
+  The app's Review column and sections use the same rule.
 
 Within `@1`, fields are only ever added.
 

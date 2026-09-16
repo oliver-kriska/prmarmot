@@ -11,8 +11,8 @@ use crate::github::query::{
     available_search_string, global_authored_search_string, global_available_search_string,
     global_search_string, page_info, parse_alias_response, parse_pull_request_id,
     parse_review_response, parse_search_response, parse_tracked_response, pull_request_id_query,
-    scope_repository_error, with_scope_repository, with_tracked_nodes, RawPr, PR_SEARCH_PAGE_QUERY,
-    PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
+    scope_repository_error, with_scope_repository, with_tracked_nodes, RawPr, ReviewNode,
+    PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
     REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY, TRACKED_ONLY_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
@@ -240,8 +240,8 @@ impl Default for BoardConfig {
 }
 
 /// One row of the dashboard. Fields not applicable to the row's mode are
-/// empty/None (`review_*`/`requested`/`reviews` are authored-mode; `author`/
-/// `my_review` are review-mode).
+/// empty/None (`review_*`/`requested`/`reviews` are authored-mode; `author`
+/// is review-mode; `my_review` is set in both).
 #[derive(Debug, Clone)]
 pub struct BoardRow {
     /// GitHub node id (canonical URL for legacy prototype fixtures).
@@ -274,6 +274,8 @@ pub struct BoardRow {
     pub review_state: ReviewState,
     pub requested: Vec<String>,
     pub reviews: Vec<ReviewSummary>,
+    /// The viewer's standing review state (`APPROVED`, `COMMENTED`, …), or
+    /// `NONE`; see [`standing_review`].
     pub my_review: Option<String>,
     pub unresolved: usize,
     /// Structured blockers behind the action `note`, most-blocking-first
@@ -1045,7 +1047,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         review_state: ReviewState::None,
         requested: Vec::new(),
         reviews: Vec::new(),
-        my_review: None,
+        my_review: Some(my_latest_review(pr, me)),
         unresolved,
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
@@ -1073,18 +1075,16 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             classify_authored(&mut row, cfg);
         }
         Mode::Review => {
-            let mine = my_latest_review(pr, me);
             row.category = if pr.is_draft {
                 Category::Draft
             } else if matches!(
-                mine.as_str(),
-                "APPROVED" | "COMMENTED" | "CHANGES_REQUESTED"
+                row.my_review.as_deref(),
+                Some("APPROVED" | "COMMENTED" | "CHANGES_REQUESTED")
             ) {
                 Category::Done
             } else {
                 Category::Todo
             };
-            row.my_review = Some(mine);
             row.note = review_note(&row);
         }
     }
@@ -1138,10 +1138,34 @@ fn requested_reviewers(pr: &RawPr) -> Vec<String> {
         .collect()
 }
 
-/// Latest review state per author, excluding the PR author and bots — the
+/// The review that stands for one reviewer: their latest, except that a
+/// comment does not erase an earlier approval or change request. A later
+/// change request or dismissal still does. `reviews` are that reviewer's, in
+/// response order; ties on `submittedAt` go to the later one, like jq's
+/// `max_by`. The prototype jq applies the same rule.
+fn standing_review<'a>(reviews: &[&'a ReviewNode]) -> Option<&'a ReviewNode> {
+    let latest = |keep: fn(&ReviewNode) -> bool| {
+        reviews
+            .iter()
+            .copied()
+            .filter(|review| keep(review))
+            .max_by(|a, b| a.submitted_at.cmp(&b.submitted_at))
+    };
+    let last = latest(|_| true)?;
+    if last.state == "COMMENTED" {
+        if let Some(held) = latest(|review| review.state != "COMMENTED") {
+            if matches!(held.state.as_str(), "APPROVED" | "CHANGES_REQUESTED") {
+                return Some(held);
+            }
+        }
+    }
+    Some(last)
+}
+
+/// Standing review state per author, excluding the PR author and bots — the
 /// prototype's `$rv`. Ordered by login (`group_by` sorts; null first).
 fn latest_reviews_excluding(pr: &RawPr, me: &str, bots: &[String]) -> Vec<ReviewSummary> {
-    let mut latest: Vec<(Option<String>, &str, Option<&str>)> = Vec::new(); // (login, state, submitted_at)
+    let mut by_author: Vec<(Option<String>, Vec<&ReviewNode>)> = Vec::new();
     for review in &pr.reviews.nodes {
         let login = review.author.as_ref().and_then(|a| a.login.clone());
         if let Some(l) = &login {
@@ -1149,25 +1173,22 @@ fn latest_reviews_excluding(pr: &RawPr, me: &str, bots: &[String]) -> Vec<Review
                 continue;
             }
         }
-        let submitted = review.submitted_at.as_deref();
-        match latest.iter_mut().find(|(l, _, _)| *l == login) {
-            // Later-or-equal submittedAt wins, like jq's max_by.
-            Some(entry) => {
-                if submitted >= entry.2 {
-                    entry.1 = &review.state;
-                    entry.2 = submitted;
-                }
-            }
-            None => latest.push((login, &review.state, submitted)),
+        match by_author.iter_mut().find(|(l, _)| *l == login) {
+            Some((_, reviews)) => reviews.push(review),
+            None => by_author.push((login, vec![review])),
         }
     }
-    latest.sort_by(|a, b| a.0.cmp(&b.0));
-    latest
+    by_author.sort_by(|a, b| a.0.cmp(&b.0));
+    by_author
         .into_iter()
-        .map(|(login, state, submitted_at)| ReviewSummary {
-            login,
-            state: state.to_string(),
-            submitted_at: submitted_at.map(str::to_owned),
+        .filter_map(|(login, reviews)| {
+            // The standing review's own time, so a comment after an approval
+            // is not reported as a new approval.
+            standing_review(&reviews).map(|review| ReviewSummary {
+                login,
+                state: review.state.clone(),
+                submitted_at: review.submitted_at.clone(),
+            })
         })
         .collect()
 }
@@ -1179,13 +1200,15 @@ fn latest_review_evidence(pr: &RawPr) -> Option<&crate::github::query::LatestRev
         .filter(|review| review.state != "DISMISSED")
 }
 
-/// The user's own latest review state, or "NONE" — the prototype's `$mine`.
+/// The user's own standing review state, or "NONE" — the prototype's `$mine`.
 fn my_latest_review(pr: &RawPr, me: &str) -> String {
-    pr.reviews
+    let mine: Vec<&ReviewNode> = pr
+        .reviews
         .nodes
         .iter()
         .filter(|r| r.author.as_ref().and_then(|a| a.login.as_deref()) == Some(me))
-        .max_by(|a, b| a.submitted_at.cmp(&b.submitted_at))
+        .collect();
+    standing_review(&mine)
         .map(|r| r.state.clone())
         .unwrap_or_else(|| "NONE".to_string())
 }
@@ -1677,6 +1700,54 @@ mod tests {
             }]
         );
         assert_eq!(row.review_state, ReviewState::Approved);
+    }
+
+    #[test]
+    fn a_comment_does_not_erase_an_approval_or_a_change_request() {
+        let mut v = base(60);
+        let (t1, t2) = ("2026-07-21T09:00:00Z", "2026-07-22T09:00:00Z");
+        v["reviews"]["nodes"] = json!([
+            {"author": {"login": "eve"}, "state": "APPROVED", "submittedAt": t1},
+            {"author": {"login": "eve"}, "state": "COMMENTED", "submittedAt": t2},
+            {"author": {"login": "fay"}, "state": "APPROVED", "submittedAt": t1},
+            {"author": {"login": "fay"}, "state": "DISMISSED", "submittedAt": t2},
+            {"author": {"login": "gus"}, "state": "DISMISSED", "submittedAt": t1},
+            {"author": {"login": "gus"}, "state": "COMMENTED", "submittedAt": t2},
+            {"author": {"login": "hal"}, "state": "CHANGES_REQUESTED", "submittedAt": t1},
+            {"author": {"login": "hal"}, "state": "COMMENTED", "submittedAt": t2},
+            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": t1},
+            {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": t2}
+        ]);
+        let row = derive_one(v.clone(), Mode::Authored);
+        let standing: Vec<_> = row
+            .reviews
+            .iter()
+            .map(|r| {
+                (
+                    r.login.as_deref().unwrap(),
+                    r.state.as_str(),
+                    r.submitted_at.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        // The standing review keeps its own time, so a later comment is not
+        // reported as a new approval.
+        assert_eq!(
+            standing,
+            vec![
+                ("eve", "APPROVED", t1),
+                ("fay", "DISMISSED", t2),
+                ("gus", "COMMENTED", t2),
+                ("hal", "CHANGES_REQUESTED", t1),
+            ]
+        );
+        assert_eq!(row.review_state, ReviewState::Changes);
+        // The viewer's own standing review is known in every mode.
+        assert_eq!(row.my_review.as_deref(), Some("APPROVED"));
+        let review = derive_one(v, Mode::Review);
+        assert_eq!(review.my_review.as_deref(), Some("APPROVED"));
+        assert_eq!(review.category, Category::Done);
+        assert_eq!(review.note, "✅ you approved");
     }
 
     #[test]

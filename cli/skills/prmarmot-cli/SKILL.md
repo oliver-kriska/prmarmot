@@ -52,8 +52,11 @@ prmarmot-cli review --all-repos --json         # PRs waiting for the user's revi
 **Each PR has:**
 - **Identity:** `repo`, `number`, `url`, `title`, `author`.
 - **State:** `ci` (`pass`, `fail`, `running`, `none`), `conflict`,
-  `review_decision`, `requested_reviewers`, `reviews[]`, `unresolved_threads`,
-  `labels`, `issue`, `stack`.
+  `review_decision`, `requested_reviewers`, `reviews[]`, `my_review`,
+  `unresolved_threads`, `labels`, `issue`, `stack`.
+- **Reviews:** `reviews[]` has each other reviewer's standing review and
+  `my_review` the user's own (`NONE` if none). A standing review is the latest,
+  except that a later comment does not cancel an approval or change request.
 - **`note`:** a one-line human summary.
 - **`blockers[]`:** typed as `merge_conflict`, `ci_failing`,
   `changes_requested`, `unresolved_comments` (with `count`), or `no_reviewers`

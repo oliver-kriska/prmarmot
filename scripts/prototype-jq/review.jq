@@ -3,6 +3,17 @@
 # tracker-specific values as fictional test arguments.
 # Args: --arg repo owner/name --arg me login --arg issue_pattern regex
 #       --arg issue_url_template URL-with-{id}
+# A reviewer's standing review: the latest, except that a comment does not
+# erase an earlier approval or change request (a later change request or
+# dismissal still does). This deliberately diverges from the shell prototype,
+# which takes the latest review of any kind; core/src/board.rs
+# `standing_review` implements the same rule.
+def standing:
+  max_by(.submittedAt) as $last
+  | ([.[] | select(.state != "COMMENTED")] | if length > 0 then max_by(.submittedAt) else null end) as $held
+  | if $last.state == "COMMENTED" and $held != null
+       and ($held.state == "APPROVED" or $held.state == "CHANGES_REQUESTED")
+    then $held else $last end;
 [ .data.search.nodes[]
   | ([.labels.nodes[].name] | index("bug")) as $bug
   | ([.reviewThreads.nodes[] | select(.isResolved==false)] | length) as $unres
@@ -10,7 +21,7 @@
   | (($ci=="FAILURE") or ($ci=="ERROR")) as $cifail
   | (.mergeable=="CONFLICTING") as $conflict
   | ([.reviews.nodes[] | select(.author.login==$me)]
-      | (if length>0 then (max_by(.submittedAt).state) else "NONE" end)) as $mine
+      | (if length>0 then (standing.state) else "NONE" end)) as $mine
   | (if .isDraft then "draft"
      elif ($mine=="APPROVED" or $mine=="COMMENTED" or $mine=="CHANGES_REQUESTED") then "done"
      else "todo" end) as $cat

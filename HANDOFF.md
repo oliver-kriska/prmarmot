@@ -8,7 +8,21 @@
 
 ---
 
-## Current update — 2026-09-11
+## Current update — 2026-09-16
+
+**FACT:** Review state now follows a **standing review** rule, deliberately
+diverging from the shell prototype's `$rv`/`$mine`: a reviewer's standing
+review is their latest, except that a later COMMENTED review does not replace
+an earlier APPROVED or CHANGES_REQUESTED one (a later change request or a
+dismissal still does). `core/src/board.rs` `standing_review` and
+`scripts/prototype-jq/` implement the same rule, the goldens were regenerated,
+and fixtures 113–116 / 206–210 pin it. Do not "fix the port" back to the
+prototype. `latestReview` in the query still includes COMMENTED on purpose: it
+is the review-again evidence (`reviewed_oid`/`reviewed_at`), and a
+comment-only review must keep triggering "Review again". `BoardRow.my_review`
+is now set in every mode.
+
+### Prior update — 2026-09-11
 
 **FACT:** The product identity is now **PR Marmot**: repository
 `oliver-kriska/prmarmot`, binary/package `prmarmot`, core package
