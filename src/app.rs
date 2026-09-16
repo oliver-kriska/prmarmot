@@ -23,8 +23,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
-use prmarmot_core::board::{BoardScope, Mode};
-use prmarmot_core::layout::Sort;
+use prmarmot_core::board::{BoardScope, Category, Mode};
+use prmarmot_core::layout::{group_label, Sort};
 
 use crate::state::{relative, AppState, SetupStatus};
 use crate::table::{
@@ -1652,6 +1652,7 @@ impl RootView {
             .selected_row()
             .and_then(|ix| table.delegate().row(ix))
             .cloned();
+        let mode = self.state.read(cx).mode;
         let theme = cx.theme();
         let (hover_border, hover_text) = (theme.muted_foreground, theme.foreground);
         v_flex()
@@ -1681,7 +1682,9 @@ impl RootView {
                                 .label("Copy")
                                 .dropdown_caret(true)
                                 .dropdown_menu(move |mut menu, _, _| {
-                                    for (label, text) in crate::table::row_copy_items(&copy_row) {
+                                    for (label, text) in
+                                        crate::table::row_copy_items(&copy_row, mode)
+                                    {
                                         let view = view.clone();
                                         menu = menu.item(PopupMenuItem::new(label).on_click(
                                             move |_, _, cx| {
@@ -1775,7 +1778,7 @@ impl RootView {
                                 "detail-body",
                                 {
                                     // The labels line is the chip row above.
-                                    let mut text = detail_text(&row).replace(
+                                    let mut text = detail_text(&row, mode).replace(
                                         &format!("\nLabels: {}", row.labels.join(", ")),
                                         "",
                                     );
@@ -1815,8 +1818,18 @@ impl RootView {
         let (counts, counts_tip) = header_counts(&HeaderCounts {
             loaded: state.rows.len(),
             truncated: state.truncated,
-            need_you: state.badge_count,
-            need_you_complete: state.badge_coverage_complete,
+            mode: state.mode,
+            all_repos: state.scope.is_all(),
+            need_you: state
+                .rows
+                .iter()
+                .filter(|row| {
+                    needs_you_here(state.mode, row.category)
+                        && state.snooze_description(&row.id).is_none()
+                })
+                .count(),
+            badge: state.badge_count,
+            badge_complete: state.badge_coverage_complete,
             tracked_loaded: state.tracked_loaded,
             tracked_total: state.tracked_total,
         });
@@ -2344,26 +2357,40 @@ fn snoozed_toggle_tooltip(on: bool, count: usize) -> String {
     }
 }
 
+/// Whether a row of this view counts toward the header's "need you": My
+/// PRs' Needs action section, or the review queue's Requested from you and
+/// Available to review sections.
+fn needs_you_here(mode: Mode, category: Category) -> bool {
+    match mode {
+        Mode::Authored => category == Category::Action,
+        Mode::Review => matches!(category, Category::Todo | Category::Available),
+    }
+}
+
 /// The numbers behind the header's count line.
 struct HeaderCounts {
     loaded: usize,
     truncated: bool,
-    /// The Dock badge: your PRs that need action plus reviews requested from
-    /// you, snoozed ones excluded.
+    mode: Mode,
+    all_repos: bool,
+    /// Rows of this view that need you ([`needs_you_here`]), snoozed ones
+    /// excluded.
     need_you: usize,
-    /// Both queues have loaded, so `need_you` is the whole count.
-    need_you_complete: bool,
+    /// The Dock badge, across both views: your PRs that need action plus
+    /// reviews requested from you, snoozed ones excluded.
+    badge: usize,
+    /// Both views have loaded, so `badge` is the whole count.
+    badge_complete: bool,
     tracked_loaded: usize,
     tracked_total: usize,
 }
 
 /// The header's count line and the tooltip that explains it.
 fn header_counts(c: &HeaderCounts) -> (String, String) {
-    let so_far = if c.need_you_complete { "" } else { " so far" };
     let need_you = match c.need_you {
-        0 => format!("nothing needs you{so_far}"),
-        1 => format!("1 needs you{so_far}"),
-        n => format!("{n} need you{so_far}"),
+        0 => "nothing needs you".to_owned(),
+        1 => "1 needs you".to_owned(),
+        n => format!("{n} need you"),
     };
     let mut line = format!("{} loaded", c.loaded);
     if c.truncated {
@@ -2385,13 +2412,24 @@ fn header_counts(c: &HeaderCounts) -> (String, String) {
     } else {
         "."
     });
+    let sections = match c.mode {
+        Mode::Authored => group_label(Mode::Authored, Category::Action, c.all_repos).to_owned(),
+        Mode::Review => format!(
+            "{} and Available to review",
+            group_label(Mode::Review, Category::Todo, c.all_repos)
+        ),
+    };
     tip.push_str(&format!(
-        "\n{}: your PRs that need action plus reviews requested from you, not counting \
-         snoozed ones. The Dock badge shows the same number.",
+        "\n{}: the PRs under {sections}, not counting snoozed ones.",
         upper_first(&need_you)
     ));
-    if !c.need_you_complete {
-        tip.push_str(" Only the queues loaded since launch are counted.");
+    tip.push_str(&format!(
+        "\nThe Dock badge shows {} across both views: your PRs that need action plus \
+         reviews requested from you, not counting snoozed ones.",
+        c.badge
+    ));
+    if !c.badge_complete {
+        tip.push_str(" Only the views loaded since launch are counted so far.");
     }
     if let Some(tracked) = tracked {
         tip.push_str(&format!(
@@ -2717,8 +2755,11 @@ mod tests {
         HeaderCounts {
             loaded: 56,
             truncated: true,
+            mode: Mode::Authored,
+            all_repos: false,
             need_you,
-            need_you_complete: complete,
+            badge: need_you,
+            badge_complete: complete,
             tracked_loaded: tracked.0,
             tracked_total: tracked.1,
         }
@@ -2733,7 +2774,7 @@ mod tests {
         );
         assert_eq!(
             line(counts(1, false, (2, 2))),
-            "56 loaded · partial results · 1 needs you so far · 2 watched/snoozed"
+            "56 loaded · partial results · 1 needs you · 2 watched/snoozed"
         );
         assert_eq!(
             line(counts(3, true, (50, 64))),
@@ -2743,11 +2784,70 @@ mod tests {
         assert_eq!(
             tip,
             "56 PRs loaded in this view; GitHub has more (Load more).\n\
-             3 need you so far: your PRs that need action plus reviews requested from you, \
-             not counting snoozed ones. The Dock badge shows the same number. Only the \
-             queues loaded since launch are counted.\n\
+             3 need you: the PRs under Needs action, not counting snoozed ones.\n\
+             The Dock badge shows 3 across both views: your PRs that need action plus \
+             reviews requested from you, not counting snoozed ones. Only the views loaded \
+             since launch are counted so far.\n\
              2 watched/snoozed: watched and snoozed PRs, refreshed with this view (up to 50 \
              each time)."
         );
+    }
+
+    /// Once both views have loaded, the Dock badge is the total, but the
+    /// header still counts only the view on screen.
+    #[test]
+    fn the_header_counts_this_view_even_when_the_badge_covers_both() {
+        let count = |mode, categories: &[Category]| {
+            categories
+                .iter()
+                .filter(|&&category| needs_you_here(mode, category))
+                .count()
+        };
+        let mine = count(
+            Mode::Authored,
+            &[
+                Category::Action,
+                Category::Action,
+                Category::Await,
+                Category::Draft,
+            ],
+        );
+        let review = count(
+            Mode::Review,
+            &[
+                Category::Todo,
+                Category::Available,
+                Category::Available,
+                Category::Done,
+                Category::Draft,
+            ],
+        );
+        assert_eq!((mine, review), (2, 3));
+        let both_loaded = |mode, need_you| HeaderCounts {
+            loaded: 5,
+            truncated: false,
+            mode,
+            all_repos: true,
+            need_you,
+            badge: 3,
+            badge_complete: true,
+            tracked_loaded: 0,
+            tracked_total: 0,
+        };
+        let (line, tip) = header_counts(&both_loaded(Mode::Review, review));
+        assert_eq!(line, "5 loaded · 3 need you");
+        assert_eq!(
+            tip,
+            "5 PRs loaded in this view.\n\
+             3 need you: the PRs under Requested from you and Available to review, not \
+             counting snoozed ones.\n\
+             The Dock badge shows 3 across both views: your PRs that need action plus \
+             reviews requested from you, not counting snoozed ones."
+        );
+        let (line, tip) = header_counts(&both_loaded(Mode::Authored, mine));
+        assert_eq!(line, "5 loaded · 2 need you");
+        assert!(tip.contains("2 need you: the PRs under Needs attention, not counting"));
+        assert!(tip.contains("The Dock badge shows 3 across both views"));
+        assert!(!tip.contains("so far"));
     }
 }

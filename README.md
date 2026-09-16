@@ -289,10 +289,12 @@ require a restart; changes saved in Settings do not.
   - A chip's × removes it, and Backspace in an empty box removes the last one.
     The × at the right clears the search. An empty search closes when you leave
     it.
-- **Header:** it shows how many PRs are loaded and how many need you (your PRs
-  that need action plus review requests, without snoozed ones — the Dock badge
-  number, marked "so far" until both queues have loaded), then how many watched
-  or snoozed PRs were refreshed. Hover it for the explanation.
+- **Header:** it shows how many PRs this view has loaded, how many of them
+  need you, and how many watched or snoozed PRs were refreshed. "Need you"
+  counts the view on screen, without snoozed PRs: Needs action in My PRs, and
+  Requested from you plus Available to review in the Review queue. The Dock
+  badge is the total across both views: your PRs that need action plus review
+  requests. Hover the header for the explanation.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.

@@ -11,7 +11,7 @@
 //! Nothing here may animate: the table sits idle between refreshes and any
 //! continuous animation would defeat the idle-GPU half of the spike gate.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, AnyElement, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
@@ -604,8 +604,34 @@ fn size_text(size: ChangeSize) -> String {
     )
 }
 
+/// A review state in plain words ("changes requested"), never GitHub's enum.
+fn review_state_words(state: &str) -> String {
+    match state {
+        "APPROVED" => "approved".into(),
+        "CHANGES_REQUESTED" => "changes requested".into(),
+        "COMMENTED" => "commented".into(),
+        "DISMISSED" => "dismissed".into(),
+        other => other.to_lowercase().replace('_', " "),
+    }
+}
+
+/// Your standing review in plain words; `None` when there isn't one.
+fn my_review_text(review: &str) -> Option<&'static str> {
+    match review {
+        "APPROVED" => Some("approved"),
+        "CHANGES_REQUESTED" => Some("changes requested"),
+        "COMMENTED" => Some("commented"),
+        _ => None,
+    }
+}
+
 /// Full, unelided snapshot details; no secondary network request or hidden cache.
-pub fn detail_text(row: &BoardRow) -> String {
+pub fn detail_text(row: &BoardRow, mode: Mode) -> String {
+    detail_text_at(row, mode, Utc::now())
+}
+
+/// [`detail_text`] with the wait measured at `now`.
+fn detail_text_at(row: &BoardRow, mode: Mode, now: DateTime<Utc>) -> String {
     let mut lines = vec![
         strip_note_glyphs(&row.note),
         format!(
@@ -633,7 +659,7 @@ pub fn detail_text(row: &BoardRow) -> String {
                         format!(
                             "{} — {}",
                             review.login.as_deref().unwrap_or("deleted user"),
-                            review.state
+                            review_state_words(&review.state)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -641,11 +667,26 @@ pub fn detail_text(row: &BoardRow) -> String {
             }
         ),
     ];
-    if let Some(review) = &row.my_review {
+    // Your own PR has no review of yours to show.
+    if let Some(review) = row
+        .my_review
+        .as_deref()
+        .filter(|_| mode == Mode::Review)
+        .and_then(my_review_text)
+    {
         lines.push(format!("Your review: {review}"));
     }
-    if let Some(since) = &row.waiting_since {
-        lines.push(format!("Waiting for a reviewer since {since}"));
+    // Like the Note's "· 4d", with the start in local time.
+    let since = row
+        .waiting_since
+        .as_deref()
+        .and_then(|since| DateTime::parse_from_rfc3339(since).ok());
+    if let (Some(secs), Some(since)) = (waiting_secs(row, now), since) {
+        lines.push(format!(
+            "Waiting for a reviewer for {} (since {})",
+            wait_label(secs),
+            since.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+        ));
     }
     if let Some(size) = row.size {
         lines.push(format!("Size: {}", size_text(size)));
@@ -682,7 +723,7 @@ pub enum RowAction {
     CancelSnooze,
 }
 
-pub fn row_copy_items(row: &BoardRow) -> Vec<(&'static str, String)> {
+pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)> {
     vec![
         ("Copy PR URL", row.url.clone()),
         ("Copy PR number", format!("#{}", row.number)),
@@ -696,7 +737,7 @@ pub fn row_copy_items(row: &BoardRow) -> Vec<(&'static str, String)> {
                 row.number,
                 row.title,
                 row.url,
-                detail_text(row)
+                detail_text(row, mode)
             ),
         ),
     ]
@@ -1304,7 +1345,7 @@ impl TableDelegate for BoardTableDelegate {
             ("Show details", RowAction::Details),
         ];
         actions.extend(
-            row_copy_items(&row)
+            row_copy_items(&row, self.mode)
                 .into_iter()
                 .map(|(label, value)| (label, RowAction::Copy(value))),
         );
@@ -2113,11 +2154,11 @@ mod tests {
         let mut second = first.clone();
         second.repo = "other/mobile".into();
         second.url = "https://github.com/other/mobile/pull/418".into();
-        let copies = row_copy_items(&second);
+        let copies = row_copy_items(&second, Mode::Authored);
         assert_eq!(copies[0].1, "https://github.com/other/mobile/pull/418");
         assert_eq!(copies[1].1, "#418");
         assert_eq!(copies[2].1, "other/mobile#418");
-        assert_ne!(row_copy_items(&first)[2].1, copies[2].1);
+        assert_ne!(row_copy_items(&first, Mode::Authored)[2].1, copies[2].1);
         assert!(copies[4].1.starts_with("other/mobile#418 "));
     }
 
@@ -2686,8 +2727,9 @@ mod tests {
             assert_eq!(upper.labels, vec!["backend", "bug"]);
             assert!(filtered(upper, "backend bug"));
             assert!(!filtered(upper, "frontend"));
-            assert!(detail_text(upper).contains("Labels: backend, bug"));
-            assert!(detail_text(upper).contains("Stack #70 · Layer 3 of 3 · Base: main"));
+            assert!(detail_text(upper, Mode::Authored).contains("Labels: backend, bug"));
+            assert!(detail_text(upper, Mode::Authored)
+                .contains("Stack #70 · Layer 3 of 3 · Base: main"));
             assert_eq!(d.display_index_of_url(&upper.url), Some(3));
             assert!(
                 matches!(&d.display[1], DisplayRow::Header { detail: Some(detail), .. } if detail == "2 of 3 layers shown")
@@ -2824,7 +2866,16 @@ mod tests {
             take_filter_chips("is:stale ", false),
             (vec![chip], String::new())
         );
-        assert!(detail_text(&r).contains("Waiting for a reviewer since 2026-09-12T12:00:00Z"));
+        let since = DateTime::parse_from_rfc3339("2026-09-12T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M");
+        let detail = detail_text_at(&r, Mode::Review, rule().now);
+        assert!(
+            detail.contains(&format!("Waiting for a reviewer for 3d (since {since})")),
+            "{detail}"
+        );
+        assert!(!detail.contains("T12:00:00Z"), "no raw timestamp");
     }
 
     #[test]
@@ -2849,9 +2900,9 @@ mod tests {
         d.set_sort(Sort::Smallest);
         d.set_rows(vec![sized(1, 700), sized(2, 40)]);
         assert_eq!(numbers(&d), [2, 1]);
-        assert!(detail_text(&sized(2, 40))
+        assert!(detail_text(&sized(2, 40), Mode::Review)
             .contains("Size: Small · 42 changed lines in 3 files (+40 −2)"));
-        assert!(!detail_text(&row(3, Category::Todo)).contains("Size:"));
+        assert!(!detail_text(&row(3, Category::Todo), Mode::Review).contains("Size:"));
     }
 
     #[test]
@@ -2968,10 +3019,55 @@ mod tests {
             position: Some(2),
             base_ref_name: "main".into(),
         });
-        let detail = detail_text(&r);
+        let detail = detail_text(&r, Mode::Authored);
         assert!(detail.contains(&r.note));
-        assert!(detail.contains("deleted user — APPROVED"));
+        assert!(detail.contains("deleted user — approved"));
         assert!(detail.contains("Stack #50 · Layer 2 of 3 · Base: main"));
+    }
+
+    #[test]
+    fn details_name_your_review_only_on_review_rows_that_have_one() {
+        let mut r = row(9, Category::Todo);
+        let yours = |r: &BoardRow, mode| {
+            detail_text(r, mode)
+                .lines()
+                .find(|line| line.starts_with("Your review"))
+                .map(str::to_owned)
+        };
+        r.my_review = Some("NONE".into());
+        assert_eq!(yours(&r, Mode::Review), None);
+        for (state, words) in [
+            ("APPROVED", "approved"),
+            ("CHANGES_REQUESTED", "changes requested"),
+            ("COMMENTED", "commented"),
+        ] {
+            r.my_review = Some(state.into());
+            assert_eq!(
+                yours(&r, Mode::Review).as_deref(),
+                Some(&*format!("Your review: {words}"))
+            );
+            assert_eq!(yours(&r, Mode::Authored), None, "your own PR");
+        }
+        r.my_review = Some("DISMISSED".into());
+        assert_eq!(yours(&r, Mode::Review), None);
+        r.my_review = None;
+        assert_eq!(yours(&r, Mode::Review), None);
+
+        let review = |login: &str, state: &str| prmarmot_core::board::ReviewSummary {
+            login: Some(login.into()),
+            state: state.into(),
+            submitted_at: None,
+        };
+        r.reviews = vec![
+            review("alex", "APPROVED"),
+            review("sam", "CHANGES_REQUESTED"),
+            review("kim", "COMMENTED"),
+            review("lee", "DISMISSED"),
+        ];
+        assert!(detail_text(&r, Mode::Authored).contains(
+            "Reviews: alex — approved, sam — changes requested, kim — commented, \
+             lee — dismissed"
+        ));
     }
 
     #[test]
