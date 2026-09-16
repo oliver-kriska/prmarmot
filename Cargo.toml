@@ -11,6 +11,10 @@ description = "GitHub PR review dashboard — a native desktop app"
 repository = "https://github.com/oliver-kriska/prmarmot"
 homepage = "https://github.com/oliver-kriska/prmarmot"
 
+[features]
+# Frame-time measurement for performance work (src/perf.rs); never shipped.
+perf = ["gpui/profiler"]
+
 [dependencies]
 prmarmot-core = { path = "core" }
 prmarmot-local = { path = "local" }

@@ -120,6 +120,74 @@ def page(nodes):
     return {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
 
 
+# PRMARMOT_DEMO_ROWS=N: N fictional PRs per search, 60 per page, for measuring
+# the table at Load-more size. Unset, the screenshot fixtures above are served.
+SCALE_PAGE = 60
+SCALE_WORDS = ("cache", "sync", "export", "search", "timeline", "session", "import",
+               "notification", "workspace", "renderer", "keymap", "settings")
+SCALE_LABELS = ("bug", "feature", "docs", "mobile", "performance", "area:ui",
+                "area:sync", "needs review", "cla-signed", "good first issue")
+
+
+def scale_rows():
+    try:
+        return max(0, int(os.environ.get("PRMARMOT_DEMO_ROWS", "")))
+    except ValueError:
+        return 0
+
+
+def scale_nodes(alias, count):
+    base = {"authored": 1000, "requested": 3000, "available": 5000}[alias]
+    nodes = []
+    for i in range(count):
+        word = SCALE_WORDS[i % len(SCALE_WORDS)]
+        title = f"{word.capitalize()}: {'tighten ' * (i % 4)}handling for case {i}"
+        if i % 7 == 0:
+            title += " when the connection drops halfway through a long batch"
+        nodes.append(pr(
+            base + i, title,
+            author="demo-user" if alias == "authored" else f"dev{i % 23}",
+            draft=i % 17 == 0,
+            decision=("APPROVED" if i % 5 == 0 else "CHANGES_REQUESTED" if i % 11 == 0
+                      else "REVIEW_REQUIRED"),
+            mergeable="CONFLICTING" if i % 13 == 0 else "MERGEABLE",
+            labels=tuple(SCALE_LABELS[(i + k) % len(SCALE_LABELS)] for k in range(i % 5)),
+            requested={"requested": ("demo-user",), "available": ()}.get(
+                alias, ("alex",) if i % 3 else ()),
+            reviews=(("sam", "COMMENTED"),) if i % 4 == 0 else (),
+            unresolved=i % 6 if i % 6 < 3 else 0,
+            ci=("SUCCESS", "FAILURE", "PENDING", None)[i % 4],
+            stack=((900 + i // 3, i % 3 + 1) if alias == "authored" and i % 9 < 3 else None),
+            repo=("demo-labs/atlas", "demo-labs/mobile", "demo-labs/web")[i % 3],
+            waited=(i * 7) % 150,
+        ))
+        if nodes[-1]["stack"]:
+            nodes[-1]["stack"]["number"] = 900 + i // 9
+    return nodes
+
+
+def scale_page(alias, after):
+    nodes = scale_nodes(alias, scale_rows())
+    start = int(after[1:]) if after and after.startswith("c") else 0
+    end = start + SCALE_PAGE
+    more = end < len(nodes)
+    return {"pageInfo": {"hasNextPage": more, "endCursor": f"c{end}" if more else None},
+            "nodes": nodes[start:end]}
+
+
+def scale_graphql(query, fields):
+    data = {"rateLimit": rate(3)}
+    aliases = [alias for alias in ("requested", "available") if f"{alias}: search" in query]
+    for alias in aliases:
+        after = fields.get(f"{alias}After", fields.get("after") if len(aliases) == 1 else None)
+        data[alias] = scale_page(alias, after)
+    if not aliases and "search(query:$q" in query:
+        data["search"] = scale_page("authored", fields.get("after"))
+    if "$tracked" in query:
+        data["tracked"] = []
+    return {"data": data}
+
+
 def rate(cost):
     return {"limit": 5000, "cost": cost, "remaining": 4937,
             "resetAt": "2026-09-08T18:00:00Z"}
@@ -137,6 +205,8 @@ def graphql(args):
     all_nodes = AUTHORED + REQUESTED + AVAILABLE
     tracked = [next((node for node in all_nodes if node["id"] == tracked_id), None)
                for tracked_id in tracked_ids]
+    if scale_rows() and "search" in query:
+        return scale_graphql(query, fields)
     search = fields.get("q", fields.get("requested", ""))
     selected_repo = next((part[5:] for part in search.split() if part.startswith("repo:")), None)
     def scoped(nodes):
@@ -221,6 +291,23 @@ class FixtureTests(unittest.TestCase):
                            "query=query($owner:String!,$name:String!){ repository(owner:$owner, name:$name){ pullRequest(number:999){ id } } }",
                            "-f", "owner=demo-labs", "-f", "name=atlas"])
         self.assertIsNone(missing["data"]["repository"]["pullRequest"])
+
+    def test_scale_mode_pages_like_load_more(self):
+        os.environ["PRMARMOT_DEMO_ROWS"] = "130"
+        try:
+            first = graphql(["api", "graphql", "-f", "query=query($q:String!){ search(query:$q, first:60) }"])
+            self.assertEqual(len(first["data"]["search"]["nodes"]), 60)
+            self.assertEqual(first["data"]["search"]["pageInfo"]["endCursor"], "c60")
+            both = graphql(["api", "graphql", "-f",
+                            "query=query($requested:String!,$requestedAfter:String!,$available:String!,$availableAfter:String!){ requested: search available: search }",
+                            "-f", "requestedAfter=c120", "-f", "availableAfter=c60"])
+            self.assertEqual(len(both["data"]["requested"]["nodes"]), 10)
+            self.assertFalse(both["data"]["requested"]["pageInfo"]["hasNextPage"])
+            self.assertTrue(both["data"]["available"]["pageInfo"]["hasNextPage"])
+            numbers = [node["number"] for node in scale_nodes("requested", 130)]
+            self.assertEqual(len(set(numbers)), 130)
+        finally:
+            del os.environ["PRMARMOT_DEMO_ROWS"]
 
     def test_release_fixture_is_stable_and_repository_bound(self):
         tag = "v99.0.0"

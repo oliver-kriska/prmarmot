@@ -3142,4 +3142,121 @@ mod tests {
             overrides[&(Mode::Authored, TableWidthClass::Wide, true)]
         );
     }
+
+    /// A Load-more-sized review queue: 600 rows across repositories, with
+    /// labels, authors, notes, and stacks, like the demo's scale mode.
+    fn load_more_rows() -> Vec<BoardRow> {
+        const WORDS: [&str; 8] = [
+            "fix", "api", "cache", "login", "retry", "docs", "parser", "billing",
+        ];
+        (0..600u64)
+            .map(|i| {
+                let category = match i % 20 {
+                    0 | 1 => Category::Draft,
+                    n if n % 2 == 0 => Category::Todo,
+                    _ => Category::Available,
+                };
+                let mut r = row(1000 + i, category);
+                r.repo = format!("demo-labs/repo-{}", i % 6);
+                r.id = format!("https://github.com/{}/pull/{}", r.repo, r.number);
+                r.url = r.id.clone();
+                r.title = format!(
+                    "{} the {} {} path ({i})",
+                    WORDS[(i % 8) as usize],
+                    WORDS[(i / 8 % 8) as usize],
+                    WORDS[(i / 64 % 8) as usize]
+                );
+                r.author = Some(["alex", "sam", "kim", "noor"][(i % 4) as usize].into());
+                r.labels = match i % 5 {
+                    0 => vec!["bug".into()],
+                    1 => vec!["enhancement".into(), "help wanted".into()],
+                    _ => Vec::new(),
+                };
+                r.note = "⏳ Waiting for your review · CI passing".into();
+                if i % 10 < 3 {
+                    r.stack = Some(prmarmot_core::board::StackInfo {
+                        number: i / 10,
+                        size: 3,
+                        base_ref_name: "main".into(),
+                        position: Some(i % 10 + 1),
+                    });
+                }
+                r
+            })
+            .collect()
+    }
+
+    /// Times what one search keystroke costs before GPUI draws: the
+    /// `RootView::sync_table` filter plus the display rebuild, over 600 rows.
+    /// `cargo test --release --bin prmarmot keystroke_rebuild -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing report, not a check"]
+    fn keystroke_rebuild_cost_at_load_more_size() {
+        use std::time::{Duration, Instant};
+        let rows = load_more_rows();
+        let mut typed: Vec<String> = Vec::new();
+        for query in [
+            "fix api",
+            "author:alex cache",
+            "label:\"help wanted\" retry",
+        ] {
+            for end in 0..=query.len() {
+                typed.push(query[..end].to_owned());
+            }
+            for end in (0..query.len()).rev() {
+                typed.push(query[..end].to_owned());
+            }
+        }
+        let chip = FilterChip::new(Qualifier::Label, "bug");
+        let mut delegate = BoardTableDelegate::new(Mode::Review, true);
+        let mut took: Vec<Duration> = Vec::new();
+        let mut shown = 0;
+        for pass in 0..20 {
+            for (ix, query) in typed.iter().enumerate() {
+                let chips: &[FilterChip] = if ix % 2 == 0 {
+                    &[]
+                } else {
+                    std::slice::from_ref(&chip)
+                };
+                let started = Instant::now();
+                let matching: Vec<BoardRow> = rows
+                    .iter()
+                    .filter(|row| {
+                        filtered(row, query) && chips.iter().all(|chip| chip.matches(row, rule()))
+                    })
+                    .cloned()
+                    .collect();
+                let watched: HashSet<String> = matching
+                    .iter()
+                    .step_by(7)
+                    .map(|row| row.id.clone())
+                    .collect();
+                let snoozed: HashSet<String> = matching
+                    .iter()
+                    .step_by(11)
+                    .map(|row| row.id.clone())
+                    .collect();
+                shown = shown.max(matching.len());
+                delegate.set_rows(matching);
+                delegate.set_attention(HashMap::new(), watched, snoozed, false);
+                let _ =
+                    delegate.display_index_of_url("https://github.com/demo-labs/repo-5/pull/1599");
+                if pass > 0 {
+                    took.push(started.elapsed());
+                }
+            }
+        }
+        took.sort_unstable();
+        let at = |q: f64| took[((took.len() - 1) as f64 * q).round() as usize];
+        assert_eq!(shown, 600);
+        println!(
+            "keystroke rebuild over {} rows ({} keystrokes): p50 {:?} p90 {:?} p99 {:?} max {:?}",
+            rows.len(),
+            took.len(),
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            at(1.0)
+        );
+    }
 }

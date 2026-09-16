@@ -7,6 +7,8 @@ mod attention_state;
 mod config;
 mod design;
 mod notification_help;
+#[cfg(feature = "perf")]
+mod perf;
 mod platform;
 mod settings;
 mod state;

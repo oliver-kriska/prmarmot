@@ -314,6 +314,9 @@ impl RootView {
         // Arrow keys belong to the table's own key context.
         table.focus_handle(cx).focus(window, cx);
 
+        #[cfg(feature = "perf")]
+        crate::perf::start(window, cx);
+
         // Remember the window size across sessions (red traffic light path;
         // the `q` key saves too).
         window.on_window_should_close(cx, |window, _cx| {
@@ -509,6 +512,8 @@ impl RootView {
     }
 
     fn sync_table(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "perf")]
+        let _timer = crate::perf::RebuildTimer::start();
         let state = self.state.read(cx);
         let stale = StaleRule {
             now: Utc::now(),
