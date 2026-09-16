@@ -19,6 +19,11 @@ pub enum GhError {
     RateLimited { reset_epoch: Option<u64> },
     /// GraphQL `errors[]` present without usable data.
     GraphqlErrors(Vec<String>),
+    /// The scoped `owner/name` does not exist or the `gh` account cannot see it
+    /// (GitHub search would otherwise just return nothing).
+    RepositoryNotFound(String),
+    /// `owner/name#number` does not exist or the `gh` account cannot see it.
+    PullRequestNotFound(String),
     /// Subprocess / network-level failure (non-zero exit without a parseable body).
     Network(String),
     /// Response body did not match the expected shape.
@@ -40,6 +45,14 @@ impl fmt::Display for GhError {
                 None => write!(f, "GitHub rate limited"),
             },
             GhError::GraphqlErrors(msgs) => write!(f, "GraphQL errors: {}", msgs.join("; ")),
+            GhError::RepositoryNotFound(repo) => write!(
+                f,
+                "repository {repo} not found, or the gh account can't access it"
+            ),
+            GhError::PullRequestNotFound(pr) => write!(
+                f,
+                "pull request {pr} not found, or the gh account can't access it"
+            ),
             GhError::Network(msg) => write!(f, "gh failed: {msg}"),
             GhError::Parse(msg) => write!(f, "unexpected GitHub response: {msg}"),
         }

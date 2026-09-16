@@ -5,7 +5,7 @@
 use serde::Deserialize;
 
 /// The `rateLimit{}` field of a GraphQL response.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RateLimitInfo {
     pub limit: u32,

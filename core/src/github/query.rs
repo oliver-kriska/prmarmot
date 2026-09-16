@@ -39,6 +39,12 @@ pub fn global_search_string(mode: crate::board::Mode, who: &str) -> String {
     }
 }
 
+/// Every open PR you authored, in any repository (the narrower alternative to
+/// the involving search above).
+pub fn global_authored_search_string(who: &str) -> String {
+    format!("is:pr is:open author:{who}")
+}
+
 /// Global available-review candidates must remain involvement-scoped. A bare
 /// `-author:` query would pull arbitrary public PRs from across GitHub.
 pub fn global_available_search_string(who: &str) -> String {
@@ -186,11 +192,105 @@ fragment TrackedPr on PullRequest {
 /// operation. This is deliberately not used for Load more: tracked coverage is
 /// refreshed once with page one and never fanned out per PR.
 pub fn with_tracked_nodes(query: &str) -> Result<String, GhError> {
-    let variables_end = query.find("){\n").ok_or_else(|| {
-        GhError::Parse("could not extend GraphQL operation with tracked nodes".into())
-    })?;
+    let mut extended = extend_operation(
+        query,
+        ",$tracked:[ID!]!",
+        "  tracked: nodes(ids:$tracked){ ... on PullRequest { ...TrackedPr } }\n",
+    )?;
+    extended.push_str(TRACKED_FRAGMENT);
+    Ok(extended)
+}
+
+/// Only the rate budget; [`with_tracked_nodes`] adds the tracked PRs. For
+/// following specific PRs without running a board search.
+pub const TRACKED_ONLY_QUERY: &str =
+    "query($who:String!){\n  rateLimit { limit cost remaining resetAt }\n}";
+
+/// Resolve `owner/name#number` to a node id (`$owner`, `$name`). The number is
+/// inlined because string variables are the transport's only kind.
+pub fn pull_request_id_query(number: u64) -> String {
+    format!(
+        "query($owner:String!,$name:String!){{\n  repository(owner:$owner, name:$name){{ pullRequest(number:{number}){{ id }} }}\n}}"
+    )
+}
+
+/// The node id from a [`pull_request_id_query`] response, telling a missing
+/// repository apart from a missing pull request.
+pub fn parse_pull_request_id(body: &Value, repo: &str, number: u64) -> Result<String, GhError> {
+    if let Some(id) = body
+        .pointer("/data/repository/pullRequest/id")
+        .and_then(Value::as_str)
+    {
+        return Ok(id.to_owned());
+    }
+    let not_found_at = |path: &[&str]| {
+        body.get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| {
+                errors.iter().any(|error| {
+                    error.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
+                        && error
+                            .get("path")
+                            .and_then(Value::as_array)
+                            .is_some_and(|at| {
+                                at.iter()
+                                    .map(Value::as_str)
+                                    .eq(path.iter().map(|p| Some(*p)))
+                            })
+                })
+            })
+    };
+    if not_found_at(&["repository", "pullRequest"]) {
+        return Err(GhError::PullRequestNotFound(format!("{repo}#{number}")));
+    }
+    if not_found_at(&["repository"]) {
+        return Err(GhError::RepositoryNotFound(repo.to_owned()));
+    }
+    check_graphql_errors(body)?;
+    Err(GhError::PullRequestNotFound(format!("{repo}#{number}")))
+}
+
+/// Rate budget of a [`TRACKED_ONLY_QUERY`] response, after the error check
+/// (a tracked PR GitHub can no longer resolve is not an error).
+pub fn parse_tracked_response(body: &Value) -> Result<Option<RateLimitInfo>, GhError> {
+    check_graphql_errors(body)?;
+    Ok(parse_rate(body))
+}
+
+/// Alias holding the scoped repository in an initial refresh operation.
+pub const SCOPE_REPOSITORY_ALIAS: &str = "scopeRepository";
+
+/// Look the scoped repository up in the same initial operation (variables
+/// `$scopeOwner`, `$scopeName`), so a missing or inaccessible repository is an
+/// error instead of an empty board: search silently matches nothing for it.
+pub fn with_scope_repository(query: &str) -> Result<String, GhError> {
+    extend_operation(
+        query,
+        ",$scopeOwner:String!,$scopeName:String!",
+        "  scopeRepository: repository(owner:$scopeOwner, name:$scopeName){ nameWithOwner }\n",
+    )
+}
+
+/// `RepositoryNotFound` when GitHub could not resolve the scoped repository.
+pub fn scope_repository_error(body: &Value, repo: &str) -> Option<GhError> {
+    body.get("errors")?
+        .as_array()?
+        .iter()
+        .any(|error| {
+            error.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
+                && error.pointer("/path/0").and_then(Value::as_str) == Some(SCOPE_REPOSITORY_ALIAS)
+        })
+        .then(|| GhError::RepositoryNotFound(repo.to_owned()))
+}
+
+/// Insert `variables` into the operation's variable list and `selection` as
+/// its last top-level field.
+fn extend_operation(query: &str, variables: &str, selection: &str) -> Result<String, GhError> {
+    let variables_end = query
+        .find("){\n")
+        .ok_or_else(|| GhError::Parse("could not extend GraphQL operation".into()))?;
     let mut extended = query.to_owned();
-    extended.insert_str(variables_end, ",$tracked:[ID!]!");
+    extended.insert_str(variables_end, variables);
     let operation_open = extended[variables_end..]
         .find('{')
         .map(|offset| variables_end + offset)
@@ -212,11 +312,7 @@ pub fn with_tracked_nodes(query: &str) -> Result<String, GhError> {
     }
     let operation_end =
         operation_end.ok_or_else(|| GhError::Parse("GraphQL operation is not balanced".into()))?;
-    extended.insert_str(
-        operation_end,
-        "  tracked: nodes(ids:$tracked){ ... on PullRequest { ...TrackedPr } }\n",
-    );
-    extended.push_str(TRACKED_FRAGMENT);
+    extended.insert_str(operation_end, selection);
     Ok(extended)
 }
 
@@ -467,8 +563,18 @@ pub fn parse_alias_response(
     ))
 }
 
+/// Fail on GraphQL errors, except a tracked PR GitHub can no longer resolve:
+/// that node comes back `null` and is reported as inaccessible, not as a
+/// failed refresh.
 fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
     if let Some(errors) = body.get("errors").and_then(Value::as_array) {
+        let errors: Vec<&Value> = errors
+            .iter()
+            .filter(|error| {
+                !(error.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
+                    && error.pointer("/path/0").and_then(Value::as_str) == Some("tracked"))
+            })
+            .collect();
         if !errors.is_empty() {
             let rate_limited = errors
                 .iter()
@@ -537,6 +643,96 @@ mod tests {
             "is:pr is:open involves:octocat -author:octocat"
         );
         assert!(!global_available_search_string("octocat").starts_with("-author:"));
+    }
+
+    #[test]
+    fn missing_tracked_prs_do_not_fail_the_refresh_but_other_errors_do() {
+        let tracked_gone = serde_json::json!({
+            "data": {"search": {"nodes": []}, "tracked": [null]},
+            "errors": [{"type": "NOT_FOUND", "path": ["tracked", 0],
+                        "message": "Could not resolve to a node with the global id of 'PR_x'."}]
+        });
+        assert!(parse_search_response(&tracked_gone).is_ok());
+
+        let search_broken = serde_json::json!({
+            "data": null,
+            "errors": [{"type": "NOT_FOUND", "path": ["search"], "message": "nope"}]
+        });
+        assert_eq!(
+            parse_search_response(&search_broken).unwrap_err(),
+            GhError::GraphqlErrors(vec!["nope".into()])
+        );
+    }
+
+    #[test]
+    fn scope_repository_lookup_extends_both_initial_operations() {
+        for query in [PR_SEARCH_QUERY, REVIEW_SEARCH_QUERY] {
+            let extended = with_tracked_nodes(&with_scope_repository(query).unwrap()).unwrap();
+            assert_eq!(
+                extended
+                    .matches("$scopeOwner:String!,$scopeName:String!")
+                    .count(),
+                1
+            );
+            assert_eq!(extended.matches("scopeRepository: repository(").count(), 1);
+            assert_eq!(extended.matches("tracked: nodes(ids:$tracked)").count(), 1);
+            // Both selections live inside the operation, before any fragment.
+            let operation_end = extended.find("\n}").unwrap();
+            assert!(extended.find("scopeRepository").unwrap() < operation_end);
+            assert!(extended.find("tracked: nodes").unwrap() < operation_end);
+        }
+
+        let missing = serde_json::json!({
+            "data": {"scopeRepository": null, "search": {"nodes": []}},
+            "errors": [{"type": "NOT_FOUND", "path": ["scopeRepository"],
+                        "message": "Could not resolve to a Repository with the name 'acme/nope'."}]
+        });
+        assert_eq!(
+            scope_repository_error(&missing, "acme/nope"),
+            Some(GhError::RepositoryNotFound("acme/nope".into()))
+        );
+        assert_eq!(
+            scope_repository_error(&serde_json::json!({"data": {}}), "acme/widgets"),
+            None
+        );
+    }
+
+    #[test]
+    fn pull_request_ids_resolve_and_say_what_is_missing() {
+        let found = serde_json::json!({"data": {"repository": {"pullRequest": {"id": "PR_1"}}}});
+        assert_eq!(
+            parse_pull_request_id(&found, "acme/api", 7).unwrap(),
+            "PR_1"
+        );
+
+        let no_pr = serde_json::json!({
+            "data": {"repository": {"pullRequest": null}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"], "message": "x"}]
+        });
+        assert_eq!(
+            parse_pull_request_id(&no_pr, "acme/api", 7).unwrap_err(),
+            GhError::PullRequestNotFound("acme/api#7".into())
+        );
+
+        let no_repo = serde_json::json!({
+            "data": {"repository": null},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": "x"}]
+        });
+        assert_eq!(
+            parse_pull_request_id(&no_repo, "acme/api", 7).unwrap_err(),
+            GhError::RepositoryNotFound("acme/api".into())
+        );
+
+        let limited = serde_json::json!({"errors": [{"type": "RATE_LIMITED", "message": "x"}]});
+        assert_eq!(
+            parse_pull_request_id(&limited, "acme/api", 7).unwrap_err(),
+            GhError::RateLimited { reset_epoch: None }
+        );
+        assert!(pull_request_id_query(7).contains("pullRequest(number:7)"));
+
+        let tracked = with_tracked_nodes(TRACKED_ONLY_QUERY).unwrap();
+        assert!(tracked.starts_with("query($who:String!,$tracked:[ID!]!){"));
+        assert!(!tracked.contains("search("));
     }
 
     #[test]
