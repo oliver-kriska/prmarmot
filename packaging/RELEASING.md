@@ -6,8 +6,10 @@ PR Marmot ships one Apple-silicon archive named
 `CFBundleName` is `prmarmot`, and display name is **PR Marmot**. The terminal and
 agent CLI ships inside the same bundle as `Contents/MacOS/prmarmot-cli`
 (identifier `dev.oliverkriska.prmarmot.cli`), signed before the app seals it;
-the cask's `binary` stanza and `install.sh` link it onto `PATH`. Intel macOS and
-Linux release assets are intentionally out of scope.
+the cask's `binary` stanza and `install.sh` link it onto `PATH`. Its shell
+completions ship as `Contents/Resources/completions/prmarmot-cli.{bash,zsh,fish}`,
+which the cask's `bash_completion`, `zsh_completion`, and `fish_completion`
+stanzas link. Intel macOS and Linux release assets are intentionally out of scope.
 
 The release pipeline is fail-closed: it will not publish an unsigned,
 unnotarized, unstapled, or Gatekeeper-rejected app. Existing releases and their
@@ -144,6 +146,12 @@ finds the `prmarmot` binary and new config/state locations, can authenticate via
 Run `prmarmot-cli --version` and `prmarmot-cli mine --json` from a new terminal
 (through the Homebrew link, not the bundle path) to confirm Gatekeeper accepts
 the nested CLI too.
+For the first release that ships completions, confirm the rendered
+`Casks/prmarmot.rb` in the tap has the three completion stanzas, and that
+`$(brew --prefix)/share/zsh/site-functions/_prmarmot-cli`,
+`$(brew --prefix)/etc/bash_completion.d/prmarmot-cli`, and
+`$(brew --prefix)/share/fish/vendor_completions.d/prmarmot-cli.fish` link into
+the installed app.
 Also test the curl installer. Remove the old `prboard.app` only after the new
 app and storage migration are verified; automation intentionally does not
 delete historical installations or user data.

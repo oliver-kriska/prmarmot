@@ -3,7 +3,8 @@
 # to /Applications, the same place the Homebrew cask and install.sh use, so a
 # machine only ever has one PR Marmot. An older copy left in ~/Applications by
 # earlier installs is removed. The terminal/agent CLI ships inside the bundle
-# (Contents/MacOS/prmarmot-cli) and an install links it onto PATH.
+# (Contents/MacOS/prmarmot-cli) and an install links it onto PATH, with its
+# shell completions (Contents/Resources/completions) for your login shell.
 #
 # This assembles the same app skeleton used in release CI. Local builds remain
 # ad-hoc signed; release CI replaces that signature with Developer ID signing,
@@ -70,6 +71,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/prmarmot"
 cp "$CLI_BINARY" "$APP/Contents/MacOS/prmarmot-cli"
+# Shell completions for the CLI; the Homebrew cask links them from here.
+mkdir -p "$APP/Contents/Resources/completions"
+cp "$REPO_ROOT"/cli/completions/prmarmot-cli.{bash,zsh,fish} "$APP/Contents/Resources/completions/"
 
 # --- icon -----------------------------------------------------------------
 # Generated from assets/branding/icon.svg by scripts/generate-icons.sh.
@@ -181,6 +185,32 @@ if [[ -n "$BIN_DIR" ]]; then
       *":$BIN_DIR:"*) ;;
       *) echo "note: $BIN_DIR is not on your PATH — add it to use prmarmot-cli" ;;
     esac
+  fi
+fi
+
+# --- shell completions -----------------------------------------------------
+# For your login shell, the same way as the CLI: a symlink into the bundle, never
+# over a real file. zsh needs fpath set in ~/.zshrc, so it gets the line to run.
+if [[ -n "$BIN_DIR" ]]; then
+  COMPLETIONS="$INSTALLED_APP/Contents/Resources/completions"
+  case "${SHELL:-}" in
+    */bash) SCRIPT=prmarmot-cli.bash
+      LINK="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/prmarmot-cli" ;;
+    */fish) SCRIPT=prmarmot-cli.fish
+      LINK="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/prmarmot-cli.fish" ;;
+    *) SCRIPT="" ;;
+  esac
+  if [[ -n "$SCRIPT" ]]; then
+    if [[ -e "$LINK" && ! -L "$LINK" ]]; then
+      echo "note: $LINK exists and is not a symlink; leaving it"
+    else
+      mkdir -p "$(dirname "$LINK")"
+      ln -sfn "$COMPLETIONS/$SCRIPT" "$LINK"
+      step "Linked $LINK (shell completions)"
+    fi
+  elif [[ "${SHELL:-}" == */zsh ]]; then
+    echo "zsh completions: mkdir -p ~/.zfunc && prmarmot-cli completions zsh > ~/.zfunc/_prmarmot-cli"
+    echo "  (with fpath=(~/.zfunc \$fpath) before compinit in ~/.zshrc)"
   fi
 fi
 

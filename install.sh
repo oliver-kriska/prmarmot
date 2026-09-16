@@ -9,7 +9,7 @@
 # /Applications — the same place as the Homebrew cask and `make install` — or
 # ~/Applications when /Applications is not writable (--dir to change). Either
 # way the terminal/agent CLI is linked as ~/.local/bin/prmarmot-cli (--bin-dir
-# to change; --bin-dir "" to skip).
+# to change; --bin-dir "" to skip), with shell completions for your login shell.
 set -eu
 
 REPO="oliver-kriska/prmarmot"
@@ -127,6 +127,40 @@ link_cli() {
   on_path "$BIN_DIR" || printf 'note: %s is not on your PATH — add it to use prmarmot-cli\n' "$BIN_DIR"
 }
 
+# The README's line for installing completions in your login shell.
+completion_hint() {
+  case "${SHELL:-}" in
+    */bash) say "Shell completions: prmarmot-cli completions bash > ~/.local/share/bash-completion/completions/prmarmot-cli" ;;
+    */zsh) say "Shell completions: mkdir -p ~/.zfunc && prmarmot-cli completions zsh > ~/.zfunc/_prmarmot-cli"
+      say "  (with fpath=(~/.zfunc \$fpath) before compinit in ~/.zshrc)" ;;
+    */fish) say "Shell completions: prmarmot-cli completions fish > ~/.config/fish/completions/prmarmot-cli.fish" ;;
+  esac
+}
+
+# Completions ship in the bundle too. For a bash or fish login shell, link them
+# like the CLI, so app updates update them; never replace a real file. zsh
+# needs fpath set in ~/.zshrc, so it gets the line to run instead.
+link_completions() {
+  [ -n "$BIN_DIR" ] || return 0
+  SRC="$(cd "$1" 2>/dev/null && pwd)/prmarmot.app/Contents/Resources/completions"
+  # Releases before completions shipped: their CLI has no `completions` either.
+  [ -d "$SRC" ] || return 0
+  case "${SHELL:-}" in
+    */bash) SCRIPT=prmarmot-cli.bash
+      LINK="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/prmarmot-cli" ;;
+    */fish) SCRIPT=prmarmot-cli.fish
+      LINK="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/prmarmot-cli.fish" ;;
+    *) completion_hint; return 0 ;;
+  esac
+  if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+    printf 'note: %s exists and is not a symlink; left as is\n' "$LINK"
+    return 0
+  fi
+  mkdir -p "$(dirname "$LINK")"
+  ln -sfn "$SRC/$SCRIPT" "$LINK"
+  say "Linked $LINK (shell completions)"
+}
+
 post_install_notes() {
   CONFIG=$(config_path)
   if ! command -v gh >/dev/null 2>&1; then
@@ -198,6 +232,7 @@ install_release_macos() {
   [ -x "$LSREG" ] && "$LSREG" -f "$DIR/prmarmot.app" >/dev/null 2>&1 || true
   remove_legacy_app "$DIR"
   link_cli "$DIR"
+  link_completions "$DIR"
   configure_repo
   say "Done — launch 'PR Marmot' from Spotlight, or: open '$DIR/prmarmot.app'"
   post_install_notes
@@ -223,6 +258,7 @@ install_from_source() {
     install -m 755 "$TMP/prmarmot/target/release/prmarmot" "$DIR/prmarmot"
     install -m 755 "$TMP/prmarmot/target/release/prmarmot-cli" "$DIR/prmarmot-cli"
     if on_path "$DIR"; then say "Done"; else say "Done — make sure $DIR is on your PATH"; fi
+    completion_hint
   fi
   configure_repo
   post_install_notes

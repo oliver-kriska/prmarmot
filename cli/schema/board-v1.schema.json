@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/board-v1.schema.json",
+  "title": "prmarmot-cli board@1",
+  "description": "What `prmarmot-cli mine --json` and `prmarmot-cli review --json` print: one view with its PRs in display order. Within board@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "viewer",
+    "mode",
+    "view",
+    "scope",
+    "count",
+    "filters",
+    "truncated",
+    "more_pages_available",
+    "rate_limit",
+    "attention_state_error",
+    "sections"
+  ],
+  "properties": {
+    "schema": { "const": "prmarmot-cli/board@1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "viewer": { "type": "string", "description": "The GitHub login the board was built for." },
+    "mode": { "$ref": "#/$defs/mode" },
+    "view": {
+      "enum": ["My PRs", "Involving me", "Review queue"],
+      "description": "The app's name for the view. \"Involving me\" is My PRs across all repositories without `--authored`."
+    },
+    "scope": { "$ref": "#/$defs/scope" },
+    "count": { "type": "integer", "minimum": 0, "description": "PRs loaded before filters." },
+    "filters": {
+      "type": "object",
+      "required": ["changed", "watched", "filtered_out"],
+      "properties": {
+        "changed": { "type": "boolean", "description": "`--changed` was passed." },
+        "watched": { "type": "boolean", "description": "`--watched` was passed." },
+        "filtered_out": { "type": "integer", "minimum": 0, "description": "PRs the filters dropped." }
+      }
+    },
+    "truncated": { "type": "boolean", "description": "GitHub has more results than were loaded." },
+    "more_pages_available": { "type": "boolean", "description": "`--pages` can load more (at most 5)." },
+    "rate_limit": { "$ref": "#/$defs/rate_limit" },
+    "attention_state_error": {
+      "type": ["string", "null"],
+      "description": "Why the app's watch/snooze/changed state couldn't be read; `attention` then shows nothing marked."
+    },
+    "sections": {
+      "type": "array",
+      "description": "Non-empty sections in the app's display order.",
+      "items": { "$ref": "#/$defs/section" }
+    }
+  },
+  "$defs": {
+    "mode": { "enum": ["authored", "review"] },
+    "scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "all" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "repo"],
+          "properties": {
+            "type": { "const": "repository" },
+            "repo": { "$ref": "#/$defs/repo" }
+          }
+        }
+      ]
+    },
+    "repo": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$", "description": "owner/name" },
+    "rate_limit": {
+      "description": "GitHub's GraphQL budget after the request, or null when GitHub didn't report it.",
+      "type": ["object", "null"],
+      "required": ["limit", "remaining", "cost", "reset_at"],
+      "properties": {
+        "limit": { "type": "integer", "minimum": 0 },
+        "remaining": { "type": "integer", "minimum": 0 },
+        "cost": { "type": "integer", "minimum": 0 },
+        "reset_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["key", "label", "count", "prs"],
+      "properties": {
+        "key": {
+          "enum": ["approved", "action", "await", "todo", "available", "done", "draft", "snoozed"],
+          "description": "Stable key. approved: yours, approved and waiting to merge. action: yours, blocked on you (see `blockers`). await: yours, waiting on others. todo: your review is requested. available: nobody is requested yet. done: you already reviewed. draft: drafts. snoozed: snoozed in the app."
+        },
+        "label": { "type": "string", "description": "The app's section title; wording may change." },
+        "count": { "type": "integer", "minimum": 0 },
+        "prs": { "type": "array", "items": { "$ref": "#/$defs/pr" } }
+      }
+    },
+    "pr": {
+      "type": "object",
+      "required": [
+        "id",
+        "repo",
+        "number",
+        "url",
+        "title",
+        "author",
+        "draft",
+        "category",
+        "queue",
+        "ci",
+        "conflict",
+        "review_decision",
+        "review_state",
+        "requested_reviewers",
+        "reviews",
+        "my_review",
+        "unresolved_threads",
+        "labels",
+        "issue",
+        "stack",
+        "blockers",
+        "note",
+        "head_oid",
+        "created_at",
+        "updated_at",
+        "attention"
+      ],
+      "properties": {
+        "id": { "type": "string", "description": "GitHub's node id." },
+        "repo": { "$ref": "#/$defs/repo" },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "title": { "type": "string" },
+        "author": { "type": ["string", "null"], "description": "Null when the account no longer exists." },
+        "draft": { "type": "boolean" },
+        "category": { "enum": ["action", "await", "todo", "available", "done", "draft"] },
+        "queue": {
+          "enum": ["requested", "available", null],
+          "description": "Review queue only: whether your review was requested. Null in My PRs."
+        },
+        "ci": { "enum": ["pass", "fail", "running", "none"], "description": "The head commit's check rollup; none when it has no checks." },
+        "conflict": { "type": "boolean" },
+        "review_decision": {
+          "enum": ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", null],
+          "description": "GitHub's decision; null without branch protection that requires reviews."
+        },
+        "review_state": {
+          "enum": ["changes", "approved", "commented", "waiting", "none"],
+          "description": "Other reviewers' standing reviews combined: a change request outweighs approvals; waiting means reviewers are requested and nobody has reviewed."
+        },
+        "requested_reviewers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Pending requests: user logins and team slugs."
+        },
+        "reviews": {
+          "type": "array",
+          "description": "Each other reviewer's standing review: the latest, except that a later comment doesn't cancel an approval or change request.",
+          "items": {
+            "type": "object",
+            "required": ["login", "state", "submitted_at"],
+            "properties": {
+              "login": { "type": ["string", "null"] },
+              "state": { "$ref": "#/$defs/review_state" },
+              "submitted_at": { "type": ["string", "null"], "format": "date-time" }
+            }
+          }
+        },
+        "my_review": {
+          "anyOf": [{ "$ref": "#/$defs/review_state" }, { "const": "NONE" }, { "type": "null" }],
+          "description": "Your own standing review, by the same rule as `reviews`; NONE when you haven't reviewed."
+        },
+        "unresolved_threads": { "type": "integer", "minimum": 0 },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "issue": {
+          "description": "The linked issue found by the configured issue pattern.",
+          "type": ["object", "null"],
+          "required": ["key", "url"],
+          "properties": {
+            "key": { "type": "string" },
+            "url": { "type": ["string", "null"], "format": "uri" }
+          }
+        },
+        "stack": {
+          "description": "GitHub's native stacked-PR data.",
+          "type": ["object", "null"],
+          "required": ["number", "size", "position", "base_ref"],
+          "properties": {
+            "number": { "type": "integer" },
+            "size": { "type": "integer", "minimum": 0 },
+            "position": { "type": ["integer", "null"], "description": "1-based layer, null when unknown." },
+            "base_ref": { "type": "string" }
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "description": "Why a PR of yours is in `action`; empty elsewhere.",
+          "items": { "$ref": "#/$defs/blocker" }
+        },
+        "note": { "type": "string", "description": "The app's one-line summary; wording may change." },
+        "head_oid": { "type": ["string", "null"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" },
+        "attention": {
+          "type": "object",
+          "required": ["watched", "snoozed", "changed", "changes"],
+          "properties": {
+            "watched": { "type": "boolean" },
+            "snoozed": {
+              "type": ["object", "null"],
+              "required": ["description"],
+              "properties": { "description": { "type": "string" } }
+            },
+            "changed": { "type": "boolean", "description": "Changed since you last selected it in the app." },
+            "changes": { "type": "array", "items": { "type": "string" }, "description": "What changed, as phrases." }
+          }
+        }
+      }
+    },
+    "review_state": { "enum": ["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"] },
+    "blocker": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "enum": ["merge_conflict", "ci_failing", "changes_requested"] } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "count"],
+          "properties": {
+            "type": { "const": "unresolved_comments" },
+            "count": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "suggested"],
+          "properties": {
+            "type": { "const": "no_reviewers" },
+            "suggested": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Reviewers from `default_reviewers` in the config."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

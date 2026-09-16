@@ -35,6 +35,13 @@ cask "prmarmot" do
   # The terminal/agent CLI ships inside the signed bundle; Homebrew links it
   # onto PATH, so `brew upgrade` updates both.
   binary "#{appdir}/prmarmot.app/Contents/MacOS/prmarmot-cli"
+  # Its shell completions ship in the bundle too. zsh loads a completion by the
+  # file name `_<command>`, and the others are named for the command too.
+  bash_completion "#{appdir}/prmarmot.app/Contents/Resources/completions/prmarmot-cli.bash",
+                  target: "prmarmot-cli"
+  fish_completion "#{appdir}/prmarmot.app/Contents/Resources/completions/prmarmot-cli.fish"
+  zsh_completion "#{appdir}/prmarmot.app/Contents/Resources/completions/prmarmot-cli.zsh",
+                 target: "_prmarmot-cli"
 
   zap trash: [
     "~/.config/prmarmot",

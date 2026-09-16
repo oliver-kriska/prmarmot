@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/event-v1.schema.json",
+  "title": "prmarmot-cli event@1",
+  "description": "One line of `prmarmot-cli watch --json` (NDJSON). Every line has `schema`, `at`, `mode`, and `type`; `type` decides the rest. Within event@1 fields and event types are only added, never renamed or removed, so skip what you don't know.",
+  "oneOf": [
+    { "$ref": "#/$defs/ready" },
+    { "$ref": "#/$defs/changed" },
+    { "$ref": "#/$defs/added" },
+    { "$ref": "#/$defs/removed" },
+    { "$ref": "#/$defs/rate_limited" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/until" }
+  ],
+  "$defs": {
+    "schema": { "const": "prmarmot-cli/event@1" },
+    "at": { "type": "string", "format": "date-time", "description": "When the event was observed." },
+    "mode": { "$ref": "board-v1.schema.json#/$defs/mode" },
+    "pr": { "$ref": "board-v1.schema.json#/$defs/pr" },
+    "condition": { "enum": ["ci-pass", "approved", "mergeable", "merged"] },
+    "seen": {
+      "description": "A PR as it was last seen, when its full state is no longer available.",
+      "type": "object",
+      "required": ["id", "repo", "number", "url", "title"],
+      "properties": {
+        "id": { "type": "string" },
+        "repo": { "$ref": "board-v1.schema.json#/$defs/repo" },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "title": { "type": "string" }
+      }
+    },
+    "ready": {
+      "description": "The first line: the baseline was loaded. Nothing before it counts as a change.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "view", "scope", "viewer", "count", "interval_secs", "rate_limit"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "ready" },
+        "view": { "type": "string", "description": "The view's name, or owner/name#number with `--pr`." },
+        "scope": {
+          "oneOf": [
+            { "$ref": "board-v1.schema.json#/$defs/scope" },
+            {
+              "type": "object",
+              "required": ["type", "repo", "number"],
+              "properties": {
+                "type": { "const": "pull_request" },
+                "repo": { "$ref": "board-v1.schema.json#/$defs/repo" },
+                "number": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        },
+        "viewer": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "interval_secs": { "type": "integer", "minimum": 30 },
+        "rate_limit": { "$ref": "board-v1.schema.json#/$defs/rate_limit" },
+        "until": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/condition" },
+          "description": "With `--pr` only: the `--until` conditions, empty without one."
+        },
+        "timeout_secs": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "With `--pr` only: the `--timeout`, null without one."
+        }
+      }
+    },
+    "changed": {
+      "description": "A PR in the view changed in a way worth a notice.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "kind", "title", "body", "changes", "pr"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "changed" },
+        "kind": {
+          "enum": ["merge_conflict", "changes_requested", "review_again", "ci_passed", "changed"],
+          "description": "The most important change, as in the app's notification."
+        },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "changes": { "type": "array", "items": { "type": "string" } },
+        "pr": { "$ref": "#/$defs/pr" }
+      }
+    },
+    "added": {
+      "description": "A PR entered the view.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "pr"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "added" },
+        "pr": { "$ref": "#/$defs/pr" }
+      }
+    },
+    "removed": {
+      "description": "A PR left the view. With `--pr`, the watch ends after this line (an `until` line follows with `--until`).",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "status", "pr"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "removed" },
+        "status": {
+          "enum": ["merged", "closed", "open", "inaccessible", "unknown"],
+          "description": "open: still open, but no longer in this view."
+        },
+        "pr": { "$ref": "#/$defs/seen" }
+      }
+    },
+    "rate_limited": {
+      "description": "GitHub's rate limit stopped a check; the watch retries by itself. Doesn't count toward `--events`.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "retry_in_secs", "rate_limit"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "rate_limited" },
+        "retry_in_secs": { "type": "integer", "minimum": 0 },
+        "rate_limit": { "$ref": "board-v1.schema.json#/$defs/rate_limit" }
+      }
+    },
+    "error": {
+      "description": "A check failed; the watch retries by itself. Doesn't count toward `--events`.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "message", "retry_in_secs"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "error" },
+        "message": { "type": "string" },
+        "retry_in_secs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "until": {
+      "description": "The last line of a `--until` or `--timeout` wait. The exit code matches `outcome`: 0 met, 5 unmet, 6 timeout.",
+      "type": "object",
+      "required": ["schema", "at", "mode", "type", "outcome", "condition", "reasons", "until", "timeout_secs", "pr"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "at": { "$ref": "#/$defs/at" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "type": { "const": "until" },
+        "outcome": { "enum": ["met", "unmet", "timeout"] },
+        "condition": {
+          "anyOf": [{ "$ref": "#/$defs/condition" }, { "type": "null" }],
+          "description": "The condition that was met: `merged` after a merge, whatever was asked. Null unless met."
+        },
+        "reasons": {
+          "type": "array",
+          "description": "Unmet: why each condition can't hold. Met by a merge: the conditions never seen (`not_seen`).",
+          "items": {
+            "type": "object",
+            "required": ["condition", "reason", "text"],
+            "properties": {
+              "condition": { "$ref": "#/$defs/condition" },
+              "reason": { "enum": ["ci_failed", "changes_requested", "closed", "inaccessible", "not_seen"] },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "until": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "timeout_secs": { "type": ["integer", "null"], "minimum": 0 },
+        "pr": {
+          "description": "The PR as last seen: the full PR while it was open, only its identity once it's gone, null if it was never seen.",
+          "anyOf": [{ "$ref": "#/$defs/pr" }, { "$ref": "#/$defs/seen" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "met" } } },
+          "then": { "properties": { "condition": { "$ref": "#/$defs/condition" } } },
+          "else": { "properties": { "condition": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

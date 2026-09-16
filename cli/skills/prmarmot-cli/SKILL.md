@@ -64,6 +64,10 @@ prmarmot-cli review --all-repos --json         # PRs waiting for the user's revi
 - **`attention`:** `watched`, `snoozed`, `changed`, and `changes[]`, the
   phrases for what changed.
 
+Fields are only added within `@1`, so ignore any you don't know. The full
+JSON Schemas are `cli/schema/board-v1.schema.json` and
+`cli/schema/event-v1.schema.json` in the PR Marmot repository.
+
 Useful filters:
 
 ```sh
@@ -99,6 +103,9 @@ prmarmot-cli watch mine --repo owner/name --json --interval 60 --events 1
 
 # Follow one PR (any repo, any author) until it merges or closes
 prmarmot-cli watch --pr owner/name#123 --json --interval 60
+
+# Wait for one PR's CI: exit 0 when it passes, 5 if it fails, 6 after 30 minutes
+prmarmot-cli watch --pr owner/name#123 --json --until ci-pass --timeout 30m
 ```
 
 The first line is `{"type":"ready",...}`. After that, each line is one of:
@@ -107,17 +114,61 @@ The first line is `{"type":"ready",...}`. After that, each line is one of:
   and the full `pr`.
 - `added`: a PR entered the view.
 - `removed`: a PR left the view. `status` is `merged`, `closed`, `open`,
-  `inaccessible`, or `unknown`. With `--pr` this is the last line: the watch
-  exits 0 once the PR merges, closes, or becomes inaccessible (at once if it
-  already has).
+  `inaccessible`, or `unknown`. With `--pr` the watch ends here (exit 0) once
+  the PR merges, closes, or becomes inaccessible (at once if it already has);
+  with `--until`, an `until` line follows it.
 - `rate_limited` or `error`: informational. The watch retries by itself; these
   don't count toward `--events`.
+- `until`: the last line of a `--until` or `--timeout` wait (see below).
 
 To wait for one specific PR, use `--pr owner/name#123` (a PR URL works too)
 rather than filtering a view. Add `--events 1` to return on its first change
 instead of when it closes. `--pr` can't be combined with `--repo`,
 `--all-repos`, `--watched`, or `--authored`; a PR or repository that doesn't
 exist or isn't visible to `gh` exits 1 before the first event.
+
+### Wait for a condition
+
+To wait for a state rather than for any change, add `--until` to `--pr`. The
+exit code is the answer, so there is nothing to parse unless you want the
+reason:
+
+| `--until` | Met (exit 0) when | Unmet (exit 5) when |
+| --- | --- | --- |
+| `ci-pass` | the check rollup is green | CI fails. A PR with no checks never passes; bound the wait with `--timeout` |
+| `approved` | GitHub's review decision is approved. Without branch protection the standing reviews decide: an approval, the user's own included, and no change requests | changes are requested |
+| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads, and GitHub has finished computing mergeability | CI fails or changes are requested |
+| `merged` | the PR merged | the PR closed without merging |
+
+A merge ends every wait as met (exit 0): whatever you were waiting for before
+acting no longer matters. The `until` line then has `condition: "merged"`, and
+`reasons[]` lists the asked-for conditions that were never seen (`not_seen`),
+so you can tell "merged" from "approved". Every condition is unmet when the PR
+closes without merging or becomes inaccessible. Requested changes don't end a
+`ci-pass` wait.
+
+- Repeat `--until` or comma-separate it (`--until ci-pass,approved`) to stop at
+  whichever holds first. The wait is unmet only when none of them can hold.
+- Conditions are checked on every poll, including the first, so a PR that
+  already qualifies returns at once.
+- `--timeout 30m` (also `90s`, `2h`, `1h30m`) gives up with exit 6. The last
+  check lands on the deadline when the 30-second floor allows it.
+- `--until` can't be combined with `--events`.
+
+The last line is `{"type":"until",...}`:
+- `outcome` is `met`, `unmet`, or `timeout`.
+- `condition` names the condition that was met (`merged` after a merge).
+- `reasons[]` lists each unmet condition as `condition`, `reason` (`ci_failed`,
+  `changes_requested`, `closed`, `inaccessible`), and `text`. After a merge it
+  lists the conditions never seen, with reason `not_seen`.
+- `pr` is the PR as last seen.
+
+With `--pr`, the `ready` line also carries `until[]` and `timeout_secs`.
+
+```sh
+# Wait up to 2 hours for an approval (a merge ends the wait too)
+prmarmot-cli watch --pr https://github.com/owner/name/pull/123 --json --until approved --timeout 2h
+```
 
 Don't pipe the stream into `head` or a read loop: the pipe only closes when the
 next event arrives.
@@ -135,6 +186,8 @@ Keep polling cheap:
 | `2` | bad arguments | read `prmarmot-cli --help` |
 | `3` | `gh` missing or not signed in | ask the user to run `gh auth login`; never handle credentials yourself |
 | `4` | rate limited | stop and report; don't retry in a loop |
+| `5` | `watch --until`: the condition can no longer be met (CI failed, changes requested, closed without merging, inaccessible) | report the `reasons` from the `until` line; don't restart the wait |
+| `6` | `watch --timeout` passed first | report that it is still pending; wait again only if the user wants |
 
 Errors go to stderr, and stdout carries only data.
 

@@ -2,10 +2,13 @@
 //! not justify a parser dependency, and the grammar stays easy to test.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use prmarmot_core::board::{BoardScope, Mode, MAX_PAGES_PER_ALIAS};
 
+use crate::completions::Shell;
 use crate::skill::Agent;
+use crate::until::{parse_duration, Condition};
 use prmarmot_core::github::rate_limit::MIN_REFRESH_SECS;
 
 pub const USAGE: &str = "\
@@ -19,9 +22,12 @@ Usage:
   prmarmot-cli watch  [mine|review] [options]
                                          Poll and print what changes, one event per line
   prmarmot-cli watch --pr OWNER/NAME#N   Follow one pull request until it merges or closes
+  prmarmot-cli watch --pr OWNER/NAME#N --until ci-pass [--timeout 30m]
+                                         Wait for a condition instead of polling in a loop
   prmarmot-cli skill                     Print the coding-agent skill (SKILL.md)
   prmarmot-cli skill install [--agent AGENT | --dir DIR] [--force]
                                          Install it as a user-level skill
+  prmarmot-cli completions SHELL         Print a completion script for bash, zsh, or fish
 
 Scope (default: --repo/--all-repos > PRMARMOT_REPO/PRMARMOT_SCOPE > config file):
       --repo OWNER/NAME     One repository
@@ -49,6 +55,17 @@ Watch options:
                             ends with a `removed` event when it merges, closes, or
                             becomes inaccessible. Not combined with scope, --watched,
                             or --authored
+      --until CONDITION     With --pr: stop with an `until` event once the PR is
+                            ci-pass (check rollup green; no checks never is),
+                            approved (GitHub's review decision; without branch
+                            protection, the latest reviews, yours included, approve
+                            and none request changes; a later comment keeps an
+                            approval), mergeable (approved, CI green,
+                            no conflict, not a draft, nothing blocking), or merged.
+                            Repeat or comma-separate for any of them. A merge meets
+                            any of them (the `until` event then names merged). Checked
+                            on every poll, the first included; not with --events
+      --timeout DURATION    With --pr: give up after 90s, 30m, 2h, 1h30m, ...
 
 Skill install options:
       --agent AGENT         claude (default): $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills
@@ -62,7 +79,10 @@ Skill install options:
   -V, --version             Show the version
 
 Exit codes: 0 ok, 1 GitHub, network, or file error, 2 usage error,
-            3 gh missing or not signed in, 4 rate limited.
+            3 gh missing or not signed in, 4 rate limited,
+            5 --until can no longer be met (CI failed, changes requested, or the
+              PR closed without merging or became inaccessible),
+            6 --timeout reached.
 
 Reads ~/.config/prmarmot/config.toml and PR Marmot's watch/snooze state, never
 writes them. Authentication comes from the GitHub CLI (`gh auth login`).";
@@ -101,6 +121,9 @@ pub struct WatchArgs {
     pub scope: Option<BoardScope>,
     pub authored: bool,
     pub pr: Option<PrRef>,
+    /// `--until`, any-of, in the order given; empty = follow until it closes.
+    pub until: Vec<Condition>,
+    pub timeout: Option<Duration>,
     pub format: Option<EventFormat>,
     pub interval_secs: Option<u64>,
     pub max_events: Option<u64>,
@@ -131,6 +154,7 @@ pub enum Command {
     View(ViewArgs),
     Watch(WatchArgs),
     Skill(SkillAction),
+    Completions(Shell),
     Help,
     Version,
 }
@@ -160,6 +184,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let watch = match command.as_str() {
         "help" => return Ok(Command::Help),
         "skill" => return parse_skill(tokens),
+        "completions" => return parse_completions(tokens),
         "watch" => true,
         _ => false,
     };
@@ -187,6 +212,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut no_color = false;
     let mut interval_secs = None;
     let mut max_events = None;
+    let mut until: Vec<Condition> = Vec::new();
+    let mut timeout = None;
 
     while let Some(flag) = tokens.next() {
         let mut value = |name: &str| tokens.next().ok_or_else(|| format!("{name} needs a value"));
@@ -206,6 +233,25 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--events" if watch => max_events = Some(parse_events(&value("--events")?)?),
             "--pr" if watch => pr = Some(parse_pr(&value("--pr")?)?),
             "--pr" => return Err("--pr applies to `watch`".into()),
+            "--until" if watch => {
+                let words = value("--until")?;
+                let mut words = words.split(',').filter(|w| !w.trim().is_empty()).peekable();
+                if words.peek().is_none() {
+                    return Err(
+                        "--until needs a condition: ci-pass, approved, mergeable, or merged".into(),
+                    );
+                }
+                for word in words {
+                    let condition = Condition::parse(word)?;
+                    if !until.contains(&condition) {
+                        until.push(condition);
+                    }
+                }
+            }
+            "--timeout" if watch => timeout = Some(parse_duration(&value("--timeout")?)?),
+            "--until" | "--timeout" => {
+                return Err(format!("{flag} applies to `watch --pr`"));
+            }
             "--changed" | "--pages" => {
                 return Err(format!(
                     "{flag} applies to `mine` and `review`, not `watch`"
@@ -226,6 +272,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         );
     }
 
+    if (!until.is_empty() || timeout.is_some()) && pr.is_none() {
+        return Err("--until and --timeout need --pr OWNER/NAME#N".into());
+    }
+    if !until.is_empty() && max_events.is_some() {
+        return Err("--until and --events both end the watch; pass one".into());
+    }
+
     if watch {
         let format = match format.as_deref() {
             None => None,
@@ -238,6 +291,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             scope,
             authored,
             pr,
+            until,
+            timeout,
             format,
             interval_secs,
             max_events,
@@ -311,12 +366,22 @@ fn parse_skill(mut tokens: impl Iterator<Item = String>) -> Result<Command, Stri
     }))
 }
 
+fn parse_completions(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
+    let shell = tokens
+        .next()
+        .ok_or("completions needs a shell: bash, zsh, or fish")?;
+    if let Some(extra) = tokens.next() {
+        return Err(format!("unexpected argument: {extra}"));
+    }
+    Ok(Command::Completions(Shell::parse(&shell)?))
+}
+
 fn parse_mode(word: &str) -> Result<Mode, String> {
     match word {
         "mine" | "authored" => Ok(Mode::Authored),
         "review" | "reviews" => Ok(Mode::Review),
         other => Err(format!(
-            "unknown command: {other} (use mine, review, watch, or skill)"
+            "unknown command: {other} (use mine, review, watch, skill, or completions)"
         )),
     }
 }
@@ -482,6 +547,55 @@ mod tests {
     }
 
     #[test]
+    fn until_and_timeout_wait_on_one_pr() {
+        let args = watch(
+            "watch --pr acme/api#12 --until ci-pass,approved --until merged --until=ci_pass --timeout 1h30m",
+        );
+        assert_eq!(
+            args.until,
+            [Condition::CiPass, Condition::Approved, Condition::Merged]
+        );
+        assert_eq!(args.timeout, Some(Duration::from_secs(5400)));
+        let args = watch("watch --pr acme/api#12");
+        assert!(args.until.is_empty() && args.timeout.is_none());
+        // A deadline alone bounds a plain follow.
+        assert_eq!(
+            watch("watch --pr acme/api#12 --timeout 90").timeout,
+            Some(Duration::from_secs(90))
+        );
+        for (line, needle) in [
+            ("watch --until ci-pass", "need --pr"),
+            ("watch mine --timeout 30m", "need --pr"),
+            ("mine --until ci-pass", "applies to `watch --pr`"),
+            ("review --timeout 5m", "applies to `watch --pr`"),
+            (
+                "watch --pr acme/api#12 --until green",
+                "unknown --until condition: green",
+            ),
+            ("watch --pr acme/api#12 --until", "needs a value"),
+            (
+                "watch --pr acme/api#12 --until=,",
+                "--until needs a condition",
+            ),
+            (
+                "watch --pr acme/api#12 --timeout 0",
+                "--timeout needs a duration",
+            ),
+            (
+                "watch --pr acme/api#12 --timeout soon",
+                "--timeout needs a duration",
+            ),
+            (
+                "watch --pr acme/api#12 --until merged --events 1",
+                "both end the watch",
+            ),
+        ] {
+            let error = parse_str(line).unwrap_err();
+            assert!(error.contains(needle), "{line}: {error}");
+        }
+    }
+
+    #[test]
     fn watch_takes_an_optional_mode_and_its_own_options() {
         let args = watch("watch");
         assert_eq!(args.mode, Mode::Authored);
@@ -528,6 +642,24 @@ mod tests {
             parse_str("skill install --agent all --dir /tmp/x").unwrap_err(),
             "pass --agent or --dir, not both"
         );
+    }
+
+    #[test]
+    fn completions_take_exactly_one_known_shell() {
+        assert_eq!(
+            parse_str("completions fish").unwrap(),
+            Command::Completions(Shell::Fish)
+        );
+        assert_eq!(
+            parse_str("completions").unwrap_err(),
+            "completions needs a shell: bash, zsh, or fish"
+        );
+        assert!(parse_str("completions tcsh")
+            .unwrap_err()
+            .contains("unknown shell"));
+        assert!(parse_str("completions zsh bash")
+            .unwrap_err()
+            .contains("unexpected argument"));
     }
 
     #[test]

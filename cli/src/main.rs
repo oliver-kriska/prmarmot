@@ -3,11 +3,18 @@
 //! state as the desktop app; no GPUI, no runtime, read-only.
 
 mod args;
+mod completions;
 mod render;
 mod skill;
 mod term;
+mod until;
 mod view;
 mod watch;
+
+/// The published JSON Schemas, checked against output by unit tests too.
+#[cfg(test)]
+#[path = "../tests/support/schema.rs"]
+mod schema_check;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -26,6 +33,10 @@ const EXIT_GITHUB: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_AUTH: u8 = 3;
 const EXIT_RATE_LIMITED: u8 = 4;
+/// `watch --until`: no condition asked for can be met any more.
+const EXIT_UNMET: u8 = 5;
+/// `watch --timeout` passed first.
+const EXIT_TIMED_OUT: u8 = 6;
 
 fn main() -> ExitCode {
     match args::parse(std::env::args().skip(1)) {
@@ -38,6 +49,7 @@ fn main() -> ExitCode {
         Ok(Command::View(args)) => run_view(args),
         Ok(Command::Watch(args)) => run_watch(args),
         Ok(Command::Skill(SkillAction::Show)) => print(skill::SKILL_MD),
+        Ok(Command::Completions(shell)) => print(shell.script()),
         Ok(Command::Skill(SkillAction::Install { dir, agent, force })) => {
             run_skill_install(dir, agent, force)
         }
@@ -226,13 +238,25 @@ fn run_watch(args: WatchArgs) -> ExitCode {
             include_snoozed: args.snoozed || args.pr.is_some(),
         },
         pr: args.pr,
+        until: args.until,
+        timeout: args.timeout,
         max_events: args.max_events,
         output,
     };
     let mut stdout = std::io::stdout().lock();
-    match watch::run(session, &mut stdout, &mut std::thread::sleep) {
-        watch::Stop::Done => ExitCode::SUCCESS,
+    let stop = watch::run(session, &mut stdout, &mut watch::SystemClock::start());
+    match stop {
         watch::Stop::Failed(error) => fail(&error),
+        stop => ExitCode::from(watch_exit_code(&stop)),
+    }
+}
+
+fn watch_exit_code(stop: &watch::Stop) -> u8 {
+    match stop {
+        watch::Stop::Done | watch::Stop::Met => 0,
+        watch::Stop::Failed(error) => exit_code_for(error),
+        watch::Stop::Unmet => EXIT_UNMET,
+        watch::Stop::TimedOut => EXIT_TIMED_OUT,
     }
 }
 
@@ -265,5 +289,19 @@ mod tests {
             EXIT_GITHUB
         );
         assert!(args::USAGE.contains("0 ok, 1 GitHub, network, or file error, 2 usage error"));
+    }
+
+    #[test]
+    fn a_watch_ends_with_the_exit_code_its_help_documents() {
+        assert_eq!(watch_exit_code(&watch::Stop::Done), 0);
+        assert_eq!(watch_exit_code(&watch::Stop::Met), 0);
+        assert_eq!(watch_exit_code(&watch::Stop::Unmet), 5);
+        assert_eq!(watch_exit_code(&watch::Stop::TimedOut), 6);
+        assert_eq!(
+            watch_exit_code(&watch::Stop::Failed(GhError::NotAuthenticated)),
+            EXIT_AUTH
+        );
+        assert!(args::USAGE.contains("5 --until can no longer be met"));
+        assert!(args::USAGE.contains("6 --timeout reached"));
     }
 }

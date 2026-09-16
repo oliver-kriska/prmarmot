@@ -303,6 +303,7 @@ prmarmot-cli mine --changed            # only PRs changed since you last looked,
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
+prmarmot-cli watch --pr acme/api#42 --until ci-pass --timeout 30m   # wait for green CI
 ```
 
 Scope follows the app: `--repo owner/name` or `--all-repos`, then
@@ -335,6 +336,15 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
 
 Within `@1`, fields are only ever added.
 
+**JSON Schema.** Both formats are described by JSON Schema (draft 2020-12):
+[`cli/schema/board-v1.schema.json`](cli/schema/board-v1.schema.json) for
+`--json` views and [`cli/schema/event-v1.schema.json`](cli/schema/event-v1.schema.json)
+for each `watch` line. The event schema reuses the board schema's PR object.
+Because fields are only ever added within `@1`, the schemas accept fields they
+don't list. Validate against them or generate types from them, but ignore
+fields you don't know. The CLI's tests check its real output against both
+schemas and fail on any field the schemas don't describe.
+
 **Watch.** `prmarmot-cli watch [mine|review]` polls at your `refresh_secs`
 (default five minutes). `--interval` can override it but never goes below 30
 seconds, because the CLI shares your GitHub API budget with the app. Each poll
@@ -346,12 +356,13 @@ text on a terminal and NDJSON (`prmarmot-cli/event@1`) when piped:
 
 | `type` | When | Payload |
 | --- | --- | --- |
-| `ready` | first successful poll | `count`, `scope`, `interval_secs`, `rate_limit` |
+| `ready` | first successful poll | `count`, `scope`, `interval_secs`, `rate_limit`; with `--pr`, also `until` and `timeout_secs` |
 | `changed` | a semantic transition (commits, CI, conflict, reviews, requests, threads) | `kind` (`merge_conflict`, `changes_requested`, `review_again`, `ci_passed`, `changed`), `title`, `body`, `changes`, full `pr` |
 | `added` | a PR entered the view | full `pr` |
 | `removed` | a PR left the view | `status` (`merged`, `closed`, `open`, `inaccessible`, `unknown`) and `pr` summary |
 | `rate_limited` | budget below the reserve or GitHub refused | `retry_in_secs` (clamped to 60–900) |
 | `error` | a poll failed after `ready` | `message`, `retry_in_secs` |
+| `until` | last line of a `--until` or `--timeout` wait | `outcome` (`met`, `unmet`, `timeout`), `condition`, `reasons`, `until`, `timeout_secs`, and `pr` as last seen |
 
 When a PR is removed, the CLI spends one small extra request to learn whether
 it was merged or closed. `--events N` exits after N `changed`/`added`/`removed`
@@ -363,9 +374,42 @@ repository instead of a view, one small request per poll. Its events are the
 same; the stream ends with `removed` when the PR merges, closes, or becomes
 inaccessible.
 
+**Waiting for a condition.** With `--pr`, `--until CONDITION` turns the follow
+into a wait whose exit code is the answer, so scripts and agents don't have to
+parse events:
+
+| `--until` | Met (exit 0) when | Unmet (exit 5) when |
+| --- | --- | --- |
+| `ci-pass` | the check rollup is green, or the PR merged | CI fails |
+| `approved` | GitHub's review decision is approved, or the PR merged. Without branch protection there is no decision, so the standing reviews decide: at least one approval, yours included, and no change requests. A comment after an approval doesn't cancel it | changes are requested |
+| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads (the board's "waiting on others" group), and GitHub has finished computing mergeability; or the PR merged | CI fails or changes are requested |
+| `merged` | the PR merged | — |
+
+- **When a wait ends early:** a merge ends any wait as met, because there is
+  nothing left to wait for. The `until` event then names `merged` as the
+  condition and lists the conditions that were never seen under `reasons`
+  (`not_seen`). Any condition is unmet once the PR closes without merging or
+  becomes inaccessible. Requested changes don't end a `ci-pass` wait.
+- **PRs without checks:** a PR with no checks never passes `ci-pass`, so bound
+  that wait with `--timeout`.
+- **Several conditions:** repeat `--until` or comma-separate it
+  (`--until approved,merged`) to stop at whichever holds first. The wait is
+  unmet only once none of them can hold.
+- **When it checks:** conditions are checked on every poll, including the
+  first, at no extra requests.
+- **Timeout:** `--timeout 30m` (also `90s`, `2h`, `1h30m`) gives up with exit 6.
+  The last check lands on the deadline when the 30-second floor allows it.
+  `--timeout` also bounds a plain `--pr` follow.
+- **The last line:** the stream ends with an `until` event naming the met
+  condition, or the reasons (`ci_failed`, `changes_requested`, `closed`,
+  `inaccessible`), or the timeout.
+- **Not with `--events`:** `--until` can't be combined with `--events`.
+
 **Exit codes:** `0` ok, `1` GitHub, network, or file error, `2` usage error, `3` `gh`
-missing or not signed in, `4` rate limited. Errors go to stderr; stdout carries
-only the view or events.
+missing or not signed in, `4` rate limited, `5` a `--until` condition can no
+longer be met (CI failed, changes requested, or the PR closed without merging or
+became inaccessible), `6` `--timeout` reached. Errors go to stderr; stdout carries only
+the view or events.
 
 **Coding agents:** the CLI embeds a skill,
 [`cli/skills/prmarmot-cli/SKILL.md`](cli/skills/prmarmot-cli/SKILL.md). It
@@ -383,6 +427,24 @@ prmarmot-cli skill install --agent all      # both
 edited copy, a copy from another version, or a symlink unless you pass
 `--force`. `--dir DIR` installs into any other skills directory. After an
 upgrade, rerun it with `--force` to refresh the installed copy.
+
+**Shell completions:** `prmarmot-cli completions SHELL` prints a completion
+script for commands, flags, and flag values such as `--format`, `--until`, and
+`--agent`. The Homebrew cask installs all three. `install.sh` and
+`make install` link the bash or fish script for your login shell into the app,
+so updates refresh it, and print the zsh line below. To install one yourself:
+
+```sh
+# bash (with bash-completion), or eval "$(prmarmot-cli completions bash)" in ~/.bashrc
+prmarmot-cli completions bash > ~/.local/share/bash-completion/completions/prmarmot-cli
+# zsh: a directory on $fpath, added before compinit in ~/.zshrc: fpath=(~/.zfunc $fpath)
+mkdir -p ~/.zfunc && prmarmot-cli completions zsh > ~/.zfunc/_prmarmot-cli
+# fish
+prmarmot-cli completions fish > ~/.config/fish/completions/prmarmot-cli.fish
+```
+
+The scripts don't change between runs. Regenerate them after an upgrade so they
+include any new flags.
 
 ## Data and queue limits
 

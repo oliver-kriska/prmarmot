@@ -814,6 +814,25 @@ mod tests {
     }
 
     #[test]
+    fn json_matches_the_published_schema() {
+        use crate::schema_check::{assert_conforms, Schema};
+        use prmarmot_core::github::rate_limit::RateLimitInfo;
+        for mode in [Mode::Authored, Mode::Review] {
+            let mut view = sample_view(mode);
+            assert_conforms(Schema::Board, &board_json(&view));
+            view.attention_error = Some("attention state is unreadable".into());
+            view.rate = Some(RateLimitInfo {
+                limit: 5000,
+                cost: 1,
+                remaining: 4999,
+                reset_at: "2026-09-16T12:00:00Z".into(),
+            });
+            view.scope = BoardScope::AllRepositories;
+            assert_conforms(Schema::Board, &board_json(&view));
+        }
+    }
+
+    #[test]
     fn json_lists_every_section_in_layout_order_with_full_facts() {
         let value = board_json(&sample_view(Mode::Authored));
         assert_eq!(value["schema"], BOARD_SCHEMA);

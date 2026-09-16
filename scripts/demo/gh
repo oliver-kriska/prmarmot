@@ -138,6 +138,23 @@ def graphql(args):
         if "$tracked" in query:
             data["tracked"] = tracked
         return {"data": data}
+    # `prmarmot-cli watch --pr`: resolve owner/name#number, then follow it.
+    if "pullRequest(number:" in query:
+        repo = f"{fields.get('owner')}/{fields.get('name')}"
+        number = int(query.split("pullRequest(number:", 1)[1].split(")", 1)[0])
+        if not any(node["repository"]["nameWithOwner"] == repo for node in all_nodes):
+            return {"data": {"repository": None},
+                    "errors": [{"type": "NOT_FOUND", "path": ["repository"],
+                                "message": f"Could not resolve to a Repository with the name '{repo}'."}]}
+        found = next((node for node in all_nodes
+                      if node["repository"]["nameWithOwner"] == repo and node["number"] == number), None)
+        if found is None:
+            return {"data": {"repository": {"pullRequest": None}},
+                    "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"],
+                                "message": f"Could not resolve to a PullRequest with the number of {number}."}]}
+        return {"data": {"repository": {"pullRequest": {"id": found["id"]}}}}
+    if "$tracked" in query and "search" not in query:
+        return {"data": {"rateLimit": rate(1), "tracked": tracked}}
     raise ValueError("unrecognized GraphQL operation")
 
 
@@ -162,6 +179,19 @@ class FixtureTests(unittest.TestCase):
             for node in body["data"][alias]["nodes"]:
                 self.assertIn("totalCount", node["reviewRequests"])
                 self.assertIn("statusCheckRollup", node["commits"]["nodes"][0]["commit"])
+
+    def test_a_single_pull_request_can_be_followed(self):
+        resolved = graphql(["api", "graphql", "-f",
+                            "query=query($owner:String!,$name:String!){ repository(owner:$owner, name:$name){ pullRequest(number:415){ id } } }",
+                            "-f", "owner=demo-labs", "-f", "name=atlas"])
+        pr_id = resolved["data"]["repository"]["pullRequest"]["id"]
+        followed = graphql(["api", "graphql", "-f", "query=query($who:String!,$tracked:[ID!]!){ rateLimit { cost } tracked: nodes(ids:$tracked){ id } }",
+                            "-F", f"tracked[]={pr_id}"])
+        self.assertEqual([node["number"] for node in followed["data"]["tracked"]], [415])
+        missing = graphql(["api", "graphql", "-f",
+                           "query=query($owner:String!,$name:String!){ repository(owner:$owner, name:$name){ pullRequest(number:999){ id } } }",
+                           "-f", "owner=demo-labs", "-f", "name=atlas"])
+        self.assertIsNone(missing["data"]["repository"]["pullRequest"])
 
     def test_release_fixture_is_stable_and_repository_bound(self):
         tag = "v99.0.0"
