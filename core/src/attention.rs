@@ -302,6 +302,13 @@ impl SnapshotStore {
         self.snapshots.iter().find(|entry| entry.pr_id == pr_id)
     }
 
+    /// The merge-conflict state last observed for a PR, for
+    /// [`crate::board::carry_forward_conflicts`].
+    pub fn last_conflict(&self, pr_id: &str) -> Option<bool> {
+        self.snapshot(pr_id)
+            .map(|snapshot| snapshot.latest.semantic.conflict)
+    }
+
     pub fn observe(
         &mut self,
         pr_id: impl Into<String>,
@@ -606,6 +613,105 @@ fn validate_list<T>(
         validate_item(value)?;
     }
     Ok(())
+}
+
+/// What a semantic transition means for the person, in the order the app has
+/// always prioritized them. Shared by desktop notifications and CLI events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    MergeConflict,
+    ChangesRequested,
+    ReviewAgain,
+    CiPassed,
+    Changed,
+}
+
+impl NoticeKind {
+    /// Stable machine key for JSON output.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::MergeConflict => "merge_conflict",
+            Self::ChangesRequested => "changes_requested",
+            Self::ReviewAgain => "review_again",
+            Self::CiPassed => "ci_passed",
+            Self::Changed => "changed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    pub title: String,
+    pub body: String,
+}
+
+/// True when an observation carries something the author must act on.
+pub fn semantic_needs_action(observation: &Observation) -> bool {
+    let semantic = &observation.semantic;
+    semantic.conflict
+        || semantic.ci == ObservedCi::Fail
+        || semantic.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+        || semantic.unresolved > 0
+}
+
+/// The one most important thing that changed between `previous` and `row`.
+/// `None` without a previous observation: a first sighting is a baseline.
+pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option<Notice> {
+    let old = &previous?.semantic;
+    let notice = |kind, title: &str, body: String| {
+        Some(Notice {
+            kind,
+            title: title.to_owned(),
+            body,
+        })
+    };
+    if !old.conflict && row.conflict {
+        return notice(
+            NoticeKind::MergeConflict,
+            "Merge conflict",
+            format!(
+                "{} #{} now conflicts with its base branch",
+                row.repo, row.number
+            ),
+        );
+    }
+    if old.review_decision.as_deref() != Some("CHANGES_REQUESTED")
+        && row.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+    {
+        return notice(
+            NoticeKind::ChangesRequested,
+            "Needs you — changes requested",
+            format!("{} #{} · {}", row.repo, row.number, row.title),
+        );
+    }
+    if old.head_oid != row.head_oid
+        && row.reviewed_oid.is_some()
+        && row.reviewed_oid != row.head_oid
+    {
+        return notice(
+            NoticeKind::ReviewAgain,
+            "Review again — new commits",
+            format!("{} #{} changed since your review", row.repo, row.number),
+        );
+    }
+    if old.ci != ObservedCi::Pass && row.ci == Ci::Pass {
+        let approval = if row.review_decision.as_deref() == Some("APPROVED") {
+            " and is approved"
+        } else {
+            ""
+        };
+        return notice(
+            NoticeKind::CiPassed,
+            "Ready for you — CI passed",
+            format!("{} #{} passed CI{approval}", row.repo, row.number),
+        );
+    }
+    notice(
+        NoticeKind::Changed,
+        "Pull request changed",
+        format!("{} #{} · {}", row.repo, row.number, row.title),
+    )
 }
 
 #[cfg(test)]
@@ -946,5 +1052,84 @@ mod tests {
             store.snapshot("PR_1").unwrap().change_summary(),
             vec!["Changed on GitHub, then changed back"]
         );
+    }
+
+    fn board_row() -> BoardRow {
+        BoardRow {
+            id: "PR_7".into(),
+            repo: "acme/widgets".into(),
+            updated_at: Some("2026-09-11T10:00:00Z".into()),
+            head_oid: Some("head-1".into()),
+            reviewed_oid: None,
+            reviewed_at: None,
+            number: 7,
+            url: "https://github.com/acme/widgets/pull/7".into(),
+            title: "Tidy things".into(),
+            issue: None,
+            issue_url: None,
+            author: Some("octocat".into()),
+            stack: None,
+            queue_provenance: None,
+            draft: false,
+            category: crate::board::Category::Await,
+            bug: false,
+            labels: Vec::new(),
+            ci: Ci::Running,
+            conflict: false,
+            mergeable_unknown: false,
+            review_decision: None,
+            review_state: crate::board::ReviewState::Waiting,
+            requested: Vec::new(),
+            reviews: Vec::new(),
+            my_review: None,
+            unresolved: 0,
+            blockers: Vec::new(),
+            created_at: "2026-09-01T10:00:00Z".into(),
+            note: String::new(),
+        }
+    }
+
+    #[test]
+    fn notices_pick_the_single_most_important_transition() {
+        let before = board_row();
+        let previous = Observation::from_row(&before);
+        assert_eq!(semantic_notice(None, &before), None, "first sighting");
+
+        let mut after = before.clone();
+        after.ci = Ci::Pass;
+        after.review_decision = Some("APPROVED".into());
+        let notice = semantic_notice(Some(&previous), &after).unwrap();
+        assert_eq!(notice.kind, NoticeKind::CiPassed);
+        assert_eq!(notice.kind.key(), "ci_passed");
+        assert_eq!(notice.body, "acme/widgets #7 passed CI and is approved");
+
+        after.conflict = true;
+        after.review_decision = Some("CHANGES_REQUESTED".into());
+        let notice = semantic_notice(Some(&previous), &after).unwrap();
+        assert_eq!(notice.kind, NoticeKind::MergeConflict);
+        assert!(semantic_needs_action(&Observation::from_row(&after)));
+
+        after.conflict = false;
+        assert_eq!(
+            semantic_notice(Some(&previous), &after).unwrap().title,
+            "Needs you — changes requested"
+        );
+
+        let mut rereview = before.clone();
+        rereview.reviewed_oid = Some("head-1".into());
+        let reviewed = Observation::from_row(&rereview);
+        rereview.head_oid = Some("head-2".into());
+        assert_eq!(
+            semantic_notice(Some(&reviewed), &rereview).unwrap().kind,
+            NoticeKind::ReviewAgain
+        );
+
+        let mut other = before.clone();
+        other.unresolved = 2;
+        assert_eq!(
+            semantic_notice(Some(&previous), &other).unwrap().kind,
+            NoticeKind::Changed
+        );
+        assert!(!semantic_needs_action(&previous));
     }
 }
