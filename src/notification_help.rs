@@ -5,7 +5,8 @@
 
 use std::rc::Rc;
 
-use gpui::{div, px, App, ParentElement, Styled, Window};
+use gpui::prelude::FluentBuilder;
+use gpui::{div, img, px, App, FontWeight, ParentElement, Styled, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{h_flex, v_flex, ActiveTheme, WindowExt};
 
@@ -32,7 +33,7 @@ fn help_copy(permission: NotificationPermission) -> HelpCopy {
         NotificationPermission::Denied => HelpCopy {
             status: "Notifications are turned off for PR Marmot.",
             instructions: if cfg!(target_os = "macos") {
-                "In System Settings, open Notifications, choose PR Marmot, then turn on Allow Notifications."
+                "1. Open Notifications in System Settings.\n2. Choose PR Marmot.\n3. Turn on Allow Notifications."
             } else {
                 "Open your desktop environment’s notification settings and allow notifications for PR Marmot. The exact location depends on your Linux desktop."
             },
@@ -40,9 +41,9 @@ fn help_copy(permission: NotificationPermission) -> HelpCopy {
         },
         #[cfg(target_os = "macos")]
         NotificationPermission::NotDetermined => HelpCopy {
-            status: "PR Marmot has not asked for notification permission yet.",
-            instructions: "Continue to let the operating system ask for permission. No notification will be sent by this check.",
-            recheck_label: "Request permission",
+            status: "Stay informed about your PRs",
+            instructions: "Get updates about watched PRs and PRs that need your attention. Continue to let macOS ask for permission. No test notification will be sent.",
+            recheck_label: "Enable notifications",
         },
         #[cfg(target_os = "macos")]
         NotificationPermission::Unknown => HelpCopy {
@@ -80,25 +81,17 @@ pub fn open_notification_help(
     let on_recheck = Rc::new(on_recheck);
 
     window.open_dialog(cx, move |dialog, _, cx| {
-        let mut actions = h_flex().justify_end().gap_2().child(
+        let settings_primary = cfg!(target_os = "macos") && permission == NotificationPermission::Denied;
+        let actions = h_flex().justify_end().flex_wrap().gap_2().child(
             Button::new("notification-not-now")
                 .label("Not now")
                 .on_click(|_, window, cx| window.close_dialog(cx)),
         );
 
-        #[cfg(target_os = "macos")]
-        {
-            actions = actions.child(
-                Button::new("open-notification-settings")
-                    .label("Open System Settings")
-                    .on_click(|_, _, cx| cx.open_url(NOTIFICATION_SETTINGS_URL)),
-            );
-        }
-
         let on_recheck = on_recheck.clone();
-        actions = actions.child(
+        let actions = actions.child(
             Button::new("recheck-notification-permission")
-                .primary()
+                .when(!settings_primary, |button| button.primary())
                 .label(copy.recheck_label)
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
@@ -106,20 +99,38 @@ pub fn open_notification_help(
                 }),
         );
 
+        #[cfg(target_os = "macos")]
+        let actions = actions.when(
+            matches!(permission, NotificationPermission::Denied | NotificationPermission::Unknown),
+            |actions| actions.child(
+                Button::new("open-notification-settings")
+                    .when(settings_primary, |button| button.primary())
+                    .label("Open System Settings")
+                    .on_click(|_, _, cx| cx.open_url(NOTIFICATION_SETTINGS_URL)),
+            ),
+        );
+
         dialog
-            .title("Allow desktop notifications")
+            .title("Notifications")
             .w(px(500.))
             .close_button(true)
             .child(
                 v_flex()
-                    .gap_3()
+                    .gap_4()
                     .text_size(px(13.))
-                    .child(div().text_color(cx.theme().foreground).child(copy.status))
+                    .child(h_flex().gap_4()
+                        .child(img("branding/mascot.png").w(px(58.)).h(px(64.)).flex_shrink_0())
+                        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().foreground).child(copy.status)))
                     .child(
-                        div()
+                        v_flex().gap_2()
                             .text_color(cx.theme().muted_foreground)
-                            .child(copy.instructions),
+                            .children(copy.instructions.split('\n').map(|line| div().child(line))),
                     )
+                    .when(settings_primary, |body| body.child(
+                        div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                            .child("PR Marmot missing from the list? Notification setup may be incomplete. Reopen the installed app and check again."),
+                    ))
                     .child(
                         div()
                             .p_3()
@@ -154,7 +165,7 @@ mod tests {
     #[test]
     fn undetermined_permission_asks_before_claiming_success() {
         let copy = help_copy(NotificationPermission::NotDetermined);
-        assert_eq!(copy.recheck_label, "Request permission");
+        assert_eq!(copy.recheck_label, "Enable notifications");
         assert!(!copy.status.contains("allowed"));
     }
 }

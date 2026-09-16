@@ -11,6 +11,9 @@ direction, not embedded or traced Painter bitmaps.
 - `icon-small.svg`: optically enlarged and simplified app tile, source for
   `icon-{16,32}.png`. **Use this source at physical export sizes ≤32px.**
 - `mark.svg`: single-color untiled logo mark, for display at 48px or larger.
+- `mascot.svg` / `mascot.png`: full-color untiled marmot and rock for Settings
+  and notification help. The 192×212 PNG supports the 58×64 logical-pixel display
+  at Retina resolution. Keep it off the table and titlebar; do not use as a watermark.
 - `mark-small.svg`: single-color untiled optical mark for 16–32px. Both mark
   SVGs use `currentColor` (black by default); set the SVG color when embedding,
   or use the explicit light/dark PNG exports in native image contexts.
@@ -31,6 +34,7 @@ The same slate app tile works on both light and dark desktop backgrounds.
 Run `scripts/generate-icons.sh` on macOS to regenerate the seven app PNGs and
 `prmarmot.icns` with librsvg and Apple's `iconutil`. The script selects
 `icon-small.svg` for 16 and 32 physical pixels and `icon.svg` above 32.
+It also exports `mascot.png` from the untiled `mascot.svg`.
 Normal builds consume the generated files without requiring these tools.
 
 Logo and monochrome PNG exports were rasterized with CairoSVG 2.9.1; app PNGs

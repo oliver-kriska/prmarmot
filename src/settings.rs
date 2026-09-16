@@ -2,8 +2,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Window,
+    div, img, px, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -302,6 +303,14 @@ impl Render for SettingsView {
                     .track_scroll(&self.scroll)
                     .pr_1()
                     .child(
+                        h_flex().gap_4().pb_3()
+                            .child(img("branding/mascot.png").w(px(58.)).h(px(64.)).flex_shrink_0())
+                            .child(v_flex().gap_1()
+                                .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("PR Marmot"))
+                                .child(div().text_color(cx.theme().muted_foreground)
+                                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))))),
+                    )
+                    .child(
                         self.field(
                             "Reviewer suggestions",
                             &self.reviewers,
@@ -313,7 +322,7 @@ impl Render for SettingsView {
                         ),
                     )
                     .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
-                        .child("Comma-separated usernames. Applies to all repositories as a hint only — no assignments or CODEOWNERS. Leave empty for generic hints."))
+                        .child("Comma-separated usernames, a hint only — no assignments or CODEOWNERS. Used where no [repo_reviewers] entry in config.toml matches the owner or repository. Leave empty for generic hints."))
                     .child(self.field(
                         "Refresh interval",
                         &self.refresh,

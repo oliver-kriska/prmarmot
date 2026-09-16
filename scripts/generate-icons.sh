@@ -9,6 +9,8 @@ command -v iconutil >/dev/null || { echo 'macOS iconutil is required.' >&2; exit
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/prmarmot-icons.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/prmarmot.iconset"
+rsvg-convert --width 192 --height 212 "$ASSETS/mascot.svg" \
+  --output "$ASSETS/mascot.png"
 for size in 16 32 64 128 256 512 1024; do
   source="$ASSETS/icon.svg"
   # Optical micro artwork omits details that disappear at menu/Finder sizes.

@@ -1,5 +1,5 @@
-//! Embedded asset source: the handful of Lucide icons (ISC license) that
-//! gpui-component widgets request at runtime (e.g. the Select chevron).
+//! Embedded asset source: the app mark and the handful of Lucide icons (ISC
+//! license) that gpui-component widgets request at runtime (e.g. the Select chevron).
 //! Everything is compiled into the binary — no bundle-relative lookups, so
 //! the same binary works from a terminal and from a Spotlight-launched .app.
 
@@ -10,6 +10,10 @@ use gpui::{AssetSource, Result, SharedString};
 pub struct Assets;
 
 const ICONS: &[(&str, &[u8])] = &[
+    (
+        "branding/mascot.png",
+        include_bytes!("../assets/branding/mascot.png"),
+    ),
     (
         "icons/binoculars.svg",
         include_bytes!("../assets/icons/binoculars.svg"),
@@ -60,6 +64,17 @@ impl AssetSource for Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mascot_is_embedded_at_retina_resolution() {
+        let bytes = Assets
+            .load("branding/mascot.png")
+            .unwrap()
+            .expect("missing mascot");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 192);
+        assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 212);
+    }
 
     #[test]
     fn dialog_close_icon_is_embedded_at_the_framework_path() {
