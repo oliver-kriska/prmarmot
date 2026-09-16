@@ -2,8 +2,11 @@
 
 PR Marmot ships one Apple-silicon archive named
 `prmarmot-v<VERSION>-macos-arm64.tar.gz`. The archive contains
-`prmarmot.app`, whose bundle identifier is `dev.oliverkriska.prmarmot`,
-`CFBundleName` is `prmarmot`, and display name is **PR Marmot**. The terminal and
+`prmarmot.app`, whose bundle identifier is `dev.oliverkriska.prmarmot` and
+`CFBundleName` is **PR Marmot**. Finder, the Dock, and Spotlight show **PR Marmot**
+from `Contents/Resources/en.lproj/InfoPlist.strings`; the plain
+`CFBundleDisplayName` stays `prmarmot` because macOS shows the localized name
+only when that value matches the file name. The terminal and
 agent CLI ships inside the same bundle as `Contents/MacOS/prmarmot-cli`
 (identifier `dev.oliverkriska.prmarmot.cli`), signed before the app seals it;
 the cask's `binary` stanza and `install.sh` link it onto `PATH`. Its shell

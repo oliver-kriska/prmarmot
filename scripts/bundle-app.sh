@@ -82,6 +82,12 @@ cp "$REPO_ROOT"/cli/completions/prmarmot-cli.{bash,zsh,fish} "$APP/Contents/Reso
 cp "$REPO_ROOT/assets/branding/prmarmot.icns" "$APP/Contents/Resources/prmarmot.icns"
 
 # --- Info.plist ------------------------------------------------------------
+# The bundle stays prmarmot.app, but macOS should say "PR Marmot":
+# - The menu bar reads CFBundleName.
+# - Finder, Launchpad, Spotlight and the Dock read the localized
+#   CFBundleDisplayName (en.lproj), and only when LSHasLocalizedDisplayName is
+#   set and the plain CFBundleDisplayName equals the file name ("prmarmot").
+#   Otherwise they show the file name.
 step "Writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -91,9 +97,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleIdentifier</key>
 	<string>$BUNDLE_ID</string>
 	<key>CFBundleName</key>
-	<string>prmarmot</string>
-	<key>CFBundleDisplayName</key>
 	<string>PR Marmot</string>
+	<key>CFBundleDisplayName</key>
+	<string>prmarmot</string>
+	<key>LSHasLocalizedDisplayName</key>
+	<true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>prmarmot</string>
 	<key>CFBundleVersion</key>
@@ -116,6 +126,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
+mkdir -p "$APP/Contents/Resources/en.lproj"
+cat > "$APP/Contents/Resources/en.lproj/InfoPlist.strings" <<'STRINGS'
+"CFBundleName" = "PR Marmot";
+"CFBundleDisplayName" = "PR Marmot";
+STRINGS
+plutil -lint "$APP/Contents/Resources/en.lproj/InfoPlist.strings" >/dev/null
 
 # --- ad-hoc codesign -------------------------------------------------------
 step "Codesigning (ad-hoc)"
