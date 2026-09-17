@@ -23,6 +23,11 @@ def now():
     return datetime.strptime(pinned, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+#: Whose board this is. `latestReview` is GitHub's `reviews(last:1, author:$who)`,
+#: so it only ever carries this login's own review.
+VIEWER = "demo-user"
+
+
 def ago(hours):
     """A timestamp `hours` before now, so pickup ages read the same any day."""
     at = now() - timedelta(hours=hours)
@@ -52,15 +57,25 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
          "submittedAt": f"2026-08-{day:02d}T12:00:00Z"}
         for day, (login, state) in enumerate(reviews, 1)
     ]
+    head_oid = f"head-{repo}-{number}"
+    # The viewer's own standing review, recorded against the commit that was
+    # the head when it was submitted. A later `push_commit` moves the head and
+    # leaves this behind, which is exactly what "new commits since your
+    # review" is computed from.
+    mine = [r for r in review_nodes if r["author"]["login"] == VIEWER]
+    latest_review = [
+        {"state": mine[-1]["state"], "submittedAt": mine[-1]["submittedAt"],
+         "commit": {"oid": head_oid}}
+    ] if mine else []
     node = {
         "id": f"PR_demo_{repo.replace('/', '_')}_{number}",
         "url": f"https://github.com/{repo}/pull/{number}",
         "repository": {"nameWithOwner": repo},
         "updatedAt": f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
-        "headRefOid": f"head-{repo}-{number}",
+        "headRefOid": head_oid,
         "state": "OPEN",
         "merged": False,
-        "latestReview": {"nodes": []},
+        "latestReview": {"nodes": latest_review},
         "number": number,
         "title": title,
         "isDraft": draft,
@@ -197,6 +212,11 @@ def push_commit(node, tag="next"):
 def add_review(node, login, state, hours=1):
     node["reviews"]["nodes"].append(
         {"author": {"login": login}, "state": state, "submittedAt": ago(hours)})
+    if login == VIEWER:
+        # Reviewing again re-pins the review to the commit on screen.
+        node["latestReview"]["nodes"] = [
+            {"state": state, "submittedAt": ago(hours),
+             "commit": {"oid": node["headRefOid"]}}]
     node["updatedAt"] = ago(0)
 
 
@@ -250,6 +270,9 @@ def _changed_second(views):
 
 def _changed_third(views):
     _changed_second(views)
+    # A PR the viewer has already reviewed gets a new commit: this is what
+    # "changed since your review" is computed from.
+    push_commit(find(views, 526), tag="after-review")
     # Then a reviewer is added and the open threads are resolved.
     request_review(find(views, 418), "sam")
     resolve_threads(find(views, 418))
@@ -302,6 +325,9 @@ SCENARIOS = {
         "steps": [None],
         "pages": {"authored": [("p2", 700), ("p3", 800), ("p4", 900), ("p5", 1000),
                                ("p6", 1100)]},
+        # Enough rows across the five pages core will fetch to fill the
+        # fifty-watch bound and evict from it.
+        "page_rows": 12,
     },
     "snoozing": {
         "description": "A PR snoozed on its build: pending, still pending, then failing.",
@@ -357,7 +383,7 @@ def scenario_files(name, step):
     }
     for alias, extra in pages.items():
         for position, (suffix, first_number) in enumerate(extra):
-            nodes = extra_rows(alias, first_number, 6)
+            nodes = extra_rows(alias, first_number, SCENARIOS[name].get("page_rows", 6))
             for node in nodes:
                 index[node["id"]] = node
             body_key = "search" if alias == "authored" else alias
@@ -696,6 +722,41 @@ class FixtureTests(unittest.TestCase):
         numbers = [node["number"] for cursor in cursors
                    for node in files[f"step1-{cursor}.json"]["data"]["search"]["nodes"]]
         self.assertEqual(len(numbers), len(set(numbers)), "pages must not repeat rows")
+
+    def test_a_reviewed_pr_gets_a_commit_so_review_again_can_be_tested(self):
+        first, _ = scenario_step("changed", 1)
+        third, _ = scenario_step("changed", 3)
+        reviewed = find(first, 526)
+        self.assertEqual([review["author"]["login"] for review in reviewed["reviews"]["nodes"]],
+                         ["demo-user"], "526 is the PR the viewer has reviewed")
+        self.assertNotEqual(reviewed["headRefOid"], find(third, 526)["headRefOid"])
+
+    def test_the_viewers_review_names_the_commit_it_was_left_on(self):
+        # `reviewed_oid` comes from latestReview.commit.oid; without it the
+        # Note can never say "new commits since your review".
+        first, _ = scenario_step("changed", 1)
+        third, _ = scenario_step("changed", 3)
+        before = find(first, 526)
+        self.assertEqual(before["latestReview"]["nodes"][0]["commit"]["oid"],
+                         before["headRefOid"], "reviewed at the head of the day")
+        after = find(third, 526)
+        self.assertEqual(after["latestReview"]["nodes"][0]["commit"]["oid"],
+                         before["headRefOid"], "the review stays on its commit")
+        self.assertNotEqual(after["latestReview"]["nodes"][0]["commit"]["oid"],
+                            after["headRefOid"])
+
+    def test_a_pr_nobody_you_know_reviewed_has_no_latest_review(self):
+        first, _ = scenario_step("changed", 1)
+        # 528's reviews are other people's, and GitHub filters by author.
+        self.assertEqual(find(first, 528)["latestReview"]["nodes"], [])
+
+    def test_the_deep_scenario_can_fill_the_fifty_watch_bound(self):
+        files = scenario_files("deep", 1)
+        fetched = len(files["step1-authored.json"]["data"]["search"]["nodes"])
+        # core fetches five pages at most: page one plus four more.
+        for cursor in ("authored-p2", "authored-p3", "authored-p4", "authored-p5"):
+            fetched += len(files[f"step1-{cursor}.json"]["data"]["search"]["nodes"])
+        self.assertGreater(fetched, 51, "51 rows are needed to evict from a bound of 50")
 
     def test_the_empty_scenario_is_empty_in_both_views(self):
         files = scenario_files("empty", 1)
