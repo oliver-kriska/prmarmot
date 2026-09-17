@@ -143,6 +143,17 @@ pub fn share_group(
     core_share::share_group(&title, &rows, mode.into(), format.into()).into()
 }
 
+/// A Note with its leading status emoji removed.
+///
+/// Core's Note strings carry a glyph (`🔴`, `🟡`, `🟢`) because the shell
+/// prototype did and the goldens pin it. Every graphical front end draws its
+/// own dot instead, so it strips the glyph first — with this function, not
+/// with a hand-written character check that will miss one.
+#[uniffi::export]
+pub fn strip_note_glyphs(note: String) -> String {
+    prmarmot_core::board::strip_note_glyphs(&note)
+}
+
 /// The label a section header shows for a category, e.g. "Needs attention".
 #[uniffi::export]
 pub fn group_label(mode: Mode, category: crate::types::Category, all_repos: bool) -> String {

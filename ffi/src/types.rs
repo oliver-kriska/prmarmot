@@ -18,7 +18,7 @@ use prmarmot_core::size as core_size;
 use crate::error::FfiError;
 
 /// Which queue a board shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Mode {
     /// PRs you authored — the outgoing queue.
     Authored,
@@ -36,7 +36,7 @@ impl From<Mode> for core_board::Mode {
 }
 
 /// How much of GitHub a board covers. Independent of [`Mode`].
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BoardScope {
     AllRepositories,
     Repository { name: String },
@@ -51,7 +51,7 @@ impl From<BoardScope> for core_board::BoardScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Category {
     Action,
     Await,
@@ -87,7 +87,7 @@ impl From<Category> for core_board::Category {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Ci {
     Pass,
     Fail,
@@ -118,7 +118,7 @@ impl From<Ci> for core_board::Ci {
 }
 
 /// The aggregate of completed human reviews on an authored PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum ReviewState {
     Changes,
     Approved,
@@ -152,7 +152,7 @@ impl From<ReviewState> for core_board::ReviewState {
 }
 
 /// How a PR reached the review queue: GitHub asked you, or it is unclaimed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Queue {
     Requested,
     Available,
@@ -178,7 +178,7 @@ impl From<Queue> for core_board::QueueProvenance {
 
 /// One thing keeping an authored PR out of the merge queue, most-blocking
 /// first. Core owns the facts; every front end owns the wording and the color.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Blocker {
     NoReviewers { suggested: Vec<String> },
     MergeConflict,
@@ -218,7 +218,7 @@ impl From<&Blocker> for core_board::Blocker {
 }
 
 /// One completed review, latest per author.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct Review {
     /// `None` when the reviewer's account is gone; the review still counts.
     pub login: Option<String>,
@@ -227,14 +227,14 @@ pub struct Review {
 }
 
 /// The linked ticket found by the configured issue-link rule.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct IssueRef {
     pub key: String,
     pub url: Option<String>,
 }
 
 /// A PR's place in a stack of dependent branches.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct StackRef {
     /// The number of the PR at the base of the stack.
     pub number: u64,
@@ -245,7 +245,7 @@ pub struct StackRef {
     pub position: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum SizeBand {
     Small,
     Medium,
@@ -263,7 +263,9 @@ impl From<core_size::SizeBand> for SizeBand {
 }
 
 /// GitHub's change counts, plus the band they fall in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
+)]
 pub struct ChangeSize {
     pub additions: u64,
     pub deletions: u64,
@@ -294,7 +296,7 @@ impl From<ChangeSize> for core_size::ChangeSize {
 }
 
 /// One row of a board.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct PullRequest {
     /// GitHub's node id. Stable across refreshes; the key for watches,
     /// snoozes and change snapshots.
@@ -468,7 +470,9 @@ pub(crate) fn into_rows(rows: Vec<PullRequest>) -> Vec<core_board::BoardRow> {
 }
 
 /// GitHub's API budget, as the footer shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
+)]
 pub struct RateLimit {
     pub limit: u32,
     pub remaining: u32,
@@ -478,7 +482,7 @@ pub struct RateLimit {
 }
 
 /// What one fetch produced.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct Board {
     pub mode: Mode,
     pub rows: Vec<PullRequest>,
@@ -756,4 +760,69 @@ impl From<&prmarmot_core::search::FilterChip> for FilterChip {
             term: chip.term(),
         }
     }
+}
+
+/// The offline cache, as bytes.
+///
+/// The iPad keeps the last board so a relaunch shows something real while the
+/// first fetch runs. It stores it the way it stores the attention state — as
+/// opaque bytes this crate writes and reads — rather than as a hand-written
+/// Swift mirror of every field, which would be a second definition of a
+/// `PullRequest` and would go wrong the first time core gained a field.
+///
+/// The envelope carries a version, so an old cache from a previous release is
+/// discarded rather than half-read.
+const CACHE_VERSION: u32 = 1;
+/// Bound every cache. A board is a few hundred kilobytes.
+const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedBoard {
+    version: u32,
+    /// Unix seconds when this board was fetched, for "synced 3m ago".
+    fetched_at: i64,
+    board: Board,
+}
+
+#[uniffi::export]
+pub fn encode_board(board: Board, fetched_at_epoch: i64) -> Result<Vec<u8>, FfiError> {
+    let bytes = serde_json::to_vec(&CachedBoard {
+        version: CACHE_VERSION,
+        fetched_at: fetched_at_epoch,
+        board,
+    })
+    .map_err(|e| FfiError::invalid(format!("could not write the cached board: {e}")))?;
+    if bytes.len() > MAX_CACHE_BYTES {
+        return Err(FfiError::invalid(format!(
+            "the board is {} bytes, past the {MAX_CACHE_BYTES}-byte cache bound",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+/// A board written by [`encode_board`], with the instant it was fetched.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RestoredBoard {
+    pub board: Board,
+    pub fetched_at_epoch: i64,
+}
+
+#[uniffi::export]
+pub fn decode_board(bytes: Vec<u8>) -> Result<RestoredBoard, FfiError> {
+    if bytes.len() > MAX_CACHE_BYTES {
+        return Err(FfiError::invalid("the cached board is too large to read"));
+    }
+    let cached: CachedBoard = serde_json::from_slice(&bytes)
+        .map_err(|e| FfiError::invalid(format!("could not read the cached board: {e}")))?;
+    if cached.version != CACHE_VERSION {
+        return Err(FfiError::invalid(format!(
+            "the cached board is version {}, and this build writes version {CACHE_VERSION}",
+            cached.version
+        )));
+    }
+    Ok(RestoredBoard {
+        board: cached.board,
+        fetched_at_epoch: cached.fetched_at,
+    })
 }

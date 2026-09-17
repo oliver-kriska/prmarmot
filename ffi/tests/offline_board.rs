@@ -576,3 +576,27 @@ mod sign_in {
         assert!(prmarmot_ffi::token_can_refresh(expiring, 800));
     }
 }
+
+#[test]
+fn a_board_survives_the_offline_cache() {
+    let transport = Offline::fixture("authored_response.json");
+    let board = futures::executor::block_on(client(transport).fetch_board(
+        Mode::Authored,
+        BoardScope::Repository {
+            name: "acme/widgets".into(),
+        },
+        settings(),
+        NOW,
+    ))
+    .unwrap();
+
+    let bytes = prmarmot_ffi::encode_board(board.clone(), NOW).unwrap();
+    let restored = prmarmot_ffi::decode_board(bytes).unwrap();
+    assert_eq!(restored.board, board, "the cache is lossless");
+    assert_eq!(restored.fetched_at_epoch, NOW);
+
+    // Nonsense and a future version are refused rather than half-read.
+    assert!(prmarmot_ffi::decode_board(b"not json".to_vec()).is_err());
+    let future = br#"{"version":99,"fetched_at":0,"board":null}"#.to_vec();
+    assert!(prmarmot_ffi::decode_board(future).is_err());
+}
