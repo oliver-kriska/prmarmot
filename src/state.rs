@@ -1049,15 +1049,6 @@ fn loaded_badge_sources<'a>(
 }
 
 /// "just now" / "3m ago" / "2h 15m ago" — static text, recomputed on notify.
-pub fn relative(since: DateTime<Local>) -> String {
-    let secs = (Local::now() - since).num_seconds().max(0);
-    match secs {
-        0..=59 => "just now".to_string(),
-        60..=3599 => format!("{}m ago", secs / 60),
-        _ => format!("{}h {}m ago", secs / 3600, (secs % 3600) / 60),
-    }
-}
-
 pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
     prmarmot_local::config::refresh_interval(config_secs)
 }

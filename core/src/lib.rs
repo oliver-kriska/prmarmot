@@ -20,3 +20,4 @@ pub mod pickup;
 pub mod search;
 pub mod share;
 pub mod size;
+pub mod status;

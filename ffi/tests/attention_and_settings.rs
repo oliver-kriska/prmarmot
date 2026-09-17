@@ -489,3 +489,39 @@ fn the_details_panel_and_its_copy_menu_come_from_core_not_from_swift() {
     assert_eq!(items[2].text, format!("{}#{}", row.repo, row.number));
     assert!(items[4].text.ends_with(&lines.join("\n")));
 }
+
+#[test]
+fn the_header_sentence_is_cores_and_names_the_icon_badge_not_a_dock() {
+    let summary = prmarmot_ffi::header_summary(prmarmot_ffi::HeaderCounts {
+        loaded: 56,
+        truncated: true,
+        mode: Mode::Review,
+        all_repos: true,
+        need_you: 3,
+        badge: 5,
+        badge_complete: true,
+        tracked_loaded: 50,
+        tracked_total: 64,
+    });
+    assert_eq!(
+        summary.line,
+        "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed"
+    );
+    assert!(summary.explanation.contains("The app icon badge shows 5"));
+    assert!(!summary.explanation.contains("Dock"));
+}
+
+#[test]
+fn the_ipad_reads_the_same_clock_words_as_the_desktop() {
+    assert_eq!(prmarmot_ffi::relative_time(0), "just now");
+    assert_eq!(prmarmot_ffi::relative_time(8_100), "2h 15m ago");
+    assert_eq!(prmarmot_ffi::human_duration(600), "10m");
+    assert_eq!(
+        prmarmot_ffi::queue_sync_text(Mode::Authored, true, true, Some(300)),
+        "Updating involving PRs… · synced 5m ago"
+    );
+    assert_eq!(
+        prmarmot_ffi::changed_marker_text(vec!["New commits".into()]),
+        "Changed since you last selected it: New commits. Select the PR to clear."
+    );
+}

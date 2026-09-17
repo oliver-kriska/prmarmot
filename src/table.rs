@@ -753,12 +753,7 @@ impl BoardTableDelegate {
 /// Tooltip for the blue changed marker: why it is shown, what changed, and
 /// how to clear it.
 pub fn changed_marker_tooltip(changes: &[String]) -> SharedString {
-    let what = if changes.is_empty() {
-        "Changed on GitHub".to_string()
-    } else {
-        changes.join(" · ")
-    };
-    format!("Changed since you last selected it: {what}. Select the PR to clear.").into()
+    prmarmot_core::status::changed_marker_tooltip(changes).into()
 }
 
 fn status_dot(color: Hsla) -> Div {

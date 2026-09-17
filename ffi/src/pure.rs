@@ -13,6 +13,7 @@ use prmarmot_core::pickup;
 use prmarmot_core::search as core_search;
 use prmarmot_core::share as core_share;
 use prmarmot_core::size as core_size;
+use prmarmot_core::status as core_status;
 
 use crate::error::FfiError;
 use crate::types::{
@@ -153,6 +154,107 @@ pub fn share_group(
 #[uniffi::export]
 pub fn strip_note_glyphs(note: String) -> String {
     prmarmot_core::board::strip_note_glyphs(&note)
+}
+
+/// The numbers the header sentence is built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct HeaderCounts {
+    pub loaded: u32,
+    /// GitHub has more than this page.
+    pub truncated: bool,
+    pub mode: Mode,
+    pub all_repos: bool,
+    /// Rows of this view that need you, snoozed ones excluded.
+    pub need_you: u32,
+    /// Across both views: your PRs that need action plus reviews requested
+    /// from you, snoozed ones excluded. This is the icon badge.
+    pub badge: u32,
+    /// Both views have loaded, so `badge` is the whole count.
+    pub badge_complete: bool,
+    pub tracked_loaded: u32,
+    pub tracked_total: u32,
+}
+
+/// The header sentence and the explanation behind it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HeaderSummary {
+    /// "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed".
+    pub line: String,
+    /// The paragraph behind the info button, with the badge named for iOS.
+    pub explanation: String,
+}
+
+/// The header sentence, in the desktop's words with the iPad's badge name.
+#[uniffi::export]
+pub fn header_summary(counts: HeaderCounts) -> HeaderSummary {
+    let (line, explanation) = core_status::header_counts(
+        &core_status::HeaderCounts {
+            loaded: counts.loaded as usize,
+            truncated: counts.truncated,
+            mode: counts.mode.into(),
+            all_repos: counts.all_repos,
+            need_you: counts.need_you as usize,
+            badge: counts.badge as usize,
+            badge_complete: counts.badge_complete,
+            tracked_loaded: counts.tracked_loaded as usize,
+            tracked_total: counts.tracked_total as usize,
+        },
+        core_status::BadgeName::AppIcon,
+    );
+    HeaderSummary { line, explanation }
+}
+
+/// Whether a row of this view counts toward "need you".
+#[uniffi::export]
+pub fn needs_you_here(mode: Mode, category: crate::types::Category) -> bool {
+    core_status::needs_you_here(mode.into(), category.into())
+}
+
+/// What the Changed toggle says it will do.
+#[uniffi::export]
+pub fn changed_toggle_text(on: bool, count: u32) -> String {
+    core_status::changed_toggle_tooltip(on, count as usize)
+}
+
+/// What the Snoozed toggle says it will do.
+#[uniffi::export]
+pub fn snoozed_toggle_text(on: bool, count: u32) -> String {
+    core_status::snoozed_toggle_tooltip(on, count as usize)
+}
+
+/// The blue marker's explanation: what changed, and how to clear it.
+#[uniffi::export]
+pub fn changed_marker_text(changes: Vec<String>) -> String {
+    core_status::changed_marker_tooltip(&changes)
+}
+
+/// "just now", "3m ago", "2h 15m ago".
+#[uniffi::export]
+pub fn relative_time(secs_ago: i64) -> String {
+    core_status::relative(secs_ago)
+}
+
+/// "45s", "10m", "1h 5m" — a wait ahead.
+#[uniffi::export]
+pub fn human_duration(secs: u64) -> String {
+    core_status::human_duration(secs)
+}
+
+/// The queue's status line, keeping "synced Xm ago" visible while refreshing.
+#[uniffi::export]
+pub fn queue_sync_text(
+    mode: Mode,
+    all_repos: bool,
+    syncing: bool,
+    synced_secs_ago: Option<i64>,
+) -> String {
+    core_status::queue_sync_text(mode.into(), all_repos, syncing, synced_secs_ago)
+}
+
+/// What to show before a queue's first rows ever arrive.
+#[uniffi::export]
+pub fn queue_loading_text(mode: Mode, all_repos: bool) -> String {
+    core_status::queue_loading_text(mode.into(), all_repos).to_owned()
 }
 
 /// One entry of the Details panel's Copy menu.

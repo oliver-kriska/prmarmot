@@ -78,6 +78,11 @@ pub struct ObserveResult {
     pub evicted_pr_id: Option<String>,
     /// The notice worth showing, when there is one.
     pub notice: Option<Notice>,
+    /// Whether the observation *before* this one already needed the author to
+    /// act. `None` on a first sighting. This is what tells "it just started
+    /// needing you" from "it has needed you all along", which is the whole
+    /// difference between a useful notification and a nag.
+    pub needed_action_before: Option<bool>,
 }
 
 /// Whether a watched PR is still there. GitHub can close, merge or hide one
@@ -248,6 +253,7 @@ impl AttentionStore {
             .snapshot(&row.id)
             .map(|snapshot| snapshot.latest.clone());
         let notice = core_attention::semantic_notice(previous.as_ref(), &row);
+        let needed_action_before = previous.as_ref().map(core_attention::semantic_needs_action);
         let result = state
             .snapshots
             .observe(row.id.clone(), core_attention::Observation::from_row(&row))
@@ -275,6 +281,7 @@ impl AttentionStore {
                 title: notice.title,
                 body: notice.body,
             }),
+            needed_action_before,
         })
     }
 
