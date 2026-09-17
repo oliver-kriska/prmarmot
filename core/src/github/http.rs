@@ -11,9 +11,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::rate_limit::RateLimitInfo;
+use super::response::{classify, graphql_body, ResponseMeta};
 use super::{
     graphql_url, normalize_host, rest_url, AuthTransport, GhError, GithubTransport, RestTransport,
     TokenSource,
@@ -84,20 +85,7 @@ impl HttpTransport {
         variables: &[(&str, &str)],
         ids: &[String],
     ) -> Result<Value, GhError> {
-        let mut vars = Map::new();
-        for (key, value) in variables {
-            vars.insert((*key).to_owned(), Value::String((*value).to_owned()));
-        }
-        if !ids.is_empty() {
-            vars.insert(
-                "tracked".to_owned(),
-                Value::Array(ids.iter().cloned().map(Value::String).collect()),
-            );
-        }
-        let mut body = Map::new();
-        body.insert("query".to_owned(), Value::String(query.to_owned()));
-        body.insert("variables".to_owned(), Value::Object(vars));
-        Ok(Value::Object(body))
+        Ok(graphql_body(query, variables, ids))
     }
 
     fn post_json(&self, url: &str, body: &Value) -> Result<Value, GhError> {
@@ -178,45 +166,19 @@ impl RestTransport for HttpTransport {
 /// already renders.
 fn finish(sent: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Value, GhError> {
     let mut response = sent.map_err(transport_error)?;
-    let status = response.status().as_u16();
-    let reset_epoch = header_u64(&response, "x-ratelimit-reset");
-    let remaining = header_u64(&response, "x-ratelimit-remaining");
+    let meta = ResponseMeta {
+        status: response.status().as_u16(),
+        remaining: header_u64(&response, "x-ratelimit-remaining"),
+        reset_epoch: header_u64(&response, "x-ratelimit-reset"),
+    };
     let text = response
         .body_mut()
         .with_config()
         .limit(MAX_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|e| GhError::Network(format!("could not read the response: {e}")))?;
-
-    match status {
-        200..=299 => serde_json::from_str(&text).map_err(|e| {
-            GhError::Parse(format!(
-                "GitHub returned {status} with a body that is not JSON: {e}"
-            ))
-        }),
-        401 => Err(GhError::NotAuthenticated),
-        // A 403 or 429 is a rate limit only when GitHub says so; a 403 for a
-        // repository the token cannot see must not look like a rate limit.
-        403 | 429 if remaining == Some(0) || mentions_rate_limit(&text) => {
-            Err(GhError::RateLimited { reset_epoch })
-        }
-        403 => Err(GhError::Network(format!(
-            "GitHub refused the request (403){}",
-            detail(&text)
-        ))),
-        404 => Err(GhError::Network(format!(
-            "GitHub returned 404{}",
-            detail(&text)
-        ))),
-        500..=599 => Err(GhError::Network(format!(
-            "GitHub is having trouble ({status}){}",
-            detail(&text)
-        ))),
-        other => Err(GhError::Network(format!(
-            "GitHub returned {other}{}",
-            detail(&text)
-        ))),
-    }
+    // What the response *means* is shared with the iPad's URLSession path.
+    classify(meta, &text)
 }
 
 fn transport_error(error: ureq::Error) -> GhError {
@@ -238,30 +200,6 @@ fn header_u64(response: &ureq::http::Response<ureq::Body>, name: &str) -> Option
         .trim()
         .parse()
         .ok()
-}
-
-fn mentions_rate_limit(body: &str) -> bool {
-    let body = body.to_ascii_lowercase();
-    body.contains("rate limit") || body.contains("rate_limited")
-}
-
-/// First line of an error body, bounded — enough to act on, never a wall.
-fn detail(body: &str) -> String {
-    let message = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.trim().to_owned());
-    let message: String = message.chars().take(200).collect();
-    if message.is_empty() {
-        String::new()
-    } else {
-        format!(": {message}")
-    }
 }
 
 /// `application/x-www-form-urlencoded`, hand-rolled so the crate does not grow
@@ -301,31 +239,9 @@ pub fn rate_limit_of(body: &Value) -> Option<RateLimitInfo> {
 mod tests {
     use super::*;
 
-    struct Pat(&'static str);
-    impl TokenSource for Pat {
-        fn token(&self) -> Result<String, GhError> {
-            Ok(self.0.to_owned())
-        }
-    }
-
     #[test]
     fn the_user_agent_is_set_because_github_403s_without_one() {
         assert!(DEFAULT_USER_AGENT.starts_with("prmarmot/"));
-    }
-
-    #[test]
-    fn graphql_bodies_carry_string_variables_and_a_typed_id_array() {
-        let transport = HttpTransport::new("github.com", Arc::new(Pat("ghp_x")));
-        let body = transport
-            .graphql_body("query($q:String!){}", &[("q", "is:open")], &[])
-            .unwrap();
-        assert_eq!(body["variables"]["q"], "is:open");
-        assert!(body["variables"].get("tracked").is_none());
-
-        let tracked = transport
-            .graphql_body("query($q:String!){}", &[("q", "is:open")], &["PR_1".into()])
-            .unwrap();
-        assert_eq!(tracked["variables"]["tracked"], serde_json::json!(["PR_1"]));
     }
 
     #[test]
@@ -354,26 +270,5 @@ mod tests {
             form_encode(&[("scope", "repo read:org")]),
             "scope=repo+read%3Aorg"
         );
-    }
-
-    #[test]
-    fn error_bodies_are_summarized_and_bounded() {
-        assert_eq!(
-            detail(r#"{"message":"Bad credentials"}"#),
-            ": Bad credentials"
-        );
-        assert_eq!(detail(""), "");
-        let long = detail(&"x".repeat(1000));
-        assert_eq!(long.chars().count(), 202);
-    }
-
-    #[test]
-    fn only_a_declared_rate_limit_reads_as_one() {
-        assert!(mentions_rate_limit(
-            r#"{"message":"API rate limit exceeded"}"#
-        ));
-        assert!(!mentions_rate_limit(
-            r#"{"message":"Resource not accessible"}"#
-        ));
     }
 }

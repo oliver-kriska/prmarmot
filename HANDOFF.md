@@ -47,6 +47,46 @@ refuses to start with a message pointing at the token path. Registering the app
 and setting `[auth] client_id` is the only thing between here and a working
 device flow; nothing else changes.
 
+**FACT: the search grammar and the board's whole data layer are now reusable
+from Swift.** `core/src/search.rs` holds what `src/table.rs` used to parse —
+`Qualifier`, `FilterTerm`, `filter_terms`, `matches_filter`, `take_filter_chips`,
+`with_filter`, `StaleRule` — with only chip *drawing* left in the app.
+`core/tests/golden/search.json` pins 29 queries × the parity fixtures at a fixed
+clock, and a second test asserts the matrix still discriminates so it cannot rot
+into a file where everything matches everything. `prmarmot-cli mine|review
+--filter "<query>"` runs the same grammar in a terminal, which is both a real
+feature and the proof the port kept its meaning.
+
+`ffi/` (`prmarmot-ffi`) is the UniFFI boundary: records mirroring
+`cli/schema/board-v1.schema.json`, two async foreign traits Swift implements
+(`GithubTransport`, `TokenSource`), a `BoardClient` that owns pagination, an
+`AttentionStore` that serializes to bytes, and the pure functions `layout`,
+`search`, `shareGroup` and the pickup/size helpers. `scripts/build-xcframework.sh`
+produces `PRMarmotCore.xcframework`; `.github/workflows/xcframework.yml` does it
+on `macos-26` from an `ffi-v*` tag. Read `ffi/README.md` before writing a Swift
+transport — the cycle rule there is not optional.
+
+**FACT (measured 2026-09-17):** the linked iOS library
+(`aarch64-apple-ios`, `--profile ios`, `libprmarmot_ffi.dylib`) is **830,264
+bytes** with `regex-lite` against **1,638,520 bytes** with `regex` — 789 KiB for
+a regex engine PR Marmot barely uses. `small-regex` is therefore a
+`prmarmot-core` feature that only `ffi/` turns on; the desktop and the CLI keep
+full `regex` because the issue-link pattern comes from a user's config, and CI
+runs the entire core suite under both engines.
+
+**FACT:** `scripts/build-xcframework.sh` takes **39 s** locally for all three
+slices, and the seven-test Swift smoke test passes in the iPad Pro 13-inch (M5)
+simulator against the same fixtures the Rust goldens use. `core/clippy.toml`
+plus `core/tests/no_clock.rs` now make "core never reads the clock" an
+enforced rule rather than a habit.
+
+**ASSESSMENT:** two details cost real time and are worth knowing. The modulemap
+module name must be the crate-derived `prmarmot_ffiFFI`, not a pretty one, or
+every generated type is "not in scope"; and `uniffi-bindgen-swift --xcframework`
+emits `framework module`, which is wrong for an XCFramework built from a static
+library plus headers. Both are recorded in the script next to the code that
+depends on them.
+
 ### Prior update — 2026-09-16
 
 **FACT:** Review state now follows a **standing review** rule, deliberately

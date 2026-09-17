@@ -31,7 +31,7 @@ jobs:
       - run: cargo fmt --all --check
 
   core:
-    name: Core, local, CLI (clippy + test)
+    name: Core, local, CLI, FFI (clippy + test)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -48,10 +48,15 @@ jobs:
       # dependency, so they compile cleanly on Linux. The root GPUI binary is
       # intentionally not built in CI — see CLAUDE.md ("Fast core checks only");
       # build it locally with `make build`.
-      - name: Clippy (core, local, cli; warnings as errors)
-        run: cargo clippy -p prmarmot-core -p prmarmot-local -p prmarmot-cli --all-targets -- -D warnings
-      - name: Test (core spec + golden suite, local, cli)
-        run: cargo test -p prmarmot-core -p prmarmot-local -p prmarmot-cli
+      - name: Clippy (core, local, cli, ffi; warnings as errors)
+        run: cargo clippy -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi --all-targets -- -D warnings
+      - name: Test (core spec + golden suite, local, cli, ffi)
+        run: cargo test -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
+      # The iOS build compiles issue-link patterns with regex-lite. Run the
+      # whole core suite under it so the two engines cannot disagree about
+      # anything this project does.
+      - name: Test core with the iOS regex engine
+        run: cargo test -p prmarmot-core --no-default-features --features small-regex
 
   msrv:
     name: MSRV (core, local, CLI on Rust 1.85)
@@ -68,5 +73,8 @@ jobs:
         with:
           cache-on-failure: true
       # --locked: a dependency bump that raises the floor fails here first.
+      # prmarmot-ffi is deliberately absent: it only ever builds for Apple
+      # targets from a current Xcode toolchain, which is why uniffi and its
+      # dependencies live there and not in core.
       - name: Check at the declared rust-version
         run: cargo check --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli --all-targets

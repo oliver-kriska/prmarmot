@@ -3,7 +3,12 @@
 //! (categorization) and `SKILL.md` (Note composition); the golden tests in
 //! `tests/parity.rs` pin this module to the prototype's actual output.
 
+// Exactly one regex engine, chosen by feature. See `small-regex` in
+// `core/Cargo.toml` for why iOS gets the other one.
+#[cfg(not(feature = "small-regex"))]
 use regex::Regex;
+#[cfg(feature = "small-regex")]
+use regex_lite::Regex;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -169,6 +174,14 @@ pub enum Blocker {
     UnresolvedComments(usize),
 }
 
+/// Why a configured issue-link pattern could not be compiled. Which engine
+/// produced it depends on the `small-regex` feature; both print the offending
+/// pattern and what is wrong with it.
+#[cfg(not(feature = "small-regex"))]
+pub type PatternError = regex::Error;
+#[cfg(feature = "small-regex")]
+pub type PatternError = regex_lite::Error;
+
 /// Optional "linked ticket" extraction: a pattern matched against the PR
 /// title and a URL template with an `{id}` placeholder. Project prefixes and
 /// tracker URLs always come from user config.
@@ -189,7 +202,7 @@ impl PartialEq for IssueLinkRule {
 impl Eq for IssueLinkRule {}
 
 impl IssueLinkRule {
-    pub fn new(pattern: &str, url_template: &str) -> Result<Self, regex::Error> {
+    pub fn new(pattern: &str, url_template: &str) -> Result<Self, PatternError> {
         Ok(Self {
             pattern: Regex::new(pattern)?,
             url_template: url_template.to_string(),

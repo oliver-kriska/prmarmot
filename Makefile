@@ -20,14 +20,19 @@ fmt: ## Format the whole workspace
 fmt-check: ## Check formatting (CI mode)
 	cargo fmt --check
 
-# The crates that build without GPUI/Metal.
-FAST_CRATES := -p prmarmot-core -p prmarmot-local -p prmarmot-cli
+# The crates that build without GPUI/Metal. `prmarmot-ffi` is here too: it is
+# an iOS deliverable but it compiles and tests on any platform, and it is the
+# only thing keeping the Swift boundary honest.
+FAST_CRATES := -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
 
 lint: ## Clippy on core, local, and cli, warnings as errors (matches CI)
 	cargo clippy $(FAST_CRATES) --all-targets -- -D warnings
 
-test: ## Run the core spec + golden suite and the local/cli tests (matches CI)
+test: ## Run the core spec + golden suite and the local/cli/ffi tests (matches CI)
 	cargo test $(FAST_CRATES)
+	# The iOS build swaps the regex engine; run the same suite under it so the
+	# two can never disagree about an issue-link pattern.
+	cargo test -p prmarmot-core --no-default-features --features small-regex
 
 check: fmt-check lint test ## Full local gate — run before every commit/push
 

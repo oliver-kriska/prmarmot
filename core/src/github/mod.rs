@@ -8,6 +8,7 @@ pub mod gh_cli;
 pub mod http;
 pub mod query;
 pub mod rate_limit;
+pub mod response;
 
 use std::fmt;
 

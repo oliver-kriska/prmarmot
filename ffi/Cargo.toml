@@ -1,0 +1,49 @@
+[package]
+name = "prmarmot-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "UniFFI bindings that let PR Marmot for iPad reuse prmarmot-core"
+publish = false
+# Deliberately no `rust-version`: the Rust 1.85 MSRV job covers core, local and
+# cli because those ship to Linux packagers. This crate only ever builds for
+# Apple targets from a current Xcode toolchain, which is why iOS-only
+# dependencies (uniffi, async-trait, async-channel) live here and not in core.
+
+[lib]
+name = "prmarmot_ffi"
+# `staticlib` is what the XCFramework links; `cdylib` is what uniffi-bindgen
+# reads metadata from on the host; `lib` keeps `cargo test` working.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[features]
+# The Swift bindings generator, kept off the default build so the iOS
+# staticlib never links clap and the bindgen machinery.
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+# No `http` feature: iOS brings its own URLSession transport, and linking
+# rustls into the app would be a second TLS stack for nothing.
+prmarmot-core = { path = "../core", default-features = false, features = ["small-regex"] }
+uniffi = "=0.32.1"
+# uniffi's own generated impls of async foreign traits reference
+# `::async_trait`, so the declaring crate has to depend on it too.
+async-trait = "0.1"
+# The bridge between uniffi's async foreign traits and core's blocking
+# `GithubTransport`. Runtime-agnostic and tiny — no tokio (guardrail).
+async-channel = "2"
+chrono = "0.4"
+serde_json = "1"
+thiserror = "2"
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "src/bin/uniffi-bindgen-swift.rs"
+required-features = ["bindgen"]
+
+[dev-dependencies]
+# Only to drive the exported async functions from a plain `#[test]`; the
+# library itself needs no executor.
+futures = "0.3"
+serde_json = "1"
+async-trait = "0.1"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "local", "cli"]
+members = ["core", "local", "cli", "ffi"]
 
 [package]
 name = "prmarmot"
@@ -51,3 +51,19 @@ block = { path = "vendor/block" }
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# The iOS static library, built by `scripts/build-xcframework.sh`. A separate
+# profile because the desktop app wants speed and this wants bytes: every
+# megabyte here is a megabyte of App Store download and of the app's disk
+# footprint on an iPad.
+#
+# `panic = "abort"` is the one with a consequence worth knowing: a Rust panic
+# ends the app rather than surfacing to Swift as a thrown error. That is the
+# trade the size makes; `ffi/README.md` says what to do if it ever bites.
+[profile.ios]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
