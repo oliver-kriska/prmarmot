@@ -65,8 +65,8 @@ final class URLSessionTransport: GithubTransport {
 
 | Direction | What |
 |---|---|
-| Swift → Rust | `GithubTransport.send`, `TokenSource.token` — both `async`, both throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeLinesAndFiles`, `groupLabel`, `coreVersion`. |
+| Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeLinesAndFiles`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `coreVersion`. |
 
 Record and field names mirror `cli/schema/board-v1.schema.json`
 (`prmarmot-cli/board@1`), so that published schema doubles as the contract

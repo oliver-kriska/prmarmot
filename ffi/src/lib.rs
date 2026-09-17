@@ -29,6 +29,7 @@ pub mod attention;
 pub mod client;
 pub mod error;
 pub mod pure;
+pub mod signin;
 pub mod transport;
 pub mod types;
 
@@ -36,6 +37,7 @@ pub use attention::*;
 pub use client::*;
 pub use error::FfiError;
 pub use pure::*;
+pub use signin::*;
 pub use transport::*;
 pub use types::*;
 

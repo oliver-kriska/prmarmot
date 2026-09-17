@@ -21,7 +21,9 @@
 use std::sync::Arc;
 
 use prmarmot_core::github::response::{classify, graphql_body, ResponseMeta};
-use prmarmot_core::github::{graphql_url, GhError, GithubTransport as CoreTransport};
+use prmarmot_core::github::{
+    graphql_url, AuthTransport as CoreAuthTransport, GhError, GithubTransport as CoreTransport,
+};
 use serde_json::Value;
 
 use crate::error::FfiError;
@@ -86,18 +88,55 @@ pub trait TokenSource: Send + Sync {
     async fn token(&self) -> Result<String, FfiError>;
 }
 
+/// A form POST: the unauthenticated half of the OAuth Device Flow.
+///
+/// Requesting a code, polling for a token and refreshing one take no token at
+/// all — that is precisely why PR Marmot needs no server and no client secret.
+/// The body is already `application/x-www-form-urlencoded`; send it with
+/// `Accept: application/json`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FormRequest {
+    pub url: String,
+    pub body: String,
+    pub user_agent: String,
+}
+
+/// Sending one form POST. Implemented in Swift with `URLSession`, on the same
+/// terms as [`GithubTransport`]: throw only when there was no answer, and
+/// obey the same cycle rule.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait AuthTransport: Send + Sync {
+    async fn post_form(&self, request: FormRequest) -> Result<HttpResponse, FfiError>;
+}
+
 /// What the worker thread asks for, and what it gets back.
 type Answer = Result<Value, GhError>;
 
-struct Call {
-    request: GraphqlRequest,
+/// One blocking call waiting on an async answer. Generic over the request so
+/// the GraphQL and the form-POST bridges are the same machinery twice, not two
+/// different ideas.
+struct Call<Req> {
+    request: Req,
     reply: async_channel::Sender<Answer>,
+}
+
+/// The blocking half: hand the request to the async loop and wait.
+fn ask<Req>(calls: &async_channel::Sender<Call<Req>>, request: Req) -> Answer {
+    let (reply, answers) = async_channel::bounded(1);
+    // A closed channel means the async side gave up (the task was cancelled);
+    // the worker should stop with an error rather than hang.
+    let cancelled = || GhError::Network("the request was cancelled".into());
+    calls
+        .send_blocking(Call { request, reply })
+        .map_err(|_| cancelled())?;
+    answers.recv_blocking().map_err(|_| cancelled())?
 }
 
 /// The `prmarmot-core` transport the worker thread sees. Every call blocks
 /// until [`run`]'s loop has been round the foreign transport and back.
 struct Bridged {
-    calls: async_channel::Sender<Call>,
+    calls: async_channel::Sender<Call<GraphqlRequest>>,
     url: String,
     token: String,
     user_agent: String,
@@ -110,24 +149,34 @@ impl CoreTransport for Bridged {
 
     fn graphql_with_ids(&self, query: &str, variables: &[(&str, &str)], ids: &[String]) -> Answer {
         let body = graphql_body(query, variables, ids).to_string();
-        let (reply, answers) = async_channel::bounded(1);
-        let call = Call {
-            request: GraphqlRequest {
+        ask(
+            &self.calls,
+            GraphqlRequest {
                 url: self.url.clone(),
                 token: self.token.clone(),
                 body,
                 user_agent: self.user_agent.clone(),
             },
-            reply,
-        };
-        // A closed channel means `run` gave up (the task was cancelled); the
-        // worker should stop with an error rather than hang.
-        self.calls
-            .send_blocking(call)
-            .map_err(|_| GhError::Network("the request was cancelled".into()))?;
-        answers
-            .recv_blocking()
-            .map_err(|_| GhError::Network("the request was cancelled".into()))?
+        )
+    }
+}
+
+/// The same, for the device flow's unauthenticated form POSTs.
+struct BridgedAuth {
+    calls: async_channel::Sender<Call<FormRequest>>,
+    user_agent: String,
+}
+
+impl CoreAuthTransport for BridgedAuth {
+    fn post_form(&self, url: &str, fields: &[(&str, &str)]) -> Answer {
+        ask(
+            &self.calls,
+            FormRequest {
+                url: url.to_owned(),
+                body: form_encode(fields),
+                user_agent: self.user_agent.clone(),
+            },
+        )
     }
 }
 
@@ -154,7 +203,7 @@ where
     let url = graphql_url(host);
     let user_agent = user_agent.to_owned();
 
-    let (calls, requests) = async_channel::bounded::<Call>(1);
+    let (calls, requests) = async_channel::bounded::<Call<GraphqlRequest>>(1);
     let (finished, outcome) = async_channel::bounded::<Result<T, GhError>>(1);
 
     std::thread::Builder::new()
@@ -195,7 +244,58 @@ where
 
 /// One round trip: ask Swift, then decide what the answer means.
 async fn serve(transport: &dyn GithubTransport, request: GraphqlRequest) -> Answer {
-    let response = transport.send(request).await.map_err(GhError::from)?;
+    read(transport.send(request).await)
+}
+
+/// Run one blocking device-flow operation over the foreign form transport.
+///
+/// Separate from [`run`] because these endpoints take no token: there is
+/// nothing to ask a `TokenSource` for, which is the whole point of the device
+/// flow. The loop is the same one, over a different request type.
+pub(crate) async fn run_auth<T, F>(
+    transport: Arc<dyn AuthTransport>,
+    user_agent: &str,
+    work: F,
+) -> Result<T, FfiError>
+where
+    F: FnOnce(&dyn CoreAuthTransport) -> Result<T, GhError> + Send + 'static,
+    T: Send + 'static,
+{
+    let user_agent = user_agent.to_owned();
+    let (calls, requests) = async_channel::bounded::<Call<FormRequest>>(1);
+    let (finished, outcome) = async_channel::bounded::<Result<T, GhError>>(1);
+
+    std::thread::Builder::new()
+        .name("prmarmot-device-flow".into())
+        .spawn(move || {
+            let bridged = BridgedAuth { calls, user_agent };
+            let result = work(&bridged);
+            drop(bridged);
+            let _ = finished.send_blocking(result);
+        })
+        .map_err(|e| FfiError::Network {
+            message: format!("could not start the sign-in: {e}"),
+        })?;
+
+    while let Ok(call) = requests.recv().await {
+        let answer = read(transport.post_form(call.request).await);
+        if call.reply.send(answer).await.is_err() {
+            break;
+        }
+    }
+
+    match outcome.recv().await {
+        Ok(result) => result.map_err(FfiError::from),
+        Err(_) => Err(FfiError::Network {
+            message: "the sign-in stopped before it finished".into(),
+        }),
+    }
+}
+
+/// What a finished response means. Shared by both bridges so a 401 from the
+/// token endpoint and a 401 from GraphQL are the same error.
+fn read(answer: Result<HttpResponse, FfiError>) -> Answer {
+    let response = answer.map_err(GhError::from)?;
     let headers: Vec<(&str, &str)> = response
         .headers
         .iter()
@@ -203,6 +303,33 @@ async fn serve(transport: &dyn GithubTransport, request: GraphqlRequest) -> Answ
         .collect();
     let meta = ResponseMeta::new(response.status).with_headers(headers);
     classify(meta, &response.body)
+}
+
+/// `application/x-www-form-urlencoded`, so Swift never has to think about
+/// escaping `urn:ietf:params:oauth:grant-type:device_code`.
+fn form_encode(fields: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for (key, value) in fields {
+        if !out.is_empty() {
+            out.push('&');
+        }
+        percent_encode(key, &mut out);
+        out.push('=');
+        percent_encode(value, &mut out);
+    }
+    out
+}
+
+fn percent_encode(text: &str, out: &mut String) {
+    for byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -412,3 +412,167 @@ fn dropping_the_client_releases_the_transport_and_the_token_source() {
     assert_eq!(Arc::strong_count(&transport), 1);
     assert_eq!(Arc::strong_count(&tokens), 1);
 }
+
+/// The device flow, end to end, against recorded GitHub responses.
+///
+/// The one thing that cannot be tested here is a real sign-in: it needs a
+/// registered GitHub App. Everything up to that point — the form encoding, the
+/// poll states, the clamped interval, the refresh — is exercised.
+mod sign_in {
+    use super::*;
+    use prmarmot_ffi::{AuthTransport, DeviceFlow, DevicePoll, FormRequest};
+
+    struct Recorded {
+        answers: Mutex<Vec<String>>,
+        seen: Mutex<Vec<FormRequest>>,
+    }
+
+    impl Recorded {
+        fn new(answers: &[&str]) -> Arc<Self> {
+            Arc::new(Self {
+                answers: Mutex::new(answers.iter().map(|a| (*a).to_string()).collect()),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuthTransport for Recorded {
+        async fn post_form(&self, request: FormRequest) -> Result<HttpResponse, FfiError> {
+            self.seen.lock().unwrap().push(request);
+            let mut answers = self.answers.lock().unwrap();
+            Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: if answers.is_empty() {
+                    "{}".into()
+                } else {
+                    answers.remove(0)
+                },
+            })
+        }
+    }
+
+    fn flow(transport: Arc<Recorded>) -> Arc<DeviceFlow> {
+        DeviceFlow::new(
+            "github.com".into(),
+            "Iv1.testclientid".into(),
+            "prmarmot-ffi-test/0".into(),
+            transport,
+        )
+    }
+
+    #[test]
+    fn a_code_is_requested_then_polled_until_a_token_arrives() {
+        let transport = Recorded::new(&[
+            r#"{"device_code":"dc","user_code":"WDJB-MJHT","verification_uri":"https://github.com/login/device","interval":5,"expires_in":900}"#,
+            r#"{"error":"authorization_pending"}"#,
+            r#"{"error":"slow_down","interval":10}"#,
+            r#"{"access_token":"ghu_new","refresh_token":"ghr_new","expires_in":28800,"refresh_token_expires_in":15897600}"#,
+        ]);
+        let flow = flow(transport.clone());
+
+        let code = futures::executor::block_on(flow.start()).unwrap();
+        assert_eq!(code.user_code, "WDJB-MJHT");
+        assert_eq!(code.interval_secs, 5);
+        assert_eq!(code.expires_in_secs, 900);
+
+        assert_eq!(
+            futures::executor::block_on(flow.poll(code.device_code.clone(), 1_000)).unwrap(),
+            DevicePoll::Pending
+        );
+        assert_eq!(
+            futures::executor::block_on(flow.poll(code.device_code.clone(), 1_000)).unwrap(),
+            DevicePoll::SlowDown { interval_secs: 10 }
+        );
+        let DevicePoll::Token { token } =
+            futures::executor::block_on(flow.poll(code.device_code, 1_000)).unwrap()
+        else {
+            panic!("expected a token");
+        };
+        assert_eq!(token.access_token, "ghu_new");
+        assert_eq!(token.expires_at, Some(1_000 + 28_800));
+
+        // Swift never has to escape the grant-type URN itself.
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen[0].url, "https://github.com/login/device/code");
+        assert!(seen[0].body.contains("client_id=Iv1.testclientid"));
+        assert_eq!(seen[1].url, "https://github.com/login/oauth/access_token");
+        assert!(
+            seen[1]
+                .body
+                .contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"),
+            "{}",
+            seen[1].body
+        );
+        assert_eq!(seen[0].user_agent, "prmarmot-ffi-test/0");
+    }
+
+    #[test]
+    fn declining_and_expiring_are_separate_answers() {
+        let denied = flow(Recorded::new(&[r#"{"error":"access_denied"}"#]));
+        assert_eq!(
+            futures::executor::block_on(denied.poll("dc".into(), 0)).unwrap(),
+            DevicePoll::Denied
+        );
+        let expired = flow(Recorded::new(&[r#"{"error":"expired_token"}"#]));
+        assert_eq!(
+            futures::executor::block_on(expired.poll("dc".into(), 0)).unwrap(),
+            DevicePoll::Expired
+        );
+    }
+
+    #[test]
+    fn a_token_refreshes_without_a_client_secret() {
+        let transport = Recorded::new(&[
+            r#"{"access_token":"ghu_2","refresh_token":"ghr_2","expires_in":28800}"#,
+        ]);
+        let token =
+            futures::executor::block_on(flow(transport.clone()).refresh("ghr_1".into(), 5_000))
+                .unwrap();
+        assert_eq!(token.access_token, "ghu_2");
+        assert_eq!(token.expires_at, Some(5_000 + 28_800));
+
+        let seen = transport.seen.lock().unwrap();
+        assert!(seen[0].body.contains("refresh_token=ghr_1"));
+        assert!(
+            !seen[0].body.contains("client_secret"),
+            "the device flow refreshes with the client id alone"
+        );
+    }
+
+    #[test]
+    fn the_placeholder_client_id_is_visible_before_a_request_is_made() {
+        let unregistered = DeviceFlow::new(
+            "github.com".into(),
+            "REGISTER-THE-PRMARMOT-GITHUB-APP".into(),
+            "prmarmot-ffi-test/0".into(),
+            Recorded::new(&[]),
+        );
+        assert!(unregistered.client_id_is_placeholder());
+        assert!(!flow(Recorded::new(&[])).client_id_is_placeholder());
+        assert_eq!(
+            flow(Recorded::new(&[])).verification_url(),
+            "https://github.com/login/device"
+        );
+    }
+
+    #[test]
+    fn the_refresh_skew_belongs_to_core_and_is_not_retyped_in_swift() {
+        let token = prmarmot_ffi::token_from_pat("ghp_x".into());
+        assert!(!prmarmot_ffi::token_needs_refresh(token.clone(), 0));
+        assert!(!prmarmot_ffi::token_can_refresh(token, 0));
+
+        let expiring = prmarmot_ffi::Token {
+            access_token: "ghu_x".into(),
+            refresh_token: Some("ghr_x".into()),
+            expires_at: Some(1_000),
+            refresh_expires_at: Some(100_000),
+            scope: None,
+        };
+        // Five minutes of skew: live at 600 s out, due at 200 s out.
+        assert!(!prmarmot_ffi::token_needs_refresh(expiring.clone(), 400));
+        assert!(prmarmot_ffi::token_needs_refresh(expiring.clone(), 800));
+        assert!(prmarmot_ffi::token_can_refresh(expiring, 800));
+    }
+}
