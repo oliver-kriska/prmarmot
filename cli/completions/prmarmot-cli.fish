@@ -51,6 +51,7 @@ complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l auth -x -a '
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -s f -l format -x -a 'table markdown json' -d 'Output format'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l changed -d 'Only PRs changed since you last looked'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l stale -d 'Only PRs that have waited too long for a reviewer'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l filter -x -a 'label: author: repo: is:stale' -d 'Only PRs matching a search query'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from review reviews; and not __fish_seen_subcommand_from watch" -l sort -x -a 'wait smallest' -d 'Longest wait or smallest change first'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
 

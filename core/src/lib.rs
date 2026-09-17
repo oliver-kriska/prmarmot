@@ -10,5 +10,6 @@ pub mod board;
 pub mod github;
 pub mod layout;
 pub mod pickup;
+pub mod search;
 pub mod share;
 pub mod size;

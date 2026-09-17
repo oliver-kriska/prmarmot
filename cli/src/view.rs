@@ -13,6 +13,7 @@ use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::layout::{layout, LayoutItem, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
+use prmarmot_core::search::{matches_filter, StaleRule};
 use prmarmot_local::attention_state::AttentionState;
 use prmarmot_local::config::{self, AuthMode, AuthSettings, FileConfig};
 use prmarmot_local::session::{self, Session};
@@ -68,7 +69,7 @@ pub fn attention(host: &str, login: &str) -> AttentionState {
     AttentionState::load(SnapshotNamespace::new(host, login))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filters {
     pub changed: bool,
     pub watched: bool,
@@ -76,6 +77,9 @@ pub struct Filters {
     pub stale: bool,
     /// What stale means, also for each PR's `stale` mark.
     pub stale_after_days: u64,
+    /// `--filter`: the app's search grammar, from `prmarmot_core::search`.
+    /// Free words plus `label:`, `author:`, `repo:` and `is:stale`, ANDed.
+    pub query: Option<String>,
 }
 
 impl Default for Filters {
@@ -85,6 +89,7 @@ impl Default for Filters {
             watched: false,
             stale: false,
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
+            query: None,
         }
     }
 }
@@ -188,9 +193,20 @@ pub fn build(
     for row in board.rows {
         let mut row_marks = marks_for(&row, attention, &mut snapshots, now);
         row_marks.stale = is_stale(&row, now, filters.stale_after_days);
+        let query_matches = filters.query.as_deref().is_none_or(|query| {
+            matches_filter(
+                &row,
+                query,
+                StaleRule {
+                    now,
+                    after_days: filters.stale_after_days,
+                },
+            )
+        });
         if (filters.changed && !row_marks.changed)
             || (filters.watched && !row_marks.watched)
             || (filters.stale && !row_marks.stale)
+            || !query_matches
         {
             continue;
         }
@@ -361,6 +377,45 @@ pub mod tests {
             Utc::now(),
         );
         assert_eq!(view.marks[0].snoozed, None);
+    }
+
+    #[test]
+    fn the_filter_query_uses_the_apps_search_grammar() {
+        let attention = AttentionState::empty(namespace());
+        let mut labelled = row(1, Category::Await);
+        labelled.labels = vec!["help wanted".into()];
+        let mut other_author = row(2, Category::Await);
+        other_author.author = Some("bob".into());
+        let plain = row(3, Category::Await);
+
+        let filtered = |query: &str, rows: Vec<BoardRow>| {
+            build(
+                fetch_of(rows),
+                &attention,
+                Mode::Authored,
+                BoardScope::AllRepositories,
+                "me".into(),
+                Filters {
+                    query: Some(query.into()),
+                    ..Filters::default()
+                },
+                Utc::now(),
+            )
+        };
+
+        let rows = vec![labelled.clone(), other_author.clone(), plain.clone()];
+        // A quoted qualifier value, the same one the app's search box takes.
+        let view = filtered("label:\"help wanted\"", rows.clone());
+        assert_eq!(view.rows.len(), 1);
+        assert_eq!(view.rows[0].number, 1);
+        assert_eq!(view.filtered_out, 2);
+
+        // Free words match the title, and every term must match.
+        assert_eq!(filtered("number 2", rows.clone()).rows.len(), 1);
+        assert_eq!(filtered("author:bob", rows.clone()).rows.len(), 1);
+        assert_eq!(filtered("author:bob number 1", rows.clone()).rows.len(), 0);
+        assert_eq!(filtered("repo:acme/widgets", rows.clone()).rows.len(), 3);
+        assert_eq!(filtered("   ", rows).rows.len(), 3);
     }
 
     #[test]

@@ -84,6 +84,12 @@ _prmarmot_cli() {
             COMPREPLY=($(compgen -d -- "$cur"))
             return
             ;;
+        --filter)
+            # A free-text query; offer the qualifier words as a starting point.
+            COMPREPLY=($(compgen -W "label: author: repo: is:stale" -- "$cur"))
+            compopt -o nospace 2>/dev/null
+            return
+            ;;
         --repo | --pr | --interval | --events | --host | --client-id)
             COMPREPLY=()
             return
@@ -100,10 +106,10 @@ _prmarmot_cli() {
             fi
             ;;
         mine | authored)
-            words="$view --authored --changed --stale --pages"
+            words="$view --authored --changed --stale --filter --pages"
             ;;
         review | reviews)
-            words="$view --changed --stale --sort --pages"
+            words="$view --changed --stale --filter --sort --pages"
             ;;
         watch)
             # A view word only right after `watch`.

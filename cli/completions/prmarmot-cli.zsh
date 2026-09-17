@@ -54,6 +54,7 @@ _prmarmot-cli() {
             '(-f --format --json)--json[same as --format json]'
             '--changed[only PRs changed since you last looked in PR Marmot]'
             '--stale[only PRs that have waited too long for a reviewer]'
+            '--filter=[only PRs matching a search query: words, label:, author:, repo:, is:stale]:query: '
             '--snoozed[show snoozed PRs instead of collapsing them]'
             '--pages=[result pages to load per queue]:pages:(1 2 3 4 5)'
           )

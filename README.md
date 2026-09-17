@@ -413,6 +413,7 @@ prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any reposit
 prmarmot-cli review --all-repos        # Review queue across repositories
 prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
 prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
+prmarmot-cli review --filter 'label:"help wanted" is:stale'   # the app's search, in the terminal
 prmarmot-cli review --sort smallest    # small changes first, by the app's size band
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
@@ -435,6 +436,16 @@ way **Smallest first** does (`--sort wait`, the default, lists the longest wait
 first). `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
 cap as **Load more**.
+
+`--filter "<query>"` runs the app's search box over the loaded PRs, with the
+same grammar the desktop search field uses, so a saved query means one thing in
+both places. Bare words match the number, repository, title, author, labels,
+linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME` and
+`is:stale` match a whole field; quote a value that has spaces
+(`label:"help wanted"`); every term must match, and matching ignores case.
+`is:stale` uses the same `stale_after_days` as `--stale`. The grammar lives in
+`prmarmot-core` and is pinned by a golden test, so the desktop app, the CLI and
+future front ends cannot drift on what a query means.
 
 **Formats.** The default is a width-aware table on a terminal and Markdown when
 piped. `--format markdown` gives one GitHub-flavored table per section with

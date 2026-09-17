@@ -1,0 +1,712 @@
+{
+  "authoredRows": 18,
+  "now": "2026-07-26T12:00:00+00:00",
+  "queries": {
+    "": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [],
+      "rebuilt": "",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "   ": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [],
+      "rebuilt": "   ",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "   ",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "\"drop legacy\"": {
+      "authored": [
+        115
+      ],
+      "chips": [],
+      "rebuilt": "\"drop legacy\"",
+      "rebuiltAuthored": [
+        115
+      ],
+      "rest": "\"drop legacy\"",
+      "review": []
+    },
+    "\"label:bug\"": {
+      "authored": [],
+      "chips": [],
+      "rebuilt": "\"label:bug\"",
+      "rebuiltAuthored": [],
+      "rest": "\"label:bug\"",
+      "review": []
+    },
+    "\"legacy drop\"": {
+      "authored": [],
+      "chips": [],
+      "rebuilt": "\"legacy drop\"",
+      "rebuiltAuthored": [],
+      "rest": "\"legacy drop\"",
+      "review": []
+    },
+    "#115": {
+      "authored": [
+        115
+      ],
+      "chips": [],
+      "rebuilt": "#115",
+      "rebuiltAuthored": [
+        115
+      ],
+      "rest": "#115",
+      "review": []
+    },
+    "IMPORTER": {
+      "authored": [
+        115
+      ],
+      "chips": [],
+      "rebuilt": "IMPORTER",
+      "rebuiltAuthored": [
+        115
+      ],
+      "rest": "IMPORTER",
+      "review": []
+    },
+    "IS:Stale": {
+      "authored": [
+        108,
+        104,
+        103,
+        102
+      ],
+      "chips": [
+        "is:Stale"
+      ],
+      "rebuilt": "is:Stale",
+      "rebuiltAuthored": [
+        108,
+        104,
+        103,
+        102
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204
+      ]
+    },
+    "author:": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [],
+      "rebuilt": "author:",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "author:",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "author:ALICE": {
+      "authored": [],
+      "chips": [
+        "author:ALICE"
+      ],
+      "rebuilt": "author:ALICE",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        206
+      ]
+    },
+    "author:ali": {
+      "authored": [],
+      "chips": [
+        "author:ali"
+      ],
+      "rebuilt": "author:ali",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "author:alice": {
+      "authored": [],
+      "chips": [
+        "author:alice"
+      ],
+      "rebuilt": "author:alice",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        206
+      ]
+    },
+    "author:alice repo:acme/widgets": {
+      "authored": [],
+      "chips": [
+        "author:alice",
+        "repo:acme/widgets"
+      ],
+      "rebuilt": "author:alice repo:acme/widgets",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        206
+      ]
+    },
+    "billing events": {
+      "authored": [
+        114
+      ],
+      "chips": [],
+      "rebuilt": "billing events",
+      "rebuiltAuthored": [
+        114
+      ],
+      "rest": "billing events",
+      "review": []
+    },
+    "importer": {
+      "authored": [
+        115
+      ],
+      "chips": [],
+      "rebuilt": "importer",
+      "rebuiltAuthored": [
+        115
+      ],
+      "rest": "importer",
+      "review": []
+    },
+    "importer label:bug": {
+      "authored": [],
+      "chips": [
+        "label:bug"
+      ],
+      "rebuilt": "importer label:bug",
+      "rebuiltAuthored": [],
+      "rest": "importer",
+      "review": []
+    },
+    "is:": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [],
+      "rebuilt": "is:",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "is:",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "is:fresh": {
+      "authored": [],
+      "chips": [
+        "is:fresh"
+      ],
+      "rebuilt": "is:fresh",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "is:stale": {
+      "authored": [
+        108,
+        104,
+        103,
+        102
+      ],
+      "chips": [
+        "is:stale"
+      ],
+      "rebuilt": "is:stale",
+      "rebuiltAuthored": [
+        108,
+        104,
+        103,
+        102
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204
+      ]
+    },
+    "label:": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [],
+      "rebuilt": "label:",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "label:",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "label:\"help wanted": {
+      "authored": [],
+      "chips": [
+        "label:\"help wanted\""
+      ],
+      "rebuilt": "label:\"help wanted\"",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "label:\"help wanted\"": {
+      "authored": [],
+      "chips": [
+        "label:\"help wanted\""
+      ],
+      "rebuilt": "label:\"help wanted\"",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "label:Bug": {
+      "authored": [
+        108
+      ],
+      "chips": [
+        "label:Bug"
+      ],
+      "rebuilt": "label:Bug",
+      "rebuiltAuthored": [
+        108
+      ],
+      "rest": "",
+      "review": [
+        203,
+        204
+      ]
+    },
+    "label:bug": {
+      "authored": [
+        108
+      ],
+      "chips": [
+        "label:bug"
+      ],
+      "rebuilt": "label:bug",
+      "rebuiltAuthored": [
+        108
+      ],
+      "rest": "",
+      "review": [
+        203,
+        204
+      ]
+    },
+    "label:bug is:stale": {
+      "authored": [
+        108
+      ],
+      "chips": [
+        "label:bug",
+        "is:stale"
+      ],
+      "rebuilt": "label:bug is:stale",
+      "rebuiltAuthored": [
+        108
+      ],
+      "rest": "",
+      "review": [
+        203,
+        204
+      ]
+    },
+    "repo:ACME/Widgets": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [
+        "repo:ACME/Widgets"
+      ],
+      "rebuilt": "repo:ACME/Widgets",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "repo:acme/widgets": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [
+        "repo:acme/widgets"
+      ],
+      "rebuilt": "repo:acme/widgets",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "repo:widgets": {
+      "authored": [],
+      "chips": [
+        "repo:widgets"
+      ],
+      "rebuilt": "repo:widgets",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "reviewer:alice": {
+      "authored": [],
+      "chips": [],
+      "rebuilt": "reviewer:alice",
+      "rebuiltAuthored": [],
+      "rest": "reviewer:alice",
+      "review": []
+    }
+  },
+  "reviewRows": 12,
+  "staleAfterDays": 3
+}

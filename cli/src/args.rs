@@ -53,6 +53,11 @@ View options:
       --watched             Only PRs you watch in PR Marmot
       --stale               Only PRs that have waited stale_after_days (default 3)
                             or longer for a reviewer
+      --filter QUERY        Only PRs matching the app's search box: words match the
+                            number, repository, title, author, labels, linked issue
+                            and Note; label:NAME, author:LOGIN, repo:OWNER/NAME and
+                            is:stale match a whole field; quote a value that has
+                            spaces; every term must match
       --snoozed             Show snoozed PRs instead of collapsing them
       --sort ORDER          review: wait (default: longest wait first) or smallest
                             (Small, then Medium, then Large changes; see the
@@ -137,6 +142,8 @@ pub struct ViewArgs {
     pub watched: bool,
     pub stale: bool,
     pub snoozed: bool,
+    /// `--filter`: the app's search grammar over the loaded rows.
+    pub filter: Option<String>,
     /// `--sort`: the order inside the review queue's pickup sections.
     pub sort: Sort,
     pub pages: u8,
@@ -245,6 +252,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut watched = false;
     let mut stale = false;
     let mut snoozed = false;
+    let mut filter = None;
     let mut sort = Sort::Wait;
     let mut pages = None;
     let mut no_color = false;
@@ -276,6 +284,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "--changed" if !watch => changed = true,
             "--stale" if !watch => stale = true,
+            "--filter" if !watch => filter = Some(value("--filter")?),
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
             "--sort" if watch => return Err("--sort applies to `review`, not `watch`".into()),
             "--sort" if mode == Mode::Review => sort = parse_sort(&value("--sort")?)?,
@@ -303,7 +312,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--until" | "--timeout" => {
                 return Err(format!("{flag} applies to `watch --pr`"));
             }
-            "--changed" | "--stale" | "--pages" => {
+            "--changed" | "--stale" | "--pages" | "--filter" => {
                 return Err(format!(
                     "{flag} applies to `mine` and `review`, not `watch`"
                 ))
@@ -374,6 +383,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             watched,
             stale,
             snoozed,
+            filter,
             sort,
             pages: pages.unwrap_or(1),
             no_color,
@@ -561,6 +571,11 @@ mod tests {
         parse(line.split_whitespace().map(str::to_owned))
     }
 
+    /// For arguments that contain spaces, which `parse_str` would split.
+    fn argv(words: &[&str]) -> Result<Command, String> {
+        parse(words.iter().map(|w| (*w).to_owned()))
+    }
+
     fn view(line: &str) -> ViewArgs {
         match parse_str(line).unwrap() {
             Command::View(args) => args,
@@ -584,6 +599,26 @@ mod tests {
         assert_eq!(args.pages, 1);
         assert_eq!(view("review").mode, Mode::Review);
         assert_eq!(view("authored").mode, Mode::Authored);
+    }
+
+    #[test]
+    fn the_search_filter_takes_a_query_and_belongs_to_the_views() {
+        // The query is one argument, quoted by the shell, so it keeps its
+        // spaces all the way to `prmarmot_core::search`.
+        let args = match argv(&["mine", "--filter", "label:bug is:stale"]).unwrap() {
+            Command::View(args) => args,
+            other => panic!("expected a view, got {other:?}"),
+        };
+        assert_eq!(args.filter.as_deref(), Some("label:bug is:stale"));
+
+        assert_eq!(
+            view("review --filter=author:alice").filter.as_deref(),
+            Some("author:alice")
+        );
+        assert_eq!(view("mine").filter, None);
+        assert!(argv(&["mine", "--filter"]).is_err());
+        let error = argv(&["watch", "--filter", "label:bug"]).unwrap_err();
+        assert!(error.contains("not `watch`"), "{error}");
     }
 
     #[test]
