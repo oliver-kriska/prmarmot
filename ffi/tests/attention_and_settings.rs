@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use prmarmot_ffi::{
-    config_from_toml, config_to_toml, default_app_config, AttentionStore, AuthConfig, BoardClient,
-    BoardScope, BoardSettings, Ci, ClientConfig, FfiError, GithubTransport, GraphqlRequest, Header,
-    HttpResponse, IssueLink, Mode, PullRequest, RestRequest, Review, SnoozeChoice, TokenSource,
-    WatchStatus,
+    config_from_toml, config_to_toml, copy_items, default_app_config, detail_lines, AttentionStore,
+    AuthConfig, BoardClient, BoardScope, BoardSettings, Ci, ClientConfig, FfiError,
+    GithubTransport, GraphqlRequest, Header, HttpResponse, IssueLink, Mode, PullRequest,
+    RestRequest, Review, SnoozeChoice, TokenSource, WatchStatus,
 };
 
 /// 2026-07-26T12:00:00Z, the instant the goldens are pinned at.
@@ -444,4 +444,48 @@ fn observing_a_row_reports_what_changed_and_the_marker_clears_on_acknowledgement
     assert!(store.acknowledge("PR_1".into()));
     assert!(!store.is_changed("PR_1".into()));
     assert!(store.changes("PR_1".into()).is_empty());
+}
+
+#[test]
+fn the_backoff_the_footer_counts_down_is_clamped_at_both_ends() {
+    // The PRFlow lesson, reachable from Swift: never sooner than a minute,
+    // never later than fifteen, whatever GitHub says the reset is.
+    assert_eq!(prmarmot_ffi::backoff_secs(Some(1_000), 990), 60);
+    assert_eq!(prmarmot_ffi::backoff_secs(Some(1_300), 1_000), 300);
+    assert_eq!(prmarmot_ffi::backoff_secs(Some(9_999_999), 1_000), 900);
+    assert_eq!(prmarmot_ffi::backoff_secs(None, 1_000), 60);
+}
+
+#[test]
+fn the_details_panel_and_its_copy_menu_come_from_core_not_from_swift() {
+    let row = row(1);
+    let lines = detail_lines(row.clone(), Mode::Authored, NOW, 0).unwrap();
+    // The first four lines are fixed; the rest depend on the row.
+    assert_eq!(lines[0], prmarmot_ffi::strip_note_glyphs(row.note.clone()));
+    assert!(lines[1].starts_with("Author: "));
+    assert!(lines[1].contains(" · CI: "));
+    assert!(lines[2].starts_with("Requested reviewers: "));
+    assert!(lines[3].starts_with("Reviews: "));
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("Details reflect the loaded snapshot; refresh restarts pagination.")
+    );
+
+    let items = copy_items(row.clone(), Mode::Authored, NOW, 0).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "Copy PR URL",
+            "Copy PR number",
+            "Copy PR reference",
+            "Copy title",
+            "Copy all details"
+        ]
+    );
+    assert_eq!(items[0].text, row.url);
+    assert_eq!(items[2].text, format!("{}#{}", row.repo, row.number));
+    assert!(items[4].text.ends_with(&lines.join("\n")));
 }

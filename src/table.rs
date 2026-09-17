@@ -353,123 +353,25 @@ pub fn label_chip(theme: &gpui_component::Theme) -> Div {
 }
 
 /// "Small · 42 changed lines in 3 files (+30 −12)".
+/// The local time zone, as an offset in seconds, for the one line of the
+/// panel that shows a wall clock.
+fn local_offset_secs() -> i32 {
+    Local::now().offset().local_minus_utc()
+}
+
 fn size_text(size: ChangeSize) -> String {
-    format!(
-        "{} · {} (+{} −{})",
-        size.band().label(),
-        size.lines_and_files(),
-        size.additions,
-        size.deletions
-    )
+    prmarmot_core::detail::size_text(size)
 }
 
-/// A review state in plain words ("changes requested"), never GitHub's enum.
-fn review_state_words(state: &str) -> String {
-    match state {
-        "APPROVED" => "approved".into(),
-        "CHANGES_REQUESTED" => "changes requested".into(),
-        "COMMENTED" => "commented".into(),
-        "DISMISSED" => "dismissed".into(),
-        other => other.to_lowercase().replace('_', " "),
-    }
-}
-
-/// Your standing review in plain words; `None` when there isn't one.
-fn my_review_text(review: &str) -> Option<&'static str> {
-    match review {
-        "APPROVED" => Some("approved"),
-        "CHANGES_REQUESTED" => Some("changes requested"),
-        "COMMENTED" => Some("commented"),
-        _ => None,
-    }
-}
-
-/// Full, unelided snapshot details; no secondary network request or hidden cache.
+/// Full, unelided snapshot details; no secondary network request or hidden
+/// cache. The lines themselves are core's, so the iPad shows the same ones.
 pub fn detail_text(row: &BoardRow, mode: Mode) -> String {
     detail_text_at(row, mode, Utc::now())
 }
 
 /// [`detail_text`] with the wait measured at `now`.
 fn detail_text_at(row: &BoardRow, mode: Mode, now: DateTime<Utc>) -> String {
-    let mut lines = vec![
-        strip_note_glyphs(&row.note),
-        format!(
-            "Author: {} · CI: {} · Unresolved threads: {}",
-            row.author.as_deref().unwrap_or("unknown"),
-            row.ci.as_str(),
-            row.unresolved
-        ),
-        format!(
-            "Requested reviewers: {}",
-            if row.requested.is_empty() {
-                "none".into()
-            } else {
-                row.requested.join(", ")
-            }
-        ),
-        format!(
-            "Reviews: {}",
-            if row.reviews.is_empty() {
-                "none".into()
-            } else {
-                row.reviews
-                    .iter()
-                    .map(|review| {
-                        format!(
-                            "{} — {}",
-                            review.login.as_deref().unwrap_or("deleted user"),
-                            review_state_words(&review.state)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        ),
-    ];
-    // Your own PR has no review of yours to show.
-    if let Some(review) = row
-        .my_review
-        .as_deref()
-        .filter(|_| mode == Mode::Review)
-        .and_then(my_review_text)
-    {
-        lines.push(format!("Your review: {review}"));
-    }
-    // Like the Note's "· 4d", with the start in local time.
-    let since = row
-        .waiting_since
-        .as_deref()
-        .and_then(|since| DateTime::parse_from_rfc3339(since).ok());
-    if let (Some(secs), Some(since)) = (waiting_secs(row, now), since) {
-        lines.push(format!(
-            "Waiting for a reviewer for {} (since {})",
-            wait_label(secs),
-            since.with_timezone(&Local).format("%Y-%m-%d %H:%M")
-        ));
-    }
-    if let Some(size) = row.size {
-        lines.push(format!("Size: {}", size_text(size)));
-    }
-    if !row.labels.is_empty() {
-        lines.push(format!("Labels: {}", row.labels.join(", ")));
-    }
-    if let Some(issue) = &row.issue {
-        lines.push(format!("Issue: {issue}"));
-    }
-    if let Some(stack) = &row.stack {
-        lines.push(format!(
-            "Stack #{} · Layer {} of {} · Base: {}",
-            stack.number,
-            stack
-                .position
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "?".into()),
-            stack.size,
-            stack.base_ref_name
-        ));
-    }
-    lines.push("Details reflect the loaded snapshot; refresh restarts pagination.".into());
-    lines.join("\n")
+    prmarmot_core::detail::detail_text(row, mode, now, local_offset_secs())
 }
 
 #[derive(Clone)]
@@ -483,23 +385,7 @@ pub enum RowAction {
 }
 
 pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)> {
-    vec![
-        ("Copy PR URL", row.url.clone()),
-        ("Copy PR number", format!("#{}", row.number)),
-        ("Copy PR reference", format!("{}#{}", row.repo, row.number)),
-        ("Copy title", row.title.clone()),
-        (
-            "Copy all details",
-            format!(
-                "{}#{} {}\n{}\n\n{}",
-                row.repo,
-                row.number,
-                row.title,
-                row.url,
-                detail_text(row, mode)
-            ),
-        ),
-    ]
+    prmarmot_core::detail::copy_items(row, mode, Utc::now(), local_offset_secs())
 }
 
 type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;

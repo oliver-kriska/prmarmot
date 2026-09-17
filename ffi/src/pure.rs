@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use prmarmot_core::detail as core_detail;
 use prmarmot_core::layout as core_layout;
 use prmarmot_core::pickup;
 use prmarmot_core::search as core_search;
@@ -152,6 +153,68 @@ pub fn share_group(
 #[uniffi::export]
 pub fn strip_note_glyphs(note: String) -> String {
     prmarmot_core::board::strip_note_glyphs(&note)
+}
+
+/// One entry of the Details panel's Copy menu.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CopyItem {
+    /// What the menu says, e.g. "Copy PR reference".
+    pub label: String,
+    /// What goes on the pasteboard.
+    pub text: String,
+}
+
+/// Every line of the Details panel, in the order it is shown.
+///
+/// The desktop draws the same list from the same function: "the same facts in
+/// the same words" is a property of this call, not of two hand-kept copies.
+/// `tz_offset_secs` is the reader's offset from UTC — only the "(since …)"
+/// timestamp uses it.
+#[uniffi::export]
+pub fn detail_lines(
+    row: PullRequest,
+    mode: Mode,
+    now_epoch: i64,
+    tz_offset_secs: i32,
+) -> Result<Vec<String>, FfiError> {
+    let now = instant(now_epoch)?;
+    Ok(core_detail::detail_lines(
+        &row.into_row(),
+        mode.into(),
+        now,
+        tz_offset_secs,
+    ))
+}
+
+/// The Details panel's Copy menu, in the desktop's order and wording.
+#[uniffi::export]
+pub fn copy_items(
+    row: PullRequest,
+    mode: Mode,
+    now_epoch: i64,
+    tz_offset_secs: i32,
+) -> Result<Vec<CopyItem>, FfiError> {
+    let now = instant(now_epoch)?;
+    Ok(
+        core_detail::copy_items(&row.into_row(), mode.into(), now, tz_offset_secs)
+            .into_iter()
+            .map(|(label, text)| CopyItem {
+                label: label.to_owned(),
+                text,
+            })
+            .collect(),
+    )
+}
+
+/// How long to wait after GitHub says the budget is spent, in seconds.
+///
+/// The clamp is core's and the reason is the PRFlow post-mortem: a far-future
+/// or garbage reset time must not freeze the refresh loop, and a reset ten
+/// seconds away must not turn into a poll every ten seconds. Always between a
+/// minute and fifteen.
+#[uniffi::export]
+pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
+    prmarmot_core::github::rate_limit::backoff_secs(reset_epoch, now_epoch)
 }
 
 /// The label a section header shows for a category, e.g. "Needs attention".
