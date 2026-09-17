@@ -25,6 +25,13 @@ bindgen = ["uniffi/cli"]
 # No `http` feature: iOS brings its own URLSession transport, and linking
 # rustls into the app would be a second TLS stack for nothing.
 prmarmot-core = { path = "../core", default-features = false, features = ["small-regex"] }
+# The watch list, the snooze conditions and the config file format are the
+# desktop's, not a second implementation. This crate never calls the parts that
+# touch a path (`load`, `save`, `config_path`): the bytes cross the boundary and
+# Swift decides where they live. `default-features = false` keeps core's small
+# regex engine — with defaults on, Cargo would unify the features and link the
+# full one.
+prmarmot-local = { path = "../local", default-features = false, features = ["small-regex"] }
 uniffi = "=0.32.1"
 # uniffi's own generated impls of async foreign traits reference
 # `::async_trait`, so the declaring crate has to depend on it too.

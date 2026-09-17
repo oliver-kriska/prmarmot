@@ -1,10 +1,11 @@
-//! "Changed since you looked", across the boundary.
+//! Watch, snooze and "changed since you looked", across the boundary.
 //!
-//! `prmarmot-core` owns the rule for what counts as a change and which change
-//! is worth telling someone about; this crate owns none of it. What the iPad
-//! adds is the file: the store serializes to bytes and restores from bytes, so
-//! Swift decides where that lives (its own container, iCloud later) without
-//! Rust learning anything about iOS file system APIs.
+//! None of the rules are here. `prmarmot-core` decides what counts as a change
+//! and which change is worth telling someone about; `prmarmot-local` owns the
+//! watch list, the snooze conditions and the file format. This module is the
+//! doorway, and the one thing it adds is that the bytes go in and out instead
+//! of to a path: Swift decides where the file lives without Rust learning
+//! anything about iOS containers.
 //!
 //! The store is namespaced by `(host, account)` on purpose. Restoring another
 //! account's state is refused rather than merged — a "changed" marker from a
@@ -12,7 +13,9 @@
 
 use std::sync::Mutex;
 
+use chrono::{DateTime, TimeZone, Utc};
 use prmarmot_core::attention as core_attention;
+use prmarmot_local::attention_state as local_attention;
 
 use crate::error::FfiError;
 use crate::types::PullRequest;
@@ -77,13 +80,133 @@ pub struct ObserveResult {
     pub notice: Option<Notice>,
 }
 
-/// The persisted "changed since you looked" state for one account.
+/// Whether a watched PR is still there. GitHub can close, merge or hide one
+/// while it is being watched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum WatchStatus {
+    Open,
+    Closed,
+    Merged,
+    Inaccessible,
+    Unknown,
+}
+
+impl From<local_attention::TrackedStatus> for WatchStatus {
+    fn from(status: local_attention::TrackedStatus) -> Self {
+        match status {
+            local_attention::TrackedStatus::Open => Self::Open,
+            local_attention::TrackedStatus::Closed => Self::Closed,
+            local_attention::TrackedStatus::Merged => Self::Merged,
+            local_attention::TrackedStatus::Inaccessible => Self::Inaccessible,
+            local_attention::TrackedStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<WatchStatus> for local_attention::TrackedStatus {
+    fn from(status: WatchStatus) -> Self {
+        match status {
+            WatchStatus::Open => Self::Open,
+            WatchStatus::Closed => Self::Closed,
+            WatchStatus::Merged => Self::Merged,
+            WatchStatus::Inaccessible => Self::Inaccessible,
+            WatchStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// A watched PR, enough of it to draw a row without having fetched the board
+/// it came from.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WatchedPr {
+    pub pr_id: String,
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub status: WatchStatus,
+}
+
+impl From<&local_attention::Watch> for WatchedPr {
+    fn from(watch: &local_attention::Watch) -> Self {
+        Self {
+            pr_id: watch.pr_id.clone(),
+            repo: watch.repo.clone(),
+            number: watch.number,
+            url: watch.url.clone(),
+            title: watch.title.clone(),
+            status: watch.status.into(),
+        }
+    }
+}
+
+/// What the user picked from the snooze menu. The deadline arithmetic for the
+/// timed ones is here rather than in Swift so both front ends mean the same
+/// thing by "until tomorrow".
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SnoozeChoice {
+    /// The desktop's "One hour".
+    OneHour,
+    /// The desktop's "Until tomorrow": twenty-four hours, not midnight.
+    UntilTomorrow,
+    /// Wake when this person submits a review newer than the one they had.
+    WaitingPerson { login: String },
+    /// Wake when CI reaches a terminal state different from today's.
+    WaitingCi,
+    /// Wake when anything a reviewer would care about changes.
+    ReviewAgainWhenChanged,
+}
+
+/// A snoozed PR and the sentence describing why.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SnoozedPr {
+    pub pr_id: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub created_at_epoch: i64,
+    /// The desktop's wording: "Snoozed until 2026-09-18 09:00 UTC", "Waiting
+    /// on alice", "Waiting for CI to finish", "Review again when changed".
+    pub description: String,
+}
+
+impl From<&local_attention::Snooze> for SnoozedPr {
+    fn from(snooze: &local_attention::Snooze) -> Self {
+        Self {
+            pr_id: snooze.pr_id.clone(),
+            repo: snooze.repo.clone(),
+            number: snooze.number,
+            title: snooze.title.clone(),
+            created_at_epoch: snooze.created_at.timestamp(),
+            description: snooze.description(),
+        }
+    }
+}
+
+/// The result of pressing `w`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WatchToggle {
+    /// True when the PR is now watched, false when the press removed it.
+    pub watching: bool,
+    /// The oldest watch, dropped to stay under the fifty-watch bound.
+    pub evicted: Option<WatchedPr>,
+}
+
+/// Which PRs to refresh outside the board, and how many there are in total.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TrackedIds {
+    pub ids: Vec<String>,
+    pub total: u32,
+}
+
+/// The persisted attention state for one account: what changed since you
+/// looked, what you are watching, and what is snoozed.
 ///
-/// Bounded at 1,000 PRs with FIFO eviction and at 16 MiB on disk, the same
-/// bounds the desktop app runs under.
+/// Bounded exactly as the desktop bounds it — 1,000 snapshots, 50 watches,
+/// 200 snoozes, 20 MiB on disk — because it is the desktop's code.
 #[derive(uniffi::Object)]
 pub struct AttentionStore {
-    inner: Mutex<core_attention::SnapshotStore>,
+    inner: Mutex<local_attention::AttentionState>,
 }
 
 #[uniffi::export]
@@ -92,19 +215,20 @@ impl AttentionStore {
     #[uniffi::constructor]
     pub fn new(host: String, account: String) -> Self {
         Self {
-            inner: Mutex::new(core_attention::SnapshotStore::new(
-                core_attention::SnapshotNamespace::new(host, account),
-            )),
+            inner: Mutex::new(local_attention::AttentionState::empty(namespace(
+                host, account,
+            ))),
         }
     }
 
     /// Restore what `to_bytes` wrote. Fails when the bytes are for another
     /// account, are too large, or do not validate — in which case start empty
-    /// rather than half-trusting them.
+    /// rather than half-trusting them, and tell the person: the desktop
+    /// preserves the file and says so in the footer, and so must this.
     #[uniffi::constructor]
     pub fn from_bytes(host: String, account: String, bytes: Vec<u8>) -> Result<Self, FfiError> {
-        let namespace = core_attention::SnapshotNamespace::new(host, account);
-        let inner = core_attention::SnapshotStore::from_json_slice(namespace, &bytes)?;
+        let inner = local_attention::AttentionState::from_bytes(namespace(host, account), &bytes)
+            .map_err(FfiError::invalid)?;
         Ok(Self {
             inner: Mutex::new(inner),
         })
@@ -112,21 +236,24 @@ impl AttentionStore {
 
     /// The whole store, for the caller to write wherever it keeps it.
     pub fn to_bytes(&self) -> Result<Vec<u8>, FfiError> {
-        Ok(self.lock().to_json_vec()?)
+        self.lock().to_bytes().map_err(FfiError::invalid)
     }
 
     /// Record how a PR looks now, and say what that means.
     pub fn observe(&self, row: PullRequest) -> Result<ObserveResult, FfiError> {
         let row = row.into_row();
-        let mut store = self.lock();
-        let previous = store
+        let mut state = self.lock();
+        let previous = state
+            .snapshots
             .snapshot(&row.id)
             .map(|snapshot| snapshot.latest.clone());
         let notice = core_attention::semantic_notice(previous.as_ref(), &row);
-        let result = store
+        let result = state
+            .snapshots
             .observe(row.id.clone(), core_attention::Observation::from_row(&row))
             .map_err(FfiError::invalid)?;
-        let changes = store
+        let changes = state
+            .snapshots
             .snapshot(&row.id)
             .map(|snapshot| snapshot.change_summary())
             .unwrap_or_default();
@@ -154,32 +281,142 @@ impl AttentionStore {
     /// Mark a PR as seen. Returns whether anything changed, so the caller can
     /// skip writing an identical file.
     pub fn acknowledge(&self, pr_id: String) -> bool {
-        self.lock().acknowledge(&pr_id)
+        self.lock().snapshots.acknowledge(&pr_id)
     }
 
     /// Whether a PR is currently marked changed.
     pub fn is_changed(&self, pr_id: String) -> bool {
-        self.lock()
-            .snapshot(&pr_id)
-            .is_some_and(|snapshot| snapshot.changed_since_acknowledgement)
+        self.lock().is_changed(&pr_id)
     }
 
     /// What differs from the acknowledged observation, in short phrases.
     pub fn changes(&self, pr_id: String) -> Vec<String> {
-        self.lock()
-            .snapshot(&pr_id)
-            .map(|snapshot| snapshot.change_summary())
-            .unwrap_or_default()
+        self.lock().change_summary(&pr_id)
     }
 
-    /// How many PRs the store is holding.
+    /// How many PRs the snapshot store is holding.
     pub fn count(&self) -> u32 {
-        self.lock().len() as u32
+        self.lock().snapshots.len() as u32
+    }
+
+    // -- Watch ------------------------------------------------------------
+
+    pub fn is_watched(&self, pr_id: String) -> bool {
+        self.lock().is_watched(&pr_id)
+    }
+
+    /// Press `w`: watch an unwatched PR, unwatch a watched one.
+    pub fn toggle_watch(&self, row: PullRequest) -> WatchToggle {
+        let row = row.into_row();
+        let mut state = self.lock();
+        let was_watched = state.is_watched(&row.id);
+        let evicted = state.toggle_watch(&row);
+        WatchToggle {
+            watching: !was_watched,
+            evicted: evicted.as_ref().map(WatchedPr::from),
+        }
+    }
+
+    /// Everything being watched, oldest first — the order the bound evicts in.
+    pub fn watches(&self) -> Vec<WatchedPr> {
+        self.lock().watches.iter().map(WatchedPr::from).collect()
+    }
+
+    /// Record that a watched PR closed, merged or became invisible. Returns
+    /// true when this is news.
+    pub fn update_watch_status(&self, pr_id: String, status: WatchStatus) -> bool {
+        self.lock()
+            .update_watch_status(&pr_id, status.into())
+            .is_some()
+    }
+
+    // -- Snooze -----------------------------------------------------------
+
+    pub fn is_snoozed(&self, pr_id: String) -> bool {
+        self.lock().snooze(&pr_id).is_some()
+    }
+
+    /// The sentence for a snoozed PR, or nothing when it is awake.
+    pub fn snooze_description(&self, pr_id: String) -> Option<String> {
+        self.lock()
+            .snooze(&pr_id)
+            .map(local_attention::Snooze::description)
+    }
+
+    /// Snooze a row. `now_epoch` is the caller's clock: core owns none.
+    pub fn snooze(&self, row: PullRequest, choice: SnoozeChoice, now_epoch: i64) {
+        let row = row.into_row();
+        let now = instant(now_epoch);
+        let condition = match choice {
+            SnoozeChoice::OneHour => local_attention::SnoozeCondition::Until {
+                deadline: now + chrono::Duration::hours(1),
+            },
+            SnoozeChoice::UntilTomorrow => local_attention::SnoozeCondition::Until {
+                deadline: now + chrono::Duration::hours(24),
+            },
+            SnoozeChoice::WaitingPerson { login } => {
+                local_attention::AttentionState::waiting_person(&row, login)
+            }
+            SnoozeChoice::WaitingCi => local_attention::AttentionState::waiting_ci(&row),
+            SnoozeChoice::ReviewAgainWhenChanged => {
+                local_attention::AttentionState::review_again(&row)
+            }
+        };
+        let mut snooze = local_attention::AttentionState::snooze_for(&row, condition);
+        // `snooze_for` stamps `Utc::now()`; the caller's clock wins so a test
+        // (and a fixed-clock UI test) is deterministic.
+        snooze.created_at = now;
+        self.lock().set_snooze(snooze);
+    }
+
+    /// Wake a snoozed PR by hand.
+    pub fn cancel_snooze(&self, pr_id: String) -> bool {
+        self.lock().cancel_snooze(&pr_id)
+    }
+
+    /// Everything snoozed, oldest first.
+    pub fn snoozes(&self) -> Vec<SnoozedPr> {
+        self.lock().snoozes.iter().map(SnoozedPr::from).collect()
+    }
+
+    /// Wake whatever this refresh's rows say should wake. Returns the PR ids
+    /// that woke, for the caller to mention.
+    pub fn wake_due(&self, rows: Vec<PullRequest>, now_epoch: i64) -> Vec<String> {
+        let rows: Vec<_> = rows.into_iter().map(PullRequest::into_row).collect();
+        self.lock().wake_due(&rows, instant(now_epoch))
+    }
+
+    // -- Refreshing what is not on the board -------------------------------
+
+    /// The watched and snoozed PRs to fetch alongside the board, round-robin
+    /// through `offset` so a long list is covered over several refreshes.
+    pub fn tracked_ids(&self, limit: u32, offset: u32) -> TrackedIds {
+        let (ids, total) = self.lock().tracked_ids(limit as usize, offset as usize);
+        TrackedIds {
+            ids,
+            total: total as u32,
+        }
+    }
+
+    /// Set when the state file could not be read and is being preserved. The
+    /// footer says this; nothing overwrites the file after it.
+    pub fn storage_error(&self) -> Option<String> {
+        self.lock().storage_error.clone()
     }
 }
 
 impl AttentionStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, core_attention::SnapshotStore> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, local_attention::AttentionState> {
         self.inner.lock().expect("attention store")
     }
+}
+
+fn namespace(host: String, account: String) -> core_attention::SnapshotNamespace {
+    core_attention::SnapshotNamespace::new(host, account)
+}
+
+fn instant(epoch: i64) -> DateTime<Utc> {
+    Utc.timestamp_opt(epoch, 0)
+        .single()
+        .unwrap_or_else(Utc::now)
 }

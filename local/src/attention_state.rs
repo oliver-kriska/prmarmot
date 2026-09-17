@@ -219,7 +219,10 @@ impl AttentionState {
         }
     }
 
-    fn from_bytes(namespace: SnapshotNamespace, bytes: &[u8]) -> Result<Self, String> {
+    /// Restore what `to_bytes` wrote. Public because a front end that keeps
+    /// this file somewhere of its own (the iPad, in its app container) needs
+    /// the same validation the desktop's `load` gets.
+    pub fn from_bytes(namespace: SnapshotNamespace, bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_STATE_BYTES {
             return Err(format!("file is too large ({} bytes)", bytes.len()));
         }

@@ -118,10 +118,17 @@ Measured on `aarch64-apple-ios`, `--profile ios`, as the fully linked
 `libprmarmot_ffi.dylib` (the `.a` is an unstripped archive and says nothing
 useful):
 
-| Regex engine | Linked bytes |
+| Build | Linked bytes |
 |---|---|
 | `regex` | 1,638,520 |
 | `regex-lite` (`small-regex`) | 830,264 |
+| `regex-lite`, plus `prmarmot-local` for watch, snooze and `config.toml` | 1,288,004 |
+
+The third row is what the app links today. Depending on `prmarmot-local` costs
+447 KiB — almost all of it the `toml` crate — and buys the desktop's watch
+bound, its snooze conditions, its state-file validation and its config format
+rather than a Swift re-reading of any of them. A second implementation of those
+rules would cost more than 447 KiB in bugs.
 
 789 KiB is worth having on a phone and worth nothing on a desktop, so
 `small-regex` is a `prmarmot-core` feature that only this crate turns on. The

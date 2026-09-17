@@ -9,11 +9,50 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use prmarmot_core::board as core_board;
-use prmarmot_core::github::viewer_login;
+use prmarmot_core::github::{gh_cli, viewer_login};
 
 use crate::error::FfiError;
 use crate::transport::{self, GithubTransport, TokenSource};
 use crate::types::{Board, BoardScope, BoardSettings, Mode, PullRequest, RateLimit};
+
+/// What became of a PR that is watched or snoozed but not on the board.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TrackedStatus {
+    Open,
+    Closed,
+    Merged,
+    /// Deleted, or in a repository this account can no longer see.
+    Inaccessible,
+}
+
+impl From<core_board::TrackedPrStatus> for TrackedStatus {
+    fn from(status: core_board::TrackedPrStatus) -> Self {
+        match status {
+            core_board::TrackedPrStatus::Open => Self::Open,
+            core_board::TrackedPrStatus::Closed => Self::Closed,
+            core_board::TrackedPrStatus::Merged => Self::Merged,
+            core_board::TrackedPrStatus::Inaccessible => Self::Inaccessible,
+        }
+    }
+}
+
+/// One tracked PR as this refresh found it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TrackedPr {
+    pub pr_id: String,
+    pub status: TrackedStatus,
+    /// The row, when the PR is still visible. Absent for an inaccessible one.
+    pub row: Option<PullRequest>,
+}
+
+/// The repositories this account can see, and whether the walk hit its bound.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RepoList {
+    pub repos: Vec<String>,
+    /// True when there are more than the walk is willing to fetch, so the
+    /// picker must not pretend it is the whole list.
+    pub truncated: bool,
+}
 
 /// Who this client is and where it is talking.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -124,6 +163,83 @@ impl BoardClient {
         board(mode, fetched, now_epoch, settings.stale_after_days)
     }
 
+    /// One board plus whatever watched or snoozed PRs are not on it, in a
+    /// single GraphQL operation — the desktop's batched refresh. `tracked_ids`
+    /// comes from `AttentionStore.trackedIds`.
+    pub async fn fetch_board_tracking(
+        &self,
+        mode: Mode,
+        scope: BoardScope,
+        settings: BoardSettings,
+        now_epoch: i64,
+        tracked_ids: Vec<String>,
+    ) -> Result<TrackedBoard, FfiError> {
+        let cfg = settings.to_core()?;
+        let core_mode: core_board::Mode = mode.into();
+        let core_scope: core_board::BoardScope = scope.into();
+        let viewer = self.config.viewer.clone();
+        let fetched = self
+            .run(move |core| {
+                core_board::fetch_board_scoped_with_tracked(
+                    core,
+                    core_mode,
+                    &core_scope,
+                    &viewer,
+                    &cfg,
+                    &tracked_ids,
+                )
+            })
+            .await?;
+        self.remember(core_mode, &fetched);
+        let now = crate::types::instant(now_epoch)?;
+        let tracked = fetched
+            .tracked
+            .iter()
+            .map(|tracked| TrackedPr {
+                pr_id: tracked.pr_id.clone(),
+                status: tracked.status.into(),
+                row: tracked
+                    .row
+                    .as_ref()
+                    .map(|row| PullRequest::from_row(row, now, settings.stale_after_days)),
+            })
+            .collect();
+        Ok(TrackedBoard {
+            board: board(mode, fetched, now_epoch, settings.stale_after_days)?,
+            tracked,
+        })
+    }
+
+    /// Every repository this account is involved in, for the picker. A REST
+    /// walk bounded at ten pages of a hundred, exactly as the desktop bounds
+    /// it, and deliberately not a GraphQL point.
+    pub async fn discover_repos(&self) -> Result<RepoList, FfiError> {
+        let found = transport::run_rest(
+            self.transport.clone(),
+            self.tokens.clone(),
+            &self.config.host,
+            &self.config.user_agent,
+            move |rest| {
+                gh_cli::discover_repos_with(|page| {
+                    rest.rest_get(
+                        "user/repos",
+                        &[
+                            ("affiliation", "owner,collaborator,organization_member"),
+                            ("per_page", "100"),
+                            ("sort", "pushed"),
+                            ("page", &page.to_string()),
+                        ],
+                    )
+                })
+            },
+        )
+        .await?;
+        Ok(RepoList {
+            repos: found.repos,
+            truncated: found.truncated,
+        })
+    }
+
     /// Whether [`BoardClient::load_more`] would fetch anything for `mode`.
     /// False before the first fetch.
     pub fn has_more(&self, mode: Mode) -> bool {
@@ -177,6 +293,13 @@ impl BoardClient {
             .get(&key(mode))
             .cloned()
     }
+}
+
+/// A board and the tracked PRs that came with it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TrackedBoard {
+    pub board: Board,
+    pub tracked: Vec<TrackedPr>,
 }
 
 fn key(mode: core_board::Mode) -> u8 {

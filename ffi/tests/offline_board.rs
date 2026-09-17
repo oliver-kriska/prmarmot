@@ -22,6 +22,7 @@ struct Offline {
     body: String,
     status: u16,
     seen: Mutex<Vec<GraphqlRequest>>,
+    rest: Mutex<Vec<String>>,
 }
 
 impl Offline {
@@ -34,6 +35,7 @@ impl Offline {
             body: std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")),
             status: 200,
             seen: Mutex::new(Vec::new()),
+            rest: Mutex::new(Vec::new()),
         })
     }
 
@@ -63,6 +65,7 @@ impl Offline {
             body: body.to_string(),
             status: 200,
             seen: Mutex::new(Vec::new()),
+            rest: Mutex::new(Vec::new()),
         })
     }
 
@@ -71,6 +74,7 @@ impl Offline {
             body: body.to_owned(),
             status,
             seen: Mutex::new(Vec::new()),
+            rest: Mutex::new(Vec::new()),
         })
     }
 
@@ -89,6 +93,18 @@ impl GithubTransport for Offline {
                 name: "x-ratelimit-remaining".into(),
                 value: "4999".into(),
             }],
+            body: self.body.clone(),
+        })
+    }
+
+    async fn get(
+        &self,
+        request: prmarmot_ffi::transport::RestRequest,
+    ) -> Result<HttpResponse, FfiError> {
+        self.rest.lock().unwrap().push(request.url.clone());
+        Ok(HttpResponse {
+            status: self.status,
+            headers: Vec::new(),
             body: self.body.clone(),
         })
     }

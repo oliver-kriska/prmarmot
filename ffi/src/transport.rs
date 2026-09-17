@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use prmarmot_core::github::response::{classify, graphql_body, ResponseMeta};
 use prmarmot_core::github::{
-    graphql_url, AuthTransport as CoreAuthTransport, GhError, GithubTransport as CoreTransport,
+    graphql_url, rest_url, AuthTransport as CoreAuthTransport, GhError,
+    GithubTransport as CoreTransport, RestTransport as CoreRestTransport,
 };
 use serde_json::Value;
 
@@ -50,6 +51,18 @@ pub struct GraphqlRequest {
     pub user_agent: String,
 }
 
+/// A finished REST GET: the query string is already in `url`.
+///
+/// Only one thing uses this — walking `user/repos` to fill the repository
+/// picker — and it stays on REST for the same reason the desktop does: it
+/// spends REST budget instead of a GraphQL point.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RestRequest {
+    pub url: String,
+    pub token: String,
+    pub user_agent: String,
+}
+
 /// What came back. Report the status GitHub sent rather than turning it into
 /// an error: this side knows which statuses mean "wait", "sign in again" and
 /// "that repository is not visible to you", and Swift does not have to.
@@ -73,6 +86,11 @@ pub struct HttpResponse {
 #[async_trait::async_trait]
 pub trait GithubTransport: Send + Sync {
     async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError>;
+
+    /// GET, for the REST walk behind the repository picker. Same terms as
+    /// `send`: return whatever the server said, throw only when there was no
+    /// answer.
+    async fn get(&self, request: RestRequest) -> Result<HttpResponse, FfiError>;
 }
 
 /// Where the API token comes from, asked once per fetch.
@@ -113,6 +131,13 @@ pub trait AuthTransport: Send + Sync {
 /// What the worker thread asks for, and what it gets back.
 type Answer = Result<Value, GhError>;
 
+/// A request on its way out. One channel carries both kinds, so the worker
+/// thread's two traits share one loop and one termination protocol.
+enum Outgoing {
+    Graphql(GraphqlRequest),
+    Rest(RestRequest),
+}
+
 /// One blocking call waiting on an async answer. Generic over the request so
 /// the GraphQL and the form-POST bridges are the same machinery twice, not two
 /// different ideas.
@@ -136,8 +161,9 @@ fn ask<Req>(calls: &async_channel::Sender<Call<Req>>, request: Req) -> Answer {
 /// The `prmarmot-core` transport the worker thread sees. Every call blocks
 /// until [`run`]'s loop has been round the foreign transport and back.
 struct Bridged {
-    calls: async_channel::Sender<Call<GraphqlRequest>>,
+    calls: async_channel::Sender<Call<Outgoing>>,
     url: String,
+    host: String,
     token: String,
     user_agent: String,
 }
@@ -151,12 +177,30 @@ impl CoreTransport for Bridged {
         let body = graphql_body(query, variables, ids).to_string();
         ask(
             &self.calls,
-            GraphqlRequest {
+            Outgoing::Graphql(GraphqlRequest {
                 url: self.url.clone(),
                 token: self.token.clone(),
                 body,
                 user_agent: self.user_agent.clone(),
-            },
+            }),
+        )
+    }
+}
+
+impl CoreRestTransport for Bridged {
+    fn rest_get(&self, path: &str, query: &[(&str, &str)]) -> Answer {
+        let mut url = rest_url(&self.host, path);
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&form_encode(query));
+        }
+        ask(
+            &self.calls,
+            Outgoing::Rest(RestRequest {
+                url,
+                token: self.token.clone(),
+                user_agent: self.user_agent.clone(),
+            }),
         )
     }
 }
@@ -198,13 +242,47 @@ where
     F: FnOnce(&dyn CoreTransport) -> Result<T, GhError> + Send + 'static,
     T: Send + 'static,
 {
+    run_wire(transport, tokens, host, user_agent, move |wire| work(wire)).await
+}
+
+/// The same, for the one operation that talks REST: walking `user/repos` to
+/// fill the repository picker.
+pub(crate) async fn run_rest<T, F>(
+    transport: Arc<dyn GithubTransport>,
+    tokens: Arc<dyn TokenSource>,
+    host: &str,
+    user_agent: &str,
+    work: F,
+) -> Result<T, FfiError>
+where
+    F: FnOnce(&dyn CoreRestTransport) -> Result<T, GhError> + Send + 'static,
+    T: Send + 'static,
+{
+    run_wire(transport, tokens, host, user_agent, move |wire| work(wire)).await
+}
+
+/// The machinery both of those are. The worker thread gets one object that is
+/// core's GraphQL transport and its REST transport at once; which half the
+/// caller uses is the caller's business.
+async fn run_wire<T, F>(
+    transport: Arc<dyn GithubTransport>,
+    tokens: Arc<dyn TokenSource>,
+    host: &str,
+    user_agent: &str,
+    work: F,
+) -> Result<T, FfiError>
+where
+    F: FnOnce(&Bridged) -> Result<T, GhError> + Send + 'static,
+    T: Send + 'static,
+{
     // One token per fetch: a refresh mid-board would be worse than a retry.
     let token = tokens.token().await?;
     let url = graphql_url(host);
     let user_agent = user_agent.to_owned();
 
-    let (calls, requests) = async_channel::bounded::<Call<GraphqlRequest>>(1);
+    let (calls, requests) = async_channel::bounded::<Call<Outgoing>>(1);
     let (finished, outcome) = async_channel::bounded::<Result<T, GhError>>(1);
+    let host = host.to_owned();
 
     std::thread::Builder::new()
         .name("prmarmot-fetch".into())
@@ -212,6 +290,7 @@ where
             let bridged = Bridged {
                 calls,
                 url,
+                host,
                 token,
                 user_agent,
             };
@@ -243,8 +322,11 @@ where
 }
 
 /// One round trip: ask Swift, then decide what the answer means.
-async fn serve(transport: &dyn GithubTransport, request: GraphqlRequest) -> Answer {
-    read(transport.send(request).await)
+async fn serve(transport: &dyn GithubTransport, request: Outgoing) -> Answer {
+    read(match request {
+        Outgoing::Graphql(request) => transport.send(request).await,
+        Outgoing::Rest(request) => transport.get(request).await,
+    })
 }
 
 /// Run one blocking device-flow operation over the foreign form transport.
@@ -341,6 +423,7 @@ mod tests {
     struct Scripted {
         answers: Mutex<Vec<Result<HttpResponse, FfiError>>>,
         seen: Mutex<Vec<GraphqlRequest>>,
+        rest: Mutex<Vec<RestRequest>>,
     }
 
     impl Scripted {
@@ -348,14 +431,11 @@ mod tests {
             Arc::new(Self {
                 answers: Mutex::new(answers),
                 seen: Mutex::new(Vec::new()),
+                rest: Mutex::new(Vec::new()),
             })
         }
-    }
 
-    #[async_trait::async_trait]
-    impl GithubTransport for Scripted {
-        async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
-            self.seen.lock().unwrap().push(request);
+        fn next(&self) -> Result<HttpResponse, FfiError> {
             let mut answers = self.answers.lock().unwrap();
             if answers.is_empty() {
                 return Err(FfiError::Network {
@@ -363,6 +443,19 @@ mod tests {
                 });
             }
             answers.remove(0)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GithubTransport for Scripted {
+        async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+            self.seen.lock().unwrap().push(request);
+            self.next()
+        }
+
+        async fn get(&self, request: RestRequest) -> Result<HttpResponse, FfiError> {
+            self.rest.lock().unwrap().push(request);
+            self.next()
         }
     }
 

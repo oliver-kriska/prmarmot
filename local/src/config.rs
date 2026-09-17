@@ -11,33 +11,32 @@ use std::time::Duration;
 
 use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule};
 use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FileConfig {
     /// Default repo (`owner/name`) when neither `--repo` nor `PRMARMOT_REPO` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     /// `all` or `repo`. Absent keeps old configs compatible: a saved repo is
     /// specific, while a clean config defaults to all repositories.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Entries for the repo picker; the active repo is always included.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_repos: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u64>,
     /// `system` | `light` | `dark`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     /// `authored` | `review` — the view to open with.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_reviewers: Vec<String>,
-    /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
-    /// (`"acme/api"`), used before `default_reviewers`.
-    #[serde(default)]
-    pub repo_reviewers: BTreeMap<String, Vec<String>>,
-    pub issue_link: Option<IssueLinkSection>,
-    pub window: Option<WindowSection>,
     #[serde(default = "default_true")]
     pub notifications: bool,
     #[serde(default = "default_true")]
@@ -51,8 +50,19 @@ pub struct FileConfig {
     pub automatic_update_checks: bool,
     /// Days a PR may wait for a reviewer before it counts as stale
     /// (`is:stale`, `--stale`); at least 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_after_days: Option<u64>,
+    // TOML requires plain keys before tables, so these come last.
+    /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
+    /// (`"acme/api"`), used before `default_reviewers`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repo_reviewers: BTreeMap<String, Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_link: Option<IssueLinkSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowSection>,
     /// `[auth]`: which GitHub host to talk to and how to sign in.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthSection>,
 }
 
@@ -87,7 +97,7 @@ impl Default for FileConfig {
 
 /// `[auth]` in the config file. Absent means "whatever works": a token stored
 /// by `prmarmot-cli auth login`, else the `gh` CLI, exactly as before.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AuthSection {
     /// `github.com`, or a GitHub Enterprise Server hostname.
     pub host: Option<String>,
@@ -100,13 +110,13 @@ pub struct AuthSection {
     pub store: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WindowSection {
     pub width: f32,
     pub height: f32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IssueLinkSection {
     pub pattern: String,
     pub url_template: String,
@@ -552,5 +562,126 @@ store = 'vault'",
             ),
             BoardScope::AllRepositories
         );
+    }
+}
+
+impl FileConfig {
+    /// The whole config as TOML text.
+    ///
+    /// The desktop edits `config.toml` in place with `toml_edit`, which keeps
+    /// the user's comments and ordering; this writes a clean canonical file
+    /// instead, for a front end that has no such file to edit (the iPad
+    /// exporting its settings). Both are read back by `from_toml_str`.
+    pub fn to_toml_string(&self) -> Result<String, String> {
+        toml::to_string(self).map_err(|error| error.to_string())
+    }
+
+    /// Parse a config file, e.g. one exported from the desktop.
+    pub fn from_toml_str(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod toml_round_trip_tests {
+    use super::*;
+
+    /// A file with every section set, as the desktop would have written it.
+    const FULL: &str = r#"
+repo = "acme/widgets"
+scope = "repo"
+repos = ["acme/widgets", "acme/api"]
+pinned_repos = ["acme/widgets"]
+refresh_secs = 600
+theme = "dark"
+view = "authored"
+default_reviewers = ["alice", "bob"]
+notifications = false
+notification_sound = false
+notify_all_needs_action = true
+dock_badge = false
+automatic_update_checks = false
+stale_after_days = 5
+
+[repo_reviewers]
+acme = ["carol"]
+"acme/api" = ["dave"]
+
+[issue_link]
+pattern = "PROJ-[0-9]+"
+url_template = "https://tracker.example.test/issues/{id}"
+
+[auth]
+host = "git.acme.test"
+client_id = "Iv1.example"
+mode = "device"
+store = "file"
+"#;
+
+    #[test]
+    fn a_config_survives_being_written_and_read_again() {
+        let original = FileConfig::from_toml_str(FULL).unwrap();
+        let text = original.to_toml_string().unwrap();
+        let again = FileConfig::from_toml_str(&text).unwrap();
+
+        assert_eq!(again.repo.as_deref(), Some("acme/widgets"));
+        assert_eq!(again.scope.as_deref(), Some("repo"));
+        assert_eq!(again.repos, vec!["acme/widgets", "acme/api"]);
+        assert_eq!(again.pinned_repos, vec!["acme/widgets"]);
+        assert_eq!(again.refresh_secs, Some(600));
+        assert_eq!(again.theme.as_deref(), Some("dark"));
+        assert_eq!(again.view.as_deref(), Some("authored"));
+        assert_eq!(again.default_reviewers, vec!["alice", "bob"]);
+        assert!(!again.notifications);
+        assert!(!again.notification_sound);
+        assert!(again.notify_all_needs_action);
+        assert!(!again.dock_badge);
+        assert!(!again.automatic_update_checks);
+        assert_eq!(again.stale_after_days, Some(5));
+        assert_eq!(again.repo_reviewers["acme"], vec!["carol"]);
+        assert_eq!(again.repo_reviewers["acme/api"], vec!["dave"]);
+        assert_eq!(
+            again.issue_link.as_ref().map(|link| link.pattern.as_str()),
+            Some("PROJ-[0-9]+")
+        );
+        let auth = again.auth.as_ref().unwrap();
+        assert_eq!(auth.host.as_deref(), Some("git.acme.test"));
+        assert_eq!(auth.mode.as_deref(), Some("device"));
+    }
+
+    /// The whole reason the fields are ordered the way they are: TOML wants
+    /// every plain key before the first table.
+    #[test]
+    fn the_written_file_puts_tables_last() {
+        let text = FileConfig::from_toml_str(FULL)
+            .unwrap()
+            .to_toml_string()
+            .unwrap();
+        let first_table = text.find("[repo_reviewers]").unwrap();
+        for key in ["repo =", "notifications =", "stale_after_days ="] {
+            assert!(
+                text.find(key).unwrap() < first_table,
+                "{key} is written after a table, which TOML cannot read back"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_config_writes_nothing_it_does_not_have() {
+        let text = FileConfig::default().to_toml_string().unwrap();
+        for absent in ["repo =", "repos =", "[auth]", "[issue_link]", "[window]"] {
+            assert!(
+                !text.contains(absent),
+                "empty config wrote {absent}:\n{text}"
+            );
+        }
+        // The booleans always have a value, so they are always written.
+        assert!(text.contains("notifications = true"));
+    }
+
+    #[test]
+    fn nonsense_is_an_error_and_not_a_default_config() {
+        assert!(FileConfig::from_toml_str("this is not toml = = =").is_err());
+        assert!(FileConfig::from_toml_str("refresh_secs = \"soon\"").is_err());
     }
 }
