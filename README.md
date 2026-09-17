@@ -548,6 +548,8 @@ layers appear in the same loaded section.
 The Nix flake supplies Rust, Cargo, rustfmt, Clippy, `gh`, and GPUI's Linux
 libraries. On macOS, the shell uses the active local Xcode for Clang,
 the Apple SDK, `libclang`, Metal, and `metallib`.
+The macOS Nix package uses GPUI's runtime shader compilation instead, so
+`nix build` does not need the external Xcode Metal compiler.
 
 ```sh
 nix develop

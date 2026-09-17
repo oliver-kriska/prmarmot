@@ -43,37 +43,6 @@
             cargo = rustToolchain;
             rustc = rustToolchain;
           };
-          systemXcrun = pkgs.writeShellScriptBin "xcrun" ''
-            original_args=("$@")
-            find_only=0
-
-            while [ "$#" -gt 0 ]; do
-              case "$1" in
-                -f|--find)
-                  find_only=1
-                  ;;
-                metal|metallib)
-                  tool="$1"
-                  shift
-                  toolchain_path="$(
-                    /usr/bin/xcodebuild -showComponent metalToolchain 2>/dev/null \
-                      | /usr/bin/awk -F ': ' '/^Toolchain Search Path:/ { print $2; exit }'
-                  )"
-                  candidate="$toolchain_path/Metal.xctoolchain/usr/bin/$tool"
-                  if [ -x "$candidate" ]; then
-                    if [ "$find_only" -eq 1 ]; then
-                      echo "$candidate"
-                      exit 0
-                    fi
-                    exec "$candidate" "$@"
-                  fi
-                  ;;
-              esac
-              shift
-            done
-
-            exec /usr/bin/xcrun "''${original_args[@]}"
-          '';
           linuxLibraries = lib.optionals pkgs.stdenv.hostPlatform.isLinux (
             with pkgs;
             [
@@ -97,18 +66,20 @@
             src = lib.cleanSource self;
 
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs =
-              with pkgs;
-              [
-                clang
-                makeWrapper
-                pkg-config
-              ]
-              ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ systemXcrun ];
+            nativeBuildInputs = with pkgs; [
+              clang
+              makeWrapper
+              pkg-config
+            ];
             buildInputs = linuxLibraries;
 
-            # The app's tests construct GPUI state and are run separately by
-            # `nix flake check`; package installation only needs the binary.
+            # Compile embedded shaders through Metal at launch so the Nix
+            # build does not depend on an external Xcode Metal toolchain.
+            buildFeatures = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+              "gpui_platform/runtime_shaders"
+            ];
+
+            # `nix flake check` runs the separate core test derivation.
             doCheck = false;
 
             postInstall = ''
@@ -199,6 +170,7 @@
             packages =
               with pkgs;
               [
+                bashInteractive
                 gh
                 git
                 nixfmt
