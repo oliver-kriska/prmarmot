@@ -1752,11 +1752,7 @@ impl TableDelegate for BoardTableDelegate {
         // "nothing here" so an empty Review queue never reads as no authored
         // PRs. Text only — the default empty view pulls an SVG from an asset
         // bundle this app does not ship.
-        let msg = match self.mode {
-            Mode::Authored if self.all_repos => "No open pull requests involve you",
-            Mode::Authored => "You have no open PRs",
-            Mode::Review => "No requested or available reviews in this result set",
-        };
+        let msg = prmarmot_core::status::queue_empty_text(self.mode, self.all_repos);
         h_flex()
             .size_full()
             .justify_center()

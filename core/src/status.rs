@@ -178,6 +178,18 @@ pub fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
     }
 }
 
+/// The centered body copy when a queue has loaded and holds nothing.
+///
+/// Each queue says its own "nothing here", so an empty review queue never
+/// reads as "you have no PRs".
+pub fn queue_empty_text(mode: Mode, all_repos: bool) -> &'static str {
+    match (mode, all_repos) {
+        (Mode::Authored, true) => "No open pull requests involve you",
+        (Mode::Authored, false) => "You have no open PRs",
+        (Mode::Review, _) => "No requested or available reviews in this result set",
+    }
+}
+
 /// The status line specific to the active queue. Keeps the "synced Xm ago"
 /// anchor visible during a background refresh, so switching views feels like
 /// navigation rather than a command re-run.
@@ -381,6 +393,27 @@ mod tests {
         assert_eq!(
             queue_sync_text(Mode::Authored, true, false, Some(120)),
             "synced 2m ago"
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_says_which_queue_is_empty() {
+        assert_eq!(
+            queue_empty_text(Mode::Authored, true),
+            "No open pull requests involve you"
+        );
+        assert_eq!(
+            queue_empty_text(Mode::Authored, false),
+            "You have no open PRs"
+        );
+        assert_eq!(
+            queue_empty_text(Mode::Review, true),
+            "No requested or available reviews in this result set",
+            "an empty review queue must never read as having no PRs at all"
+        );
+        assert_eq!(
+            queue_empty_text(Mode::Review, false),
+            queue_empty_text(Mode::Review, true)
         );
     }
 }

@@ -257,6 +257,12 @@ pub fn queue_loading_text(mode: Mode, all_repos: bool) -> String {
     core_status::queue_loading_text(mode.into(), all_repos).to_owned()
 }
 
+/// What to show when a queue has loaded and holds nothing.
+#[uniffi::export]
+pub fn queue_empty_text(mode: Mode, all_repos: bool) -> String {
+    core_status::queue_empty_text(mode.into(), all_repos).to_owned()
+}
+
 /// One entry of the Details panel's Copy menu.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CopyItem {
