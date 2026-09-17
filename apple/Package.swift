@@ -17,7 +17,7 @@ import PackageDescription
 
 let package = Package(
     name: "PRMarmotCore",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS("17.2"), .macOS(.v14)],
     products: [
         .library(name: "PRMarmotCore", targets: ["PRMarmotCore"])
     ],
