@@ -31,13 +31,16 @@ pub const DEFAULT_EXPIRES_IN_SECS: u64 = 900;
 /// a slow refresh round trip).
 pub const REFRESH_SKEW_SECS: i64 = 300;
 
-/// Scopes requested when the registration is a classic **OAuth App**, which is
-/// what PR Marmot registered (2026-09-17): an OAuth App token reaches every
-/// repository its owner can see, the way the `gh` login the desktop reuses
-/// does. A **GitHub App** ignores this field — its fixed permissions are
-/// narrower, but its user token only reaches accounts and orgs where the app
-/// is installed, which would put an org owner between a user and their own
-/// employer's PRs.
+/// Scopes requested when the registration is a classic **OAuth App**. A
+/// **GitHub App** ignores this field, because its permissions are fixed when it
+/// is registered.
+///
+/// Both registrations work here and both token shapes are tested: an OAuth App
+/// answers with an access token alone, a GitHub App adds `expires_in` and a
+/// refresh token. The difference that decides which to register is reach — an
+/// OAuth App token sees every repository its owner can see, while a GitHub App
+/// user token sees only the accounts and orgs where the app has been installed.
+/// PR Marmot registered an OAuth App (2026-09-17) for that reason.
 pub const SCOPES: &str = "repo read:org";
 
 /// What a build carries when it has no registration to use: no client ID at

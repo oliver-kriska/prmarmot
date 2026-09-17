@@ -75,14 +75,16 @@ it. Acceptance was checked end to end: with `gh` absent from `PATH`,
 **FACT (2026-09-17):** sign-in is registered as a classic **OAuth App** named
 "PR Marmot" under `oliver-kriska`, client ID `Ov23liJnPBmrUZRLYilH`, device flow
 on, **no client secret generated** (never generate one: the device flow does not
-need it, and a secret in a shipped binary is not a secret). An OAuth App, not a
-GitHub App, because an OAuth App token reaches every repository its owner can
-see, while a GitHub App user token stops at accounts and orgs where the app is
-installed. Its tokens are OAuth-shaped: scope `repo read:org`, no `expires_in`,
-no `refresh_token`, so nothing ever asks for a refresh. The client ID is public
-by design; a GitHub Enterprise Server host needs its own registration, and until
-it has one core's `is_placeholder_client_id` keeps the device flow from starting
-and points at the token path.
+need it, and a secret in a shipped binary is not a secret). Core accepts either
+registration — **OAuth App (recommended) or GitHub App** — and tests both token
+shapes; the recommendation is about reach, because an OAuth App token sees every
+repository its owner can see while a GitHub App user token sees only the
+accounts and orgs where the app was installed. The OAuth App's tokens carry no
+`expires_in` and no `refresh_token`, so nothing ever asks for a refresh; a
+GitHub App's do, and `needs_refresh`/`can_refresh` still apply. The client ID is
+public by design; a GitHub Enterprise Server host needs its own registration,
+and until it has one `is_placeholder_client_id` keeps the device flow from
+starting and points at the token path.
 
 **FACT: the search grammar and the board's whole data layer are now reusable
 from Swift.** `core/src/search.rs` holds what `src/table.rs` used to parse —
