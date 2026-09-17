@@ -10,6 +10,37 @@
 
 ## Current update — 2026-09-17
 
+**FACT: the sentences two front ends must agree on now live in core.** Two new
+modules were lifted out of the GPUI app without changing a word of it:
+`core/src/detail.rs` owns the Details panel (`detail_lines`, `detail_text`,
+`copy_items`, `size_text`, `review_state_words`) and `core/src/status.rs` owns
+everything that describes the board rather than a pull request — the header's
+count line and its explanation (`header_counts`), the toggles' tooltips, the
+blue marker's, the clock words (`relative`, `human_duration`), the sync line and
+the empty-queue line (`queue_empty_text`). `src/table.rs` and `src/app.rs` call
+them and keep only thin wrappers, so the desktop's wording is unchanged and is
+now pinned by core's own tests rather than by a GPUI test that needs Metal.
+
+`header_counts` takes a `BadgeName` (`Dock` or `AppIcon`) because that is the
+one word the two products cannot share: macOS has a Dock badge and iPadOS has
+an app icon badge. Everything else in the paragraph is identical by
+construction. `ffi/src/pure.rs` exports all of it, so the iPad draws the same
+strings rather than a Swift retype of them.
+
+**Why it matters:** two front ends that each write "1 needs you" by hand will
+eventually write two different sentences, and the difference will be found by a
+user rather than by a test. Anything a person reads that is not about one PR
+belongs in `status.rs`; anything about one PR belongs in `detail.rs`.
+
+**FACT: `scripts/demo/gh` now records the viewer's own review.** `latestReview`
+was always an empty node list, so `reviewed_oid` was never set and no fixture
+could produce the Note "new commits since your review" — the one thing
+`review-again-when-changed` is built on. It now carries the viewer's standing
+review pinned to the commit that was the head when it was left, which is what
+GitHub returns. The generator also gained a `deep` scenario (six authored pages
+of twelve rows) so a client can be driven past core's five-page cap and the
+fifty-watch bound can be filled.
+
 **FACT: PR Marmot signs in to GitHub on its own; `gh` is now optional.**
 `core/src/github/device_flow.rs` implements GitHub's OAuth Device Flow as pure
 functions over a new `AuthTransport` trait — nothing sleeps, nothing reads the
