@@ -31,14 +31,19 @@ pub const DEFAULT_EXPIRES_IN_SECS: u64 = 900;
 /// a slow refresh round trip).
 pub const REFRESH_SKEW_SECS: i64 = 300;
 
-/// Scopes requested when the registration is a classic **OAuth App**. A
-/// **GitHub App** ignores this field entirely — its permissions
-/// (`pull_requests: read`, `metadata: read`) are fixed at registration, which
-/// is why the GitHub App is the registration PR Marmot wants.
+/// Scopes requested when the registration is a classic **OAuth App**, which is
+/// what PR Marmot registered (2026-09-17): an OAuth App token reaches every
+/// repository its owner can see, the way the `gh` login the desktop reuses
+/// does. A **GitHub App** ignores this field — its fixed permissions are
+/// narrower, but its user token only reaches accounts and orgs where the app
+/// is installed, which would put an org owner between a user and their own
+/// employer's PRs.
 pub const SCOPES: &str = "repo read:org";
 
-/// What ships in the binary until the GitHub App is registered. Kept obvious
-/// on purpose: it appears verbatim in the error message a user would see.
+/// What a build carries when it has no registration to use: no client ID at
+/// all, or a host (a GitHub Enterprise Server instance) the ID it has was not
+/// registered with. Kept obvious on purpose: it appears verbatim in the error
+/// message a user would see.
 pub const PLACEHOLDER_CLIENT_ID: &str = "REGISTER-THE-PRMARMOT-GITHUB-APP";
 
 /// True while the app has no real client ID, so callers can offer the token

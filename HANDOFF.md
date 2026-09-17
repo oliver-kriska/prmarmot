@@ -72,11 +72,17 @@ under Rust 1.85 with the committed `Cargo.lock`, so the MSRV job stays green;
 it. Acceptance was checked end to end: with `gh` absent from `PATH`,
 `PRMARMOT_AUTH=token` renders both boards and the live rate-limit budget.
 
-**OPEN QUESTION:** the GitHub App is not registered yet, so `client_id` defaults
-to the placeholder `REGISTER-THE-PRMARMOT-GITHUB-APP` and the device flow
-refuses to start with a message pointing at the token path. Registering the app
-and setting `[auth] client_id` is the only thing between here and a working
-device flow; nothing else changes.
+**FACT (2026-09-17):** sign-in is registered as a classic **OAuth App** named
+"PR Marmot" under `oliver-kriska`, client ID `Ov23liJnPBmrUZRLYilH`, device flow
+on, **no client secret generated** (never generate one: the device flow does not
+need it, and a secret in a shipped binary is not a secret). An OAuth App, not a
+GitHub App, because an OAuth App token reaches every repository its owner can
+see, while a GitHub App user token stops at accounts and orgs where the app is
+installed. Its tokens are OAuth-shaped: scope `repo read:org`, no `expires_in`,
+no `refresh_token`, so nothing ever asks for a refresh. The client ID is public
+by design; a GitHub Enterprise Server host needs its own registration, and until
+it has one core's `is_placeholder_client_id` keeps the device flow from starting
+and points at the token path.
 
 **FACT: the search grammar and the board's whole data layer are now reusable
 from Swift.** `core/src/search.rs` holds what `src/table.rs` used to parse —
