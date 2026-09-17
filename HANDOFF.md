@@ -8,7 +8,46 @@
 
 ---
 
-## Current update — 2026-09-16
+## Current update — 2026-09-17
+
+**FACT: PR Marmot signs in to GitHub on its own; `gh` is now optional.**
+`core/src/github/device_flow.rs` implements GitHub's OAuth Device Flow as pure
+functions over a new `AuthTransport` trait — nothing sleeps, nothing reads the
+clock (`now_epoch` is a parameter), so the terminal, the desktop app and iOS can
+each drive the poll loop with their own timer. `core/src/github/http.rs` is a
+blocking `ureq` transport behind the **non-default `http` feature**
+(`GithubTransport` + `AuthTransport` + a new `RestTransport` for `user/repos`),
+which keeps the iOS build free of a second TLS stack because Swift supplies its
+own `URLSession` transport over FFI. `local/src/auth.rs` stores the token: macOS
+keychain (service `dev.prmarmot.auth`) by default, a `0600` file under
+`state_root()` otherwise, selectable with `[auth] store`. `local/src/session.rs`
+is the one place that decides which door a run uses, so the app and the CLI
+cannot drift.
+
+`[auth]` in the config file takes `host`, `client_id`, `mode`
+(`auto | gh | device | token`) and `store`; precedence is flags
+(`--host`, `--auth`) > `PRMARMOT_HOST` / `GH_HOST` / `PRMARMOT_AUTH` /
+`PRMARMOT_CLIENT_ID` / `PRMARMOT_TOKEN` > file. `auto` prefers a token this
+machine stored and falls back to `gh`, so every existing install keeps working
+untouched. The CLI gained `auth login | status | logout` (with `--with-token`
+reading a PAT from stdin) and the desktop gained an in-app sign-in screen
+(`src/onboarding.rs`) with device flow, token paste and an Enterprise-host
+field, plus Settings → **Disconnect**.
+
+**FACT (measured 2026-09-17):** `ureq 3.4.2` with `rustls` and
+`security-framework 3.7.0` both declare `rust-version = 1.85` and both compile
+under Rust 1.85 with the committed `Cargo.lock`, so the MSRV job stays green;
+`ureq` + `rustls` also compiles for `aarch64-apple-ios`, though iOS will not use
+it. Acceptance was checked end to end: with `gh` absent from `PATH`,
+`PRMARMOT_AUTH=token` renders both boards and the live rate-limit budget.
+
+**OPEN QUESTION:** the GitHub App is not registered yet, so `client_id` defaults
+to the placeholder `REGISTER-THE-PRMARMOT-GITHUB-APP` and the device flow
+refuses to start with a message pointing at the token path. Registering the app
+and setting `[auth] client_id` is the only thing between here and a working
+device flow; nothing else changes.
+
+### Prior update — 2026-09-16
 
 **FACT:** Review state now follows a **standing review** rule, deliberately
 diverging from the shell prototype's `$rv`/`$mine`: a reviewer's standing

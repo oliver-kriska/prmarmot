@@ -15,9 +15,11 @@ use prmarmot_core::board::{
     carry_forward_conflicts, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
     BoardFetch, BoardPagination, BoardRow, BoardScope, Mode, TrackedPr, TrackedPrStatus,
 };
-use prmarmot_core::github::gh_cli::current_login;
+use prmarmot_core::github::gh_cli::RepoDiscovery;
 use prmarmot_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
+use prmarmot_local::config::AuthSettings;
+use prmarmot_local::session;
 
 use crate::attention_state::{
     observation, AttentionState, Snooze, SnoozeCondition, TrackedStatus, MAX_SNOOZES, MAX_WATCHES,
@@ -36,21 +38,63 @@ pub struct AttentionPreferences {
 pub enum SetupStatus {
     Checking,
     Ready,
+    /// Neither a token stored by PR Marmot nor a usable `gh` — the onboarding
+    /// screen offers signing in here.
     MissingGh,
     NotAuthenticated,
     Network(String),
     Failed(String),
 }
 
-pub trait LoginResolver: Send + Sync {
-    fn current_login(&self) -> Result<String, GhError>;
+/// One opened GitHub connection: which account, over which transport.
+pub struct Connection {
+    pub login: String,
+    pub transport: Arc<dyn GithubTransport>,
+    /// The host the attention state is namespaced by.
+    pub host: String,
 }
 
-pub struct GhLoginResolver;
+/// How the app opens that connection. Swappable so tests need no network and
+/// no `gh`.
+pub trait Connector: Send + Sync {
+    fn connect(&self) -> Result<Connection, GhError>;
+    /// Every repository this account can see, for the repo picker.
+    fn list_repos(&self) -> Result<RepoDiscovery, GhError>;
+}
 
-impl LoginResolver for GhLoginResolver {
-    fn current_login(&self) -> Result<String, GhError> {
-        current_login()
+/// The real one: resolved `[auth]` settings, re-read on every attempt so a
+/// sign-in in the onboarding screen takes effect on the next Retry.
+pub struct ConfiguredConnector {
+    settings: AuthSettings,
+    user_agent: String,
+}
+
+impl ConfiguredConnector {
+    pub fn new(settings: AuthSettings) -> Self {
+        Self {
+            settings,
+            user_agent: session::user_agent("prmarmot", env!("CARGO_PKG_VERSION")),
+        }
+    }
+
+    fn open(&self) -> Result<session::Session, GhError> {
+        session::connect(&self.settings, &self.user_agent)
+    }
+}
+
+impl Connector for ConfiguredConnector {
+    fn connect(&self) -> Result<Connection, GhError> {
+        let session = self.open()?;
+        let login = session.login()?;
+        Ok(Connection {
+            login,
+            transport: session.transport_arc(),
+            host: session.host.clone(),
+        })
+    }
+
+    fn list_repos(&self) -> Result<RepoDiscovery, GhError> {
+        self.open()?.list_repos()
     }
 }
 
@@ -61,7 +105,7 @@ pub struct AppState {
     pub mode: Mode,
     pub config: BoardConfig,
     pub transport: Arc<dyn GithubTransport>,
-    login_resolver: Arc<dyn LoginResolver>,
+    connector: Arc<dyn Connector>,
     pub rows: Vec<BoardRow>,
     pub last_synced: Option<DateTime<Local>>,
     pub syncing: bool,
@@ -158,7 +202,7 @@ impl AppState {
         mode: Mode,
         config: BoardConfig,
         transport: Arc<dyn GithubTransport>,
-        login_resolver: Arc<dyn LoginResolver>,
+        connector: Arc<dyn Connector>,
         attention_preferences: AttentionPreferences,
     ) -> Self {
         Self {
@@ -168,7 +212,7 @@ impl AppState {
             mode,
             config,
             transport,
-            login_resolver,
+            connector,
             rows: Vec::new(),
             last_synced: None,
             syncing: false,
@@ -241,23 +285,24 @@ impl AppState {
         self.error = None;
         self.syncing = false;
         cx.notify();
-        let resolver = self.login_resolver.clone();
+        let connector = self.connector.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { resolver.current_login() })
+                .spawn(async move { connector.connect() })
                 .await;
             let _ = this.update(cx, |state, cx| {
                 if state.setup_epoch != setup_epoch {
                     return;
                 }
                 match result {
-                    Ok(login) => {
+                    Ok(connection) => {
                         state.attention = Some(AttentionState::load(SnapshotNamespace::new(
-                            std::env::var("GH_HOST").unwrap_or_else(|_| "github.com".into()),
-                            login.clone(),
+                            connection.host,
+                            connection.login.clone(),
                         )));
-                        state.me = Some(login);
+                        state.transport = connection.transport;
+                        state.me = Some(connection.login);
                         state.setup = SetupStatus::Ready;
                         state.refresh(cx);
                     }
@@ -290,6 +335,12 @@ impl AppState {
 
     pub fn set_focused_selection(&mut self, pr_id: Option<String>, focused: bool) {
         self.focused_selected_pr = focused.then_some(pr_id).flatten();
+    }
+
+    /// The repository picker's discovery, over whichever transport this run
+    /// authenticated with.
+    pub fn connector(&self) -> Arc<dyn Connector> {
+        self.connector.clone()
     }
 
     pub fn take_platform_event(&self) -> Option<PlatformEvent> {

@@ -52,6 +52,8 @@ pub struct FileConfig {
     /// Days a PR may wait for a reviewer before it counts as stale
     /// (`is:stale`, `--stale`); at least 1.
     pub stale_after_days: Option<u64>,
+    /// `[auth]`: which GitHub host to talk to and how to sign in.
+    pub auth: Option<AuthSection>,
 }
 
 fn default_true() -> bool {
@@ -78,8 +80,24 @@ impl Default for FileConfig {
             dock_badge: true,
             automatic_update_checks: true,
             stale_after_days: None,
+            auth: None,
         }
     }
+}
+
+/// `[auth]` in the config file. Absent means "whatever works": a token stored
+/// by `prmarmot-cli auth login`, else the `gh` CLI, exactly as before.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuthSection {
+    /// `github.com`, or a GitHub Enterprise Server hostname.
+    pub host: Option<String>,
+    /// The OAuth client ID for this host. Public by design — the device flow
+    /// has no client secret. GHES instances need their own registration.
+    pub client_id: Option<String>,
+    /// `auto` | `gh` | `device` | `token`.
+    pub mode: Option<String>,
+    /// `auto` | `keychain` | `file`.
+    pub store: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,6 +281,129 @@ pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// How PR Marmot gets a GitHub token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthMode {
+    /// A token this machine stored, else the `gh` CLI. The default, and what
+    /// every existing install keeps doing until someone signs in directly.
+    #[default]
+    Auto,
+    /// The `gh` CLI owns authentication (the original behaviour).
+    Gh,
+    /// A device-flow token stored by `prmarmot-cli auth login`.
+    Device,
+    /// A pasted personal access token: `PRMARMOT_TOKEN`, else the stored one.
+    Token,
+}
+
+impl AuthMode {
+    pub fn parse(word: &str) -> Option<Self> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Some(Self::Auto),
+            "gh" | "cli" => Some(Self::Gh),
+            "device" | "oauth" => Some(Self::Device),
+            "token" | "pat" => Some(Self::Token),
+            _ => None,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Gh => "gh",
+            Self::Device => "device",
+            Self::Token => "token",
+        }
+    }
+}
+
+/// Everything needed to obtain a token, resolved across CLI, environment and
+/// config file. Unknown words in the file or the environment are reported and
+/// then ignored — a typo must never make the app unlaunchable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthSettings {
+    pub host: String,
+    pub client_id: String,
+    pub mode: AuthMode,
+    pub store: crate::auth::StoreKind,
+    /// `PRMARMOT_TOKEN`, when set: a token passed in for this run only and
+    /// never written to the store.
+    pub inline_token: Option<String>,
+}
+
+impl AuthSettings {
+    /// True while the GitHub App has not been registered, so the device flow
+    /// cannot work and callers should steer the user to the token path.
+    pub fn client_id_is_placeholder(&self) -> bool {
+        prmarmot_core::github::device_flow::is_placeholder_client_id(&self.client_id)
+    }
+}
+
+/// Resolve `[auth]`. `cli_host` and `cli_mode` come from flags and win;
+/// then the environment; then the file.
+pub fn auth_settings(
+    file: &FileConfig,
+    cli_host: Option<&str>,
+    cli_mode: Option<AuthMode>,
+    warnings: &mut Vec<String>,
+) -> AuthSettings {
+    let section = file.auth.clone().unwrap_or_default();
+    let env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let host = cli_host
+        .map(str::to_owned)
+        .filter(|host| !host.trim().is_empty())
+        .or_else(|| env("PRMARMOT_HOST"))
+        // GH_HOST is what `gh` itself reads; honouring it keeps one setting
+        // for both front doors.
+        .or_else(|| env("GH_HOST"))
+        .or_else(|| section.host.clone())
+        .unwrap_or_else(|| "github.com".into());
+    let client_id = env("PRMARMOT_CLIENT_ID")
+        .or_else(|| section.client_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| prmarmot_core::github::device_flow::PLACEHOLDER_CLIENT_ID.to_owned());
+    let word_mode = |word: Option<String>, source: &str, warnings: &mut Vec<String>| {
+        word.and_then(|word| match AuthMode::parse(&word) {
+            Some(mode) => Some(mode),
+            None => {
+                warnings.push(format!(
+                    "ignoring {source} auth mode {word:?}: use auto, gh, device, or token"
+                ));
+                None
+            }
+        })
+    };
+    let mode = cli_mode
+        .or_else(|| word_mode(env("PRMARMOT_AUTH"), "PRMARMOT_AUTH", warnings))
+        .or_else(|| word_mode(section.mode.clone(), "[auth] mode", warnings))
+        .unwrap_or_default();
+    let store = section
+        .store
+        .clone()
+        .and_then(|word| match crate::auth::StoreKind::parse(&word) {
+            Some(kind) => Some(kind),
+            None => {
+                warnings.push(format!(
+                    "ignoring [auth] store {word:?}: use auto, keychain, or file"
+                ));
+                None
+            }
+        })
+        .unwrap_or_default();
+    AuthSettings {
+        host: prmarmot_core::github::normalize_host(&host),
+        client_id,
+        mode,
+        store,
+        inline_token: env("PRMARMOT_TOKEN"),
+    }
+}
+
 /// `$XDG_STATE_HOME/prmarmot` (default `~/.local/state/prmarmot`).
 pub fn state_root() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
@@ -320,6 +461,65 @@ mod tests {
         assert_eq!(days(""), (3, false));
         assert_eq!(days("stale_after_days = 7"), (7, false));
         assert_eq!(days("stale_after_days = 0"), (3, true));
+    }
+
+    #[test]
+    fn auth_settings_follow_env_over_file_and_report_typos() {
+        let file: FileConfig = toml::from_str(
+            r#"
+            [auth]
+            host = "ghe.acme.test"
+            client_id = "ghes-client"
+            mode = "device"
+            store = "file"
+            "#,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let resolved = auth_settings(&file, None, None, &mut warnings);
+        assert_eq!(resolved.host, "ghe.acme.test");
+        assert_eq!(resolved.client_id, "ghes-client");
+        assert_eq!(resolved.mode, AuthMode::Device);
+        assert_eq!(resolved.store, crate::auth::StoreKind::File);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!resolved.client_id_is_placeholder());
+
+        // A flag beats the file.
+        let mut warnings = Vec::new();
+        let cli = auth_settings(&file, Some("github.com"), Some(AuthMode::Gh), &mut warnings);
+        assert_eq!(cli.host, "github.com");
+        assert_eq!(cli.mode, AuthMode::Gh);
+
+        let bad: FileConfig = toml::from_str(
+            "[auth]
+mode = 'magic'
+store = 'vault'",
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let fallback = auth_settings(&bad, None, None, &mut warnings);
+        assert_eq!(fallback.mode, AuthMode::Auto);
+        assert_eq!(fallback.store, crate::auth::StoreKind::Auto);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_clean_config_still_defaults_to_github_com_with_no_client_id() {
+        let mut warnings = Vec::new();
+        let resolved = auth_settings(&FileConfig::default(), None, None, &mut warnings);
+        assert_eq!(resolved.host, "github.com");
+        assert_eq!(resolved.mode, AuthMode::Auto);
+        assert!(resolved.client_id_is_placeholder());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn auth_modes_parse_the_documented_words() {
+        assert_eq!(AuthMode::parse("gh"), Some(AuthMode::Gh));
+        assert_eq!(AuthMode::parse("Device"), Some(AuthMode::Device));
+        assert_eq!(AuthMode::parse("pat"), Some(AuthMode::Token));
+        assert_eq!(AuthMode::parse("nonsense"), None);
+        assert_eq!(AuthMode::default().word(), "auto");
     }
 
     #[test]

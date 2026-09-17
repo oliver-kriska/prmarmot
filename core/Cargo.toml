@@ -6,9 +6,19 @@ rust-version = "1.85"
 license = "MIT"
 description = "Framework-independent core for PR Marmot: GitHub transport, categorization, note logic"
 
+[features]
+# Direct HTTPS to GitHub, so the desktop app and the CLI can run without the
+# `gh` CLI. Off by default: iOS supplies its own URLSession transport over FFI
+# and must not link a second TLS stack.
+http = ["dep:ureq"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 regex = "1"
 chrono = "0.4"
+# Blocking HTTP, no async runtime (guardrail). rustls + webpki roots so the
+# binary does not depend on a system OpenSSL. MSRV 1.85, checked against the
+# msrv CI job; verified to build for aarch64-apple-ios as well.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"], optional = true }

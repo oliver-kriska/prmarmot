@@ -7,10 +7,12 @@ use std::time::Duration;
 use prmarmot_core::board::{BoardScope, Mode, MAX_PAGES_PER_ALIAS};
 use prmarmot_core::layout::Sort;
 
+use crate::auth;
 use crate::completions::Shell;
 use crate::skill::Agent;
 use crate::until::{parse_duration, Condition};
 use prmarmot_core::github::rate_limit::MIN_REFRESH_SECS;
+use prmarmot_local::config::AuthMode;
 
 pub const USAGE: &str = "\
 prmarmot-cli — PR Marmot's views for terminals and coding agents
@@ -25,10 +27,18 @@ Usage:
   prmarmot-cli watch --pr OWNER/NAME#N   Follow one pull request until it merges or closes
   prmarmot-cli watch --pr OWNER/NAME#N --until ci-pass [--timeout 30m]
                                          Wait for a condition instead of polling in a loop
+  prmarmot-cli auth login [--with-token] Sign in to GitHub without the `gh` CLI
+  prmarmot-cli auth status               Show which account and token this machine uses
+  prmarmot-cli auth logout               Forget the stored token
   prmarmot-cli skill                     Print the coding-agent skill (SKILL.md)
   prmarmot-cli skill install [--agent AGENT | --dir DIR] [--force]
                                          Install it as a user-level skill
   prmarmot-cli completions SHELL         Print a completion script for bash, zsh, or fish
+
+Sign-in (default: --auth > PRMARMOT_AUTH > [auth] mode > auto):
+      --auth MODE           auto (a stored token, else the GitHub CLI),
+                            gh, device, or token
+      --host HOST           github.com (default) or a GitHub Enterprise Server host
 
 Scope (default: --repo/--all-repos > PRMARMOT_REPO/PRMARMOT_SCOPE > config file):
       --repo OWNER/NAME     One repository
@@ -73,6 +83,13 @@ Watch options:
                             on every poll, the first included; not with --events
       --timeout DURATION    With --pr: give up after 90s, 30m, 2h, 1h30m, ...
 
+Auth options:
+      --host HOST           The host to sign in to (default github.com)
+      --client-id ID        The OAuth client ID for that host; the device flow
+                            has no client secret, so this value is public
+      --with-token          Read a personal access token from standard input
+                            instead of running the device flow
+
 Skill install options:
       --agent AGENT         claude (default): $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills
                             agents: ~/.agents/skills, read by Codex, Copilot, Cursor,
@@ -91,7 +108,9 @@ Exit codes: 0 ok, 1 GitHub, network, or file error, 2 usage error,
             6 --timeout reached.
 
 Reads ~/.config/prmarmot/config.toml and PR Marmot's watch/snooze state, never
-writes them. Authentication comes from the GitHub CLI (`gh auth login`).";
+writes them (except `auth login`/`auth logout`, which write the token store).
+Authentication comes from the GitHub CLI (`gh auth login`) unless you sign in
+here with `prmarmot-cli auth login`.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -122,6 +141,10 @@ pub struct ViewArgs {
     pub sort: Sort,
     pub pages: u8,
     pub no_color: bool,
+    /// `--host`: overrides the configured GitHub host.
+    pub host: Option<String>,
+    /// `--auth`: overrides how this run gets a token.
+    pub auth: Option<AuthMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +162,8 @@ pub struct WatchArgs {
     pub watched: bool,
     pub snoozed: bool,
     pub no_color: bool,
+    pub host: Option<String>,
+    pub auth: Option<AuthMode>,
 }
 
 /// `watch --pr`: one pull request.
@@ -162,6 +187,7 @@ pub enum SkillAction {
 pub enum Command {
     View(ViewArgs),
     Watch(WatchArgs),
+    Auth(auth::Action, auth::Options),
     Skill(SkillAction),
     Completions(Shell),
     Help,
@@ -192,6 +218,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     };
     let watch = match command.as_str() {
         "help" => return Ok(Command::Help),
+        "auth" => return parse_auth(tokens),
         "skill" => return parse_skill(tokens),
         "completions" => return parse_completions(tokens),
         "watch" => true,
@@ -223,6 +250,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut no_color = false;
     let mut interval_secs = None;
     let mut max_events = None;
+    let mut host = None;
+    let mut auth = None;
     let mut until: Vec<Condition> = Vec::new();
     let mut timeout = None;
 
@@ -238,6 +267,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--watched" => watched = true,
             "--snoozed" => snoozed = true,
             "--no-color" => no_color = true,
+            "--host" => host = Some(value("--host")?),
+            "--auth" => {
+                let word = value("--auth")?;
+                auth = Some(AuthMode::parse(&word).ok_or_else(|| {
+                    format!("unknown auth mode: {word} (use auto, gh, device, or token)")
+                })?);
+            }
             "--changed" if !watch => changed = true,
             "--stale" if !watch => stale = true,
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
@@ -314,6 +350,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             watched,
             snoozed,
             no_color,
+            host,
+            auth,
         }))
     } else {
         let format = match format.as_deref() {
@@ -339,8 +377,45 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             sort,
             pages: pages.unwrap_or(1),
             no_color,
+            host,
+            auth,
         }))
     }
+}
+
+fn parse_auth(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
+    let word = tokens
+        .next()
+        .ok_or("auth needs an action: login, status, or logout")?;
+    let mut with_token = false;
+    let mut options = auth::Options::default();
+    while let Some(token) = tokens.next() {
+        match token.as_str() {
+            "--with-token" => with_token = true,
+            "--host" => options.host = Some(tokens.next().ok_or("--host needs a value")?),
+            "--client-id" => {
+                options.client_id = Some(tokens.next().ok_or("--client-id needs a value")?)
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option for `auth`: {other}"))
+            }
+            other => return Err(format!("unexpected argument: {other}")),
+        }
+    }
+    let action = match word.as_str() {
+        "login" => auth::Action::Login { with_token },
+        "status" => auth::Action::Status,
+        "logout" => auth::Action::Logout,
+        other => {
+            return Err(format!(
+                "unknown auth action: {other} (use login, status, or logout)"
+            ))
+        }
+    };
+    if with_token && action != (auth::Action::Login { with_token: true }) {
+        return Err("--with-token applies to `auth login`".into());
+    }
+    Ok(Command::Auth(action, options))
 }
 
 fn parse_sort(word: &str) -> Result<Sort, String> {
@@ -737,9 +812,66 @@ mod tests {
             ("skill install --agent vim", "unknown agent: vim"),
             ("skill install --json", "unknown option for `skill`"),
             ("skill install --dir", "needs a value"),
+            ("auth", "needs an action"),
+            ("auth signin", "unknown auth action"),
+            ("auth login --host", "needs a value"),
+            ("auth status --json", "unknown option for `auth`"),
+            ("mine --auth magic", "unknown auth mode"),
+            ("mine --host", "needs a value"),
         ] {
             let error = parse_str(line).unwrap_err();
             assert!(error.contains(needle), "{line}: {error}");
         }
+    }
+
+    #[test]
+    fn auth_actions_and_their_options_parse() {
+        assert_eq!(
+            parse_str("auth login").unwrap(),
+            Command::Auth(
+                auth::Action::Login { with_token: false },
+                auth::Options::default()
+            )
+        );
+        assert_eq!(
+            parse_str("auth login --with-token --host ghe.acme.test --client-id abc").unwrap(),
+            Command::Auth(
+                auth::Action::Login { with_token: true },
+                auth::Options {
+                    host: Some("ghe.acme.test".into()),
+                    client_id: Some("abc".into()),
+                }
+            )
+        );
+        assert_eq!(
+            parse_str("auth logout --host=ghe.acme.test").unwrap(),
+            Command::Auth(
+                auth::Action::Logout,
+                auth::Options {
+                    host: Some("ghe.acme.test".into()),
+                    client_id: None,
+                }
+            )
+        );
+        assert!(matches!(
+            parse_str("auth status").unwrap(),
+            Command::Auth(auth::Action::Status, _)
+        ));
+    }
+
+    #[test]
+    fn host_and_auth_mode_reach_both_views_and_the_watch() {
+        let Command::View(view) = parse_str("mine --host ghe.acme.test --auth token").unwrap()
+        else {
+            panic!("expected a view");
+        };
+        assert_eq!(view.host.as_deref(), Some("ghe.acme.test"));
+        assert_eq!(view.auth, Some(AuthMode::Token));
+
+        let Command::Watch(watch) = parse_str("watch --auth=gh").unwrap() else {
+            panic!("expected a watch");
+        };
+        assert_eq!(watch.auth, Some(AuthMode::Gh));
+        assert_eq!(watch.host, None);
     }
 }

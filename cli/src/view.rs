@@ -14,17 +14,23 @@ use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::layout::{layout, LayoutItem, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_local::attention_state::AttentionState;
-use prmarmot_local::config::{self, FileConfig};
+use prmarmot_local::config::{self, AuthMode, AuthSettings, FileConfig};
+use prmarmot_local::session::{self, Session};
 
 /// Everything resolved before talking to GitHub.
 pub struct Setup {
     pub file: FileConfig,
     pub scope: BoardScope,
     pub board: BoardConfig,
+    pub auth: AuthSettings,
     pub warnings: Vec<String>,
 }
 
-pub fn setup(cli_scope: Option<BoardScope>) -> Setup {
+pub fn setup(
+    cli_scope: Option<BoardScope>,
+    cli_host: Option<&str>,
+    cli_auth: Option<AuthMode>,
+) -> Setup {
     let mut warnings = Vec::new();
     let file = config::try_load().unwrap_or_else(|warning| {
         warnings.push(warning);
@@ -38,19 +44,23 @@ pub fn setup(cli_scope: Option<BoardScope>) -> Setup {
     );
     let (board, warning) = config::board_config(&file);
     warnings.extend(warning);
+    let auth = config::auth_settings(&file, cli_host, cli_auth, &mut warnings);
     Setup {
         file,
         scope,
         board,
+        auth,
         warnings,
     }
 }
 
-pub fn github_host() -> String {
-    std::env::var("GH_HOST")
-        .ok()
-        .filter(|host| !host.trim().is_empty())
-        .unwrap_or_else(|| "github.com".into())
+/// Open the GitHub connection this setup asks for: the `gh` CLI, or direct
+/// HTTPS with a token this machine stored.
+pub fn connect(setup: &Setup) -> Result<Session, GhError> {
+    session::connect(
+        &setup.auth,
+        &session::user_agent("prmarmot-cli", env!("CARGO_PKG_VERSION")),
+    )
 }
 
 /// The app's attention file for this account, loaded for reading only.

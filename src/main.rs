@@ -7,6 +7,7 @@ mod attention_state;
 mod config;
 mod design;
 mod notification_help;
+mod onboarding;
 #[cfg(feature = "perf")]
 mod perf;
 mod platform;
@@ -26,7 +27,7 @@ use prmarmot_core::board::{BoardConfig, BoardScope, Mode};
 use prmarmot_core::github::gh_cli::GhCliTransport;
 
 use crate::app::RootView;
-use crate::state::{AppState, AttentionPreferences, GhLoginResolver};
+use crate::state::{AppState, AttentionPreferences, ConfiguredConnector};
 
 const RELEASE_REPO: &str = "oliver-kriska/prmarmot";
 const CASK_TOKEN: &str = "prmarmot";
@@ -184,6 +185,16 @@ fn main() {
         &file,
     );
     let config = board_config(&file);
+    // How this run gets a token: a token stored by PR Marmot, else `gh`.
+    // Re-resolved by the onboarding screen after a sign-in.
+    let auth = {
+        let mut warnings = Vec::new();
+        let settings = prmarmot_local::config::auth_settings(&file, None, None, &mut warnings);
+        for warning in warnings {
+            eprintln!("prmarmot: {warning}");
+        }
+        settings
+    };
 
     // Repo-picker entries: config list with the active repo always present.
     let mut repos = file.repos.clone();
@@ -215,6 +226,7 @@ fn main() {
         dock_badge: file.dock_badge,
     };
     let window_pref = file.window;
+    let onboarding_auth = auth.clone();
 
     gpui_platform::application()
         .with_assets(assets::Assets)
@@ -247,12 +259,15 @@ fn main() {
                         scope,
                         mode,
                         config,
+                        // Replaced by the connector's transport as soon as the
+                        // first setup check resolves; `gh` keeps the old
+                        // behaviour until then.
                         Arc::new(GhCliTransport::new()),
-                        Arc::new(GhLoginResolver),
+                        Arc::new(ConfiguredConnector::new(auth)),
                         attention_preferences,
                     )
                 });
-                let view = cx.new(|cx| RootView::new(state, launch, window, cx));
+                let view = cx.new(|cx| RootView::new(state, launch, onboarding_auth, window, cx));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             })
             .expect("failed to open window");

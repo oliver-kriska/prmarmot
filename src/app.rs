@@ -8,9 +8,9 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_base::SelectableText;
 use gpui_component::button::{Button, ButtonVariants};
@@ -149,12 +149,15 @@ pub struct RootView {
     update_starting: bool,
     update_check_task: Option<gpui::Task<()>>,
     notification_help_shown: bool,
+    /// The sign-in screen shown when neither a stored token nor `gh` works.
+    onboarding: Entity<crate::onboarding::OnboardingView>,
 }
 
 impl RootView {
     pub fn new(
         state: Entity<AppState>,
         launch: Launch,
+        auth: prmarmot_local::config::AuthSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -386,6 +389,17 @@ impl RootView {
         })
         .detach();
 
+        let onboarding = cx.new(|cx| crate::onboarding::OnboardingView::new(auth, window, cx));
+        // A completed sign-in re-runs the setup check, which picks up the new
+        // token and swaps the transport.
+        cx.subscribe(
+            &onboarding,
+            |this: &mut Self, _, _: &crate::onboarding::SignedIn, cx| {
+                this.state.update(cx, |state, cx| state.validate_setup(cx));
+            },
+        )
+        .detach();
+
         let mut this = Self {
             state,
             table,
@@ -428,6 +442,7 @@ impl RootView {
             update_starting: false,
             update_check_task: None,
             notification_help_shown: false,
+            onboarding,
         };
         if this.state.read(cx).attention_preferences.notifications {
             this.state.read(cx).check_notification_permission();
@@ -703,10 +718,11 @@ impl RootView {
         self.discovering_repos = true;
         self.repo_status = "Finding accessible repositories…".into();
         cx.notify();
+        let connector = self.state.read(cx).connector();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async { prmarmot_core::github::gh_cli::list_repos() })
+                .spawn(async move { connector.list_repos() })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.discovering_repos = false;
@@ -2511,38 +2527,74 @@ fn unix_now() -> i64 {
 }
 
 impl RootView {
-    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> impl IntoElement {
+    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (title, detail, show_auth_command) = match &setup {
+        // Not signed in: the sign-in screen takes over, with the GitHub CLI
+        // route offered underneath for people who already use it.
+        if matches!(
+            setup,
+            SetupStatus::MissingGh | SetupStatus::NotAuthenticated
+        ) {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_4()
+                .px_4()
+                .child(self.onboarding.clone())
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .max_w(px(560.))
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    "Already use the GitHub CLI? Run `gh auth login` in Terminal, \
+                                     then choose Retry.",
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("copy-gh-auth")
+                                        .small()
+                                        .label("Copy `gh auth login`")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                "gh auth login".to_owned(),
+                                            ));
+                                            this.show_feedback("Command copied", cx);
+                                        })),
+                                )
+                                .child(Button::new("retry-setup").small().label("Retry").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| state.validate_setup(cx));
+                                    }),
+                                )),
+                        ),
+                )
+                .into_any_element();
+        }
+        let (title, detail) = match &setup {
             SetupStatus::Checking => (
-                "Checking GitHub CLI…".to_owned(),
-                "PR Marmot uses your existing GitHub CLI session. No credentials are stored by the app."
+                "Checking your GitHub sign-in…".to_owned(),
+                "PR Marmot uses a token you sign in with here, or your existing GitHub CLI session."
                     .to_owned(),
-                false,
             ),
-            SetupStatus::MissingGh => (
-                "Install the GitHub CLI".to_owned(),
-                "The `gh` command was not found. Install it with `brew install gh` or from cli.github.com, then authenticate."
-                    .to_owned(),
-                true,
-            ),
-            SetupStatus::NotAuthenticated => (
-                "Sign in with GitHub CLI".to_owned(),
-                "Run the command below in Terminal, complete GitHub's sign-in flow, then retry. PR Marmot never displays or stores your token."
-                    .to_owned(),
-                true,
-            ),
+            SetupStatus::MissingGh | SetupStatus::NotAuthenticated => {
+                (String::new(), String::new())
+            }
             SetupStatus::Network(_) => (
                 "GitHub could not be reached".to_owned(),
-                "Check your connection and GitHub CLI access, then retry.".to_owned(),
-                false,
+                "Check your connection and your GitHub sign-in, then retry.".to_owned(),
             ),
-            SetupStatus::Failed(message) => (
-                "GitHub setup failed".to_owned(),
-                message.clone(),
-                false,
-            ),
-            SetupStatus::Ready => (String::new(), String::new(), false),
+            SetupStatus::Failed(message) => ("GitHub setup failed".to_owned(), message.clone()),
+            SetupStatus::Ready => (String::new(), String::new()),
         };
         v_flex()
             .size_full()
@@ -2562,33 +2614,6 @@ impl RootView {
                     .text_color(theme.muted_foreground)
                     .child(detail),
             )
-            .when(show_auth_command, |view| {
-                view.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .rounded(px(5.))
-                                .bg(theme.muted)
-                                .font_family("monospace")
-                                .child("gh auth login"),
-                        )
-                        .child(
-                            Button::new("copy-gh-auth")
-                                .small()
-                                .label("Copy command")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        "gh auth login".to_owned(),
-                                    ));
-                                    this.show_feedback("Command copied", cx);
-                                })),
-                        ),
-                )
-            })
             .when(setup != SetupStatus::Checking, |view| {
                 view.child(
                     Button::new("retry-setup")
@@ -2599,6 +2624,7 @@ impl RootView {
                         })),
                 )
             })
+            .into_any_element()
     }
 }
 

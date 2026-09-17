@@ -149,9 +149,9 @@ and team dashboards; auto-closing stale PRs.
 Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Enterprise hosts).
 `prmarmot-core` stays the single source of categorization and the Note; golden tests stay the contract.
 
-- [ ] Direct HTTP `GithubTransport`: same GraphQL document, same bounded paging and rate-limit parsing, host configurable (github.com + GitHub Enterprise).
+- [x] Direct HTTP `GithubTransport`: same GraphQL document, same bounded paging and rate-limit parsing, host configurable (github.com + GitHub Enterprise).
 - [x] OAuth decided: **Device Flow, no token-exchange server, ever.** Tokens in the OS keychain, never in config files.
-- [ ] Desktop transport picker: `gh` if present (zero-config), else Device Flow onboarding.
+- [x] Desktop transport picker: a token stored by PR Marmot if there is one, else `gh` (zero-config), with in-app Device Flow / token / Enterprise-host onboarding and `prmarmot-cli auth login|status|logout`.
 - [ ] UniFFI bindings for `prmarmot-core`; CI builds an XCFramework published as a Swift package from a tag.
 - [ ] Contract tests: the Swift package runs the same golden fixtures through the bindings.
 

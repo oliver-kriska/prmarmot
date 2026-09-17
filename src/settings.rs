@@ -13,8 +13,23 @@ use gpui_component::{
 };
 use prmarmot_core::board::IssueLinkRule;
 
+use prmarmot_local::auth::{token_store, TokenKind};
+use prmarmot_local::config::AuthSettings;
+
 use crate::config::{self, SettingsUpdate};
 use crate::theme::ThemePref;
+
+/// "octo, signed in with the device flow. Token in the macOS keychain."
+fn describe_account(auth: &AuthSettings) -> Option<String> {
+    let store = token_store(auth.store);
+    let stored = store.load(&auth.host).ok().flatten()?;
+    let how = match stored.kind {
+        TokenKind::Device => "signed in with GitHub",
+        TokenKind::Token => "using a personal access token",
+    };
+    let who = stored.login.unwrap_or_else(|| "this account".into());
+    Some(format!("{who}, {how}. Token in {}.", store.describe()))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SettingsSaved;
@@ -72,6 +87,12 @@ pub struct SettingsView {
     scroll: ScrollHandle,
     env: EnvOverrides,
     path: String,
+    /// The GitHub host and token store this install is configured for.
+    auth: AuthSettings,
+    /// The account signed in *here* (not through the `gh` CLI), in words.
+    account: Option<String>,
+    /// What happened after a Disconnect.
+    account_message: Option<String>,
 }
 
 impl SettingsView {
@@ -90,6 +111,11 @@ impl SettingsView {
             .max(30)
             .to_string();
         let theme = resolve_theme(env.theme.as_deref().or(file.theme.as_deref()));
+        let auth = {
+            let mut warnings = Vec::new();
+            prmarmot_local::config::auth_settings(&file, None, None, &mut warnings)
+        };
+        let account = describe_account(&auth);
         let issue = env.issue_link.clone().or_else(|| {
             file.issue_link
                 .map(|rule| (rule.pattern, rule.url_template))
@@ -122,6 +148,9 @@ impl SettingsView {
             scroll: ScrollHandle::new(),
             env,
             path: config::config_path().display().to_string(),
+            auth,
+            account,
+            account_message: None,
         };
         for (input, field) in [
             (&this.reviewers, "Reviewer suggestions"),
@@ -230,6 +259,59 @@ impl SettingsView {
         self.show_error(error, cx);
     }
 
+    /// Account block: which GitHub host, who is signed in here, where the
+    /// token lives, and a way to forget it.
+    fn render_account(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let detail = match &self.account {
+            Some(account) => account.clone(),
+            None => format!(
+                "Not signed in here; PR Marmot is using the GitHub CLI for {}.",
+                self.auth.host
+            ),
+        };
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex().justify_between().child("Account").child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(muted)
+                        .child(self.auth.host.clone()),
+                ),
+            )
+            .child(div().text_size(px(12.)).text_color(muted).child(detail))
+            .when(self.account.is_some(), |block| {
+                block.child(
+                    Button::new("settings-disconnect")
+                        .small()
+                        .label("Disconnect")
+                        .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                )
+            })
+            .when_some(self.account_message.clone(), |block, message| {
+                block.child(div().text_size(px(12.)).text_color(muted).child(message))
+            })
+    }
+
+    /// Forget the token on this Mac. Revoking the grant at GitHub needs a
+    /// client secret PR Marmot deliberately does not have, so we say so rather
+    /// than pretend the app can do it.
+    fn disconnect(&mut self, cx: &mut Context<Self>) {
+        match token_store(self.auth.store).delete(&self.auth.host) {
+            Ok(()) => {
+                self.account = None;
+                self.account_message = Some(format!(
+                    "Signed out on this Mac. To revoke PR Marmot's access at GitHub, visit \
+                     https://{}/settings/applications.",
+                    self.auth.host
+                ));
+            }
+            Err(message) => self.account_message = Some(message),
+        }
+        cx.notify();
+    }
+
     fn field(
         &self,
         label: &'static str,
@@ -310,6 +392,7 @@ impl Render for SettingsView {
                                 .child(div().text_color(cx.theme().muted_foreground)
                                     .child(format!("Version {}", env!("CARGO_PKG_VERSION"))))),
                     )
+                    .child(self.render_account(cx))
                     .child(
                         self.field(
                             "Reviewer suggestions",

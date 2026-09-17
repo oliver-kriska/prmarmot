@@ -3,7 +3,7 @@
 # Install:
 #   prmarmot-cli completions fish > ~/.config/fish/completions/prmarmot-cli.fish
 
-set -l commands mine authored review reviews watch skill completions help
+set -l commands mine authored review reviews watch auth skill completions help
 set -l boards mine authored review reviews
 set -l views $boards watch
 
@@ -30,6 +30,7 @@ complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -s V -l 
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a mine -d 'PRs you authored (My PRs)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a review -d 'PRs waiting for your review'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Print what changes, one event per line'
+complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a auth -d 'Sign in to GitHub without the gh CLI'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a skill -d 'Print or install the coding-agent skill'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a completions -d 'Print a shell completion script'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a help -d 'Show help'
@@ -43,6 +44,8 @@ complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l json -d 'JSO
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l watched -d 'Only PRs you watch in PR Marmot'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l snoozed -d 'Include snoozed PRs'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l no-color -d 'Plain text'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l auth -x -a 'auto gh device token' -d 'How to get a token'
 
 # mine and review
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -s f -l format -x -a 'table markdown json' -d 'Output format'
@@ -59,6 +62,12 @@ complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch" -l events -x -d 
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch; and not __fish_seen_subcommand_from review reviews" -l pr -x -d 'One pull request (OWNER/NAME#N or URL)'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch; and not __fish_seen_subcommand_from review reviews" -l until -x -a '(__prmarmot_cli_conditions)' -d 'Stop once the PR reaches a condition'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch; and not __fish_seen_subcommand_from review reviews" -l timeout -x -a '90s 5m 30m 1h 2h' -d 'Give up after a duration'
+
+# auth
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from auth; and not __fish_seen_subcommand_from login status logout" -a 'login status logout' -d 'Auth action'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from auth" -l host -x -d 'GitHub host'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from auth" -l client-id -x -d 'OAuth client ID for that host'
+complete -c prmarmot-cli -n "__fish_seen_subcommand_from login" -l with-token -d 'Read a personal access token from standard input'
 
 # skill
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install" -a install -d 'Install as a user-level skill'
