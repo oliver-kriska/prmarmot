@@ -1,0 +1,17 @@
+# `prmarmot-core` must not read the clock.
+#
+# Every front end passes the time in — `now_epoch: i64` in the device flow,
+# `StaleRule { now }` in the search grammar, `now: DateTime<Utc>` in pickup —
+# which is what makes the golden tests reproducible and lets the iPad reuse
+# core across an FFI boundary where "now" is decided on the Swift side. It is
+# an easy rule to break by accident, so clippy enforces it instead of review.
+#
+# This file applies to `prmarmot-core` only: clippy reads the nearest
+# `clippy.toml` walking up from each package's manifest directory, and there is
+# none at the workspace root, so `local/`, `cli/` and the app keep the defaults.
+disallowed-methods = [
+    { path = "chrono::Utc::now", reason = "core takes the time as a parameter; the caller decides what now is" },
+    { path = "chrono::Local::now", reason = "core takes the time as a parameter, and a local time zone is a front-end concern" },
+    { path = "std::time::SystemTime::now", reason = "core takes the time as a parameter; the caller decides what now is" },
+    { path = "std::time::Instant::now", reason = "core does not measure elapsed time; measure in the front end and pass the result" },
+]
