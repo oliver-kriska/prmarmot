@@ -9,6 +9,7 @@
 //! Nothing here reads a clock. Elapsed seconds arrive as a parameter.
 
 use crate::board::{Category, Mode};
+use crate::github::access::AccessGaps;
 use crate::layout::group_label;
 
 /// Whether a row of this view counts toward the header's "need you": My PRs'
@@ -167,6 +168,47 @@ pub fn human_duration(secs: u64) -> String {
         60..=3599 => format!("{}m", secs / 60),
         _ => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
     }
+}
+
+/// What the token was not allowed to read on this board, in one line, or
+/// `None` when it read everything. The rows still show; this says why some of
+/// their CI reads "hidden" and what would show it.
+pub fn access_notice(gaps: &AccessGaps) -> Option<String> {
+    let pull_requests = |n: usize| match n {
+        1 => "1 pull request".to_owned(),
+        n => format!("{n} pull requests"),
+    };
+    let mut refused = Vec::new();
+    if gaps.ci > 0 {
+        refused.push(format!("CI on {}", pull_requests(gaps.ci)));
+    }
+    if gaps.teams > 0 {
+        refused.push(format!(
+            "which teams were asked to review {}",
+            pull_requests(gaps.teams)
+        ));
+    }
+    if gaps.other > 0 {
+        refused.push(format!("some details of {}", pull_requests(gaps.other)));
+    }
+    if gaps.pull_requests > 0 {
+        refused.push(format!("{} at all", pull_requests(gaps.pull_requests)));
+    }
+    let (last, rest) = refused.split_last()?;
+    let what = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let remedy = if gaps.ci > 0 {
+        " Fine-grained tokens never see check runs; a classic token with repo and read:org does."
+    } else if gaps.teams > 0 {
+        " A classic token with read:org sees them, as does a fine-grained token with the \
+         organization's Members: read."
+    } else {
+        ""
+    };
+    Some(format!("This token can't read {what}.{remedy}"))
 }
 
 /// The centered body copy shown before a queue's first rows ever arrive.
@@ -414,6 +456,53 @@ mod tests {
         assert_eq!(
             queue_empty_text(Mode::Review, false),
             queue_empty_text(Mode::Review, true)
+        );
+    }
+
+    #[test]
+    fn a_token_refused_nothing_gets_no_notice() {
+        assert_eq!(access_notice(&AccessGaps::default()), None);
+    }
+
+    #[test]
+    fn what_a_token_was_refused_reads_as_one_line_with_the_remedy() {
+        let ci_only = AccessGaps {
+            ci: 24,
+            ..Default::default()
+        };
+        assert_eq!(
+            access_notice(&ci_only).as_deref(),
+            Some(
+                "This token can't read CI on 24 pull requests. Fine-grained tokens never see \
+                 check runs; a classic token with repo and read:org does."
+            )
+        );
+        let teams_only = AccessGaps {
+            teams: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            access_notice(&teams_only).as_deref(),
+            Some(
+                "This token can't read which teams were asked to review 1 pull request. A \
+                 classic token with read:org sees them, as does a fine-grained token with the \
+                 organization's Members: read."
+            )
+        );
+        let everything = AccessGaps {
+            ci: 3,
+            teams: 2,
+            other: 1,
+            pull_requests: 1,
+        };
+        assert_eq!(
+            access_notice(&everything).as_deref(),
+            Some(
+                "This token can't read CI on 3 pull requests, which teams were asked to review \
+                 2 pull requests, some details of 1 pull request and 1 pull request at all. \
+                 Fine-grained tokens never see check runs; a classic token with repo and \
+                 read:org does."
+            )
         );
     }
 }

@@ -1218,6 +1218,9 @@ impl TableDelegate for BoardTableDelegate {
                     .child(status_dot(theme.warning))
                     .child(div().text_color(muted).child("running")),
                 Ci::None => h_flex().child(div().text_color(muted.opacity(0.5)).child("—")),
+                // The token may not read the checks: a word, never the dash
+                // that means "no checks".
+                Ci::Hidden => h_flex().child(div().text_color(muted).child("hidden")),
             },
             "repo" => {
                 let chip = FilterChip::new(Qualifier::Repo, row.repo.as_str());

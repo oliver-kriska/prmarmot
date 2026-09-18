@@ -15,6 +15,7 @@ use prmarmot_core::board::{
     carry_forward_conflicts, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
     BoardFetch, BoardPagination, BoardRow, BoardScope, Mode, TrackedPr, TrackedPrStatus,
 };
+use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
 use prmarmot_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
@@ -112,6 +113,10 @@ pub struct AppState {
     pub error: Option<String>,
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
+    /// What the token was not allowed to read on the last fetch (a
+    /// fine-grained token cannot read checks), for the one-line notice under
+    /// the header. Empty for a `gh` token.
+    pub access: AccessGaps,
     pagination: BoardPagination,
     /// Bumped on every successful fetch; observers use it to detect new rows
     /// without diffing (and to gate their reactions — the PRFlow observer-loop
@@ -219,6 +224,7 @@ impl AppState {
             error: None,
             rate: None,
             truncated: false,
+            access: AccessGaps::default(),
             pagination: BoardPagination::default(),
             generation: 0,
             backoff_until: None,
@@ -477,6 +483,7 @@ impl AppState {
         self.epoch += 1; // any in-flight fetch is now for the wrong view
         self.syncing = false; // don't let it dedup the refresh we start now
         self.error = None;
+        self.access = AccessGaps::default(); // the refresh says again
         match self.cache.get(&mode) {
             Some(cached) => {
                 self.rows = cached.rows.clone();
@@ -501,6 +508,7 @@ impl AppState {
         self.last_synced = None;
         self.error = None;
         self.truncated = false;
+        self.access = AccessGaps::default();
         self.pagination = BoardPagination::default();
         self.generation += 1; // observers push the (empty) rows to the table
         self.epoch += 1; // any in-flight fetch is now for the wrong view
@@ -621,6 +629,7 @@ impl AppState {
                         state.rows = board.rows;
                         state.rate = board.rate;
                         state.truncated = board.truncated;
+                        state.access = board.access;
                         // A deliberate refresh starts again at page one; load-more
                         // cursors are only preserved by queue cache restoration.
                         state.pagination = board.pagination;
@@ -699,6 +708,7 @@ impl AppState {
             truncated: self.truncated,
             pagination: self.pagination.clone(),
             tracked: Vec::new(),
+            access: self.access,
         };
         cx.spawn(async move |this, cx| {
             let fetched = cx
@@ -726,6 +736,7 @@ impl AppState {
                         state.rows = board.rows;
                         state.rate = board.rate;
                         state.truncated = board.truncated;
+                        state.access = board.access;
                         state.pagination = board.pagination;
                         // Loading older pages does not refresh the earlier rows.
                         // Keep their original sync timestamp honest.

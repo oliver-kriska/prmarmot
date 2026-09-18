@@ -153,7 +153,7 @@
           "enum": ["requested", "available", null],
           "description": "Review queue only: whether your review was requested. Null in My PRs."
         },
-        "ci": { "enum": ["pass", "fail", "running", "none"], "description": "The head commit's check rollup; none when it has no checks." },
+        "ci": { "enum": ["pass", "fail", "running", "none", "hidden"], "description": "The head commit's check rollup; none when it has no checks, hidden when the token may not read them (a fine-grained token never can)." },
         "conflict": { "type": "boolean" },
         "review_decision": {
           "enum": ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", null],

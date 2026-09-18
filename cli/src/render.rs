@@ -223,6 +223,7 @@ fn ci_cell(ci: Ci) -> (&'static str, Tone) {
         Ci::Fail => ("fail", Tone::Danger),
         Ci::Running => ("running", Tone::Warning),
         Ci::None => ("none", Tone::Muted),
+        Ci::Hidden => ("hidden", Tone::Muted),
     }
 }
 

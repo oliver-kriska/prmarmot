@@ -179,6 +179,78 @@ fn a_board_arrives_through_a_foreign_transport() {
     assert_eq!(body["variables"]["who"], "me");
 }
 
+/// The authored fixture as a fine-grained token sees it: GitHub refuses the
+/// head commit node of every pull request (the shape observed 2026-09-18).
+fn without_checks() -> Arc<Offline> {
+    let path = format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut errors = Vec::new();
+    for (index, node) in body["data"]["search"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        node["commits"] = serde_json::json!({"nodes": [null]});
+        errors.push(serde_json::json!({
+            "type": "FORBIDDEN",
+            "path": ["search", "nodes", index, "commits", "nodes", 0],
+            "message": "Resource not accessible by personal access token",
+        }));
+    }
+    body["errors"] = serde_json::Value::Array(errors);
+    Offline::refusing(200, &body.to_string())
+}
+
+#[test]
+fn a_token_that_cannot_read_checks_still_gets_its_board_and_one_line_saying_so() {
+    let board = futures::executor::block_on(client(without_checks()).fetch_board(
+        Mode::Authored,
+        BoardScope::Repository {
+            name: "acme/widgets".into(),
+        },
+        settings(),
+        NOW,
+    ))
+    .expect("refused checks are not a failed refresh");
+    assert_eq!(board.rows.len(), 18);
+    assert!(board
+        .rows
+        .iter()
+        .all(|row| row.ci == prmarmot_ffi::Ci::Hidden));
+    let notice = board.access_notice.expect("the refusal is reported");
+    assert!(notice.starts_with("This token can't read CI on "));
+    assert_eq!(notice.matches("This token").count(), 1);
+    assert_eq!(
+        prmarmot_ffi::ci_cell(prmarmot_ffi::Ci::Hidden).text,
+        "hidden",
+        "hidden checks never read as no checks"
+    );
+}
+
+#[test]
+fn a_refusal_github_repeats_reads_once() {
+    let refused = r#"{"type":"FORBIDDEN","path":["search"],"message":"Resource not accessible by personal access token"}"#;
+    let body = format!(r#"{{"data":null,"errors":[{refused},{refused},{refused}]}}"#);
+    let error = futures::executor::block_on(client(Offline::refusing(200, &body)).fetch_board(
+        Mode::Authored,
+        BoardScope::Repository {
+            name: "acme/widgets".into(),
+        },
+        settings(),
+        NOW,
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "GitHub rejected the query: Resource not accessible by personal access token"
+    );
+}
+
 #[test]
 fn the_review_queue_goes_through_the_same_door() {
     let board = futures::executor::block_on(client(Offline::review_fixture()).fetch_board(

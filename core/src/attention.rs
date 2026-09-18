@@ -59,6 +59,12 @@ pub struct SemanticObservation {
 pub struct Observation {
     pub updated_at: Option<String>,
     pub semantic: SemanticObservation,
+    /// The token could not read this PR's checks ([`Ci::Hidden`]), so
+    /// `semantic.ci` is a placeholder: [`SnapshotStore::observe`] keeps the CI
+    /// it last knew instead. Unknown is not a change, and a token that never
+    /// sees checks must not mark every PR changed. Never stored.
+    #[serde(skip)]
+    pub ci_hidden: bool,
 }
 
 impl Observation {
@@ -92,6 +98,7 @@ impl Observation {
                 reviewed_oid: row.reviewed_oid.clone(),
                 reviewed_at: row.reviewed_at.clone(),
             },
+            ci_hidden: row.ci == Ci::Hidden,
         }
     }
 }
@@ -112,6 +119,8 @@ impl From<Ci> for ObservedCi {
             Ci::Fail => Self::Fail,
             Ci::None => Self::None,
             Ci::Running => Self::Running,
+            // Only a placeholder: `observe` carries the last known CI forward.
+            Ci::Hidden => Self::None,
         }
     }
 }
@@ -317,6 +326,12 @@ impl SnapshotStore {
         let pr_id = pr_id.into();
         validate_string("pr_id", &pr_id, MAX_ID_BYTES)?;
         validate_observation(&observation)?;
+        let mut observation = observation;
+        if std::mem::take(&mut observation.ci_hidden) {
+            if let Some(known) = self.snapshot(&pr_id) {
+                observation.semantic.ci = known.latest.semantic.ci;
+            }
+        }
 
         if let Some(snapshot) = self.snapshots.iter_mut().find(|entry| entry.pr_id == pr_id) {
             if snapshot.latest == observation {
@@ -737,6 +752,7 @@ mod tests {
                 reviewed_oid: None,
                 reviewed_at: None,
             },
+            ci_hidden: false,
         }
     }
 
@@ -752,6 +768,32 @@ mod tests {
         let repeat = store.observe("PR_1", first).unwrap();
         assert_eq!(repeat.kind, ObservationKind::Unchanged);
         assert!(!repeat.changed_since_acknowledgement);
+    }
+
+    #[test]
+    fn checks_the_token_cannot_read_keep_the_ci_last_known() {
+        let mut store = SnapshotStore::new(namespace("octocat"));
+        store
+            .observe(
+                "PR_1",
+                observation("2026-09-11T10:00:00Z", ObservedCi::Pass),
+            )
+            .unwrap();
+
+        // A token without the Checks permission sees the same PR next.
+        let mut hidden = observation("2026-09-11T10:00:00Z", ObservedCi::None);
+        hidden.ci_hidden = true;
+        let result = store.observe("PR_1", hidden.clone()).unwrap();
+        assert_eq!(result.kind, ObservationKind::Unchanged);
+        assert_eq!(
+            store.snapshot("PR_1").unwrap().latest.semantic.ci,
+            ObservedCi::Pass
+        );
+
+        // First seen hidden: nothing is known, and nothing is claimed.
+        let first = store.observe("PR_2", hidden).unwrap();
+        assert_eq!(first.kind, ObservationKind::Baseline);
+        assert!(!store.snapshot("PR_2").unwrap().latest.ci_hidden);
     }
 
     #[test]

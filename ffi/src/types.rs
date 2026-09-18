@@ -94,6 +94,8 @@ pub enum Ci {
     Fail,
     None,
     Running,
+    /// The token may not read the checks; not the same as having none.
+    Hidden,
 }
 
 impl From<core_board::Ci> for Ci {
@@ -103,6 +105,7 @@ impl From<core_board::Ci> for Ci {
             core_board::Ci::Fail => Self::Fail,
             core_board::Ci::None => Self::None,
             core_board::Ci::Running => Self::Running,
+            core_board::Ci::Hidden => Self::Hidden,
         }
     }
 }
@@ -114,6 +117,7 @@ impl From<Ci> for core_board::Ci {
             Ci::Fail => Self::Fail,
             Ci::None => Self::None,
             Ci::Running => Self::Running,
+            Ci::Hidden => Self::Hidden,
         }
     }
 }
@@ -495,6 +499,11 @@ pub struct Board {
     pub more_pages_available: bool,
     /// The five-page-per-queue cap has been reached; `load_more` is done.
     pub page_limit_reached: bool,
+    /// What the token was not allowed to read, in core's one line (a
+    /// fine-grained token never sees check runs). `None` when it read
+    /// everything. Absent from boards cached before it existed.
+    #[serde(default)]
+    pub access_notice: Option<String>,
 }
 
 /// The configuration that changes what a board says. Mirrors the desktop

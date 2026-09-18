@@ -2,6 +2,7 @@
 //! the `gh` CLI subprocess, direct HTTP from this crate, or — on iOS — a
 //! foreign implementation supplied by Swift over the FFI boundary.
 
+pub mod access;
 pub mod device_flow;
 pub mod gh_cli;
 #[cfg(feature = "http")]
@@ -50,7 +51,13 @@ impl fmt::Display for GhError {
                 Some(t) => write!(f, "GitHub rate limited (resets at epoch {t})"),
                 None => write!(f, "GitHub rate limited"),
             },
-            GhError::GraphqlErrors(msgs) => write!(f, "GraphQL errors: {}", msgs.join("; ")),
+            GhError::GraphqlErrors(msgs) => {
+                write!(
+                    f,
+                    "GraphQL errors: {}",
+                    access::unique_messages(msgs).join("; ")
+                )
+            }
             GhError::RepositoryNotFound(repo) => write!(
                 f,
                 "repository {repo} not found, or the gh account can't access it"
