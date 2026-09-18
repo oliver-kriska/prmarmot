@@ -56,8 +56,9 @@ impl From<GhError> for FfiError {
             GhError::PullRequestNotFound(pull_request) => {
                 Self::PullRequestNotFound { pull_request }
             }
+            // GitHub repeats one message per field it refused; say it once.
             GhError::GraphqlErrors(messages) => Self::Api {
-                message: messages.join("; "),
+                message: prmarmot_core::github::access::unique_messages(&messages).join("; "),
             },
             GhError::Parse(message) => Self::Parse { message },
             GhError::Network(message) => Self::Network { message },

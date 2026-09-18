@@ -314,13 +314,15 @@ pub fn review_cell(row: &BoardRow) -> ReviewCell {
 
 /// The CI column: the word, and how loud it is. `None` is an em dash rather
 /// than an empty cell, because "no checks" and "not loaded" must not look the
-/// same.
+/// same; `Hidden` is a word, because "the token may not read the checks" must
+/// not look like either.
 pub fn ci_cell(ci: Ci) -> (&'static str, Tone) {
     match ci {
         Ci::Pass => ("pass", Tone::Success),
         Ci::Fail => ("fail", Tone::Danger),
         Ci::Running => ("running", Tone::Warning),
         Ci::None => ("—", Tone::Muted),
+        Ci::Hidden => ("hidden", Tone::Muted),
     }
 }
 
@@ -571,6 +573,7 @@ mod tests {
     #[test]
     fn no_checks_is_a_dash_because_an_empty_cell_reads_as_not_loaded() {
         assert_eq!(ci_cell(Ci::None), ("—", Tone::Muted));
+        assert_eq!(ci_cell(Ci::Hidden), ("hidden", Tone::Muted));
         assert_eq!(ci_cell(Ci::Pass), ("pass", Tone::Success));
         assert_eq!(ci_cell(Ci::Fail), ("fail", Tone::Danger));
         assert_eq!(ci_cell(Ci::Running), ("running", Tone::Warning));

@@ -86,6 +86,8 @@ impl From<Ci> for ObservedCi {
             Ci::Fail => Self::Fail,
             Ci::None => Self::None,
             Ci::Running => Self::Running,
+            // Unknown to this token: a CI snooze waits rather than waking.
+            Ci::Hidden => Self::None,
         }
     }
 }

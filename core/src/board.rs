@@ -12,6 +12,7 @@ use regex_lite::Regex;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::github::access::{tolerate_access_errors, AccessGaps};
 use crate::github::query::{
     available_search_string, global_authored_search_string, global_available_search_string,
     global_search_string, page_info, parse_alias_response, parse_pull_request_id,
@@ -99,6 +100,9 @@ pub enum Ci {
     Fail,
     None,
     Running,
+    /// The token may not read the checks (a fine-grained personal access
+    /// token never can), so nothing is known: not the same as no checks.
+    Hidden,
 }
 
 impl Ci {
@@ -108,6 +112,7 @@ impl Ci {
             Ci::Fail => "fail",
             Ci::None => "none",
             Ci::Running => "running",
+            Ci::Hidden => "hidden",
         }
     }
 }
@@ -393,6 +398,9 @@ pub struct BoardFetch {
     pub truncated: bool,
     pub pagination: BoardPagination,
     pub tracked: Vec<TrackedPr>,
+    /// What the token was refused while these rows were fetched, for
+    /// [`crate::status::access_notice`].
+    pub access: AccessGaps,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +423,7 @@ pub enum TrackedPrStatus {
 pub struct TrackedFetch {
     pub tracked: Vec<TrackedPr>,
     pub rate: Option<RateLimitInfo>,
+    pub access: AccessGaps,
 }
 
 /// One bounded `nodes(ids:)` request for specific PRs, in any repository: what
@@ -429,14 +438,17 @@ pub fn fetch_tracked(
         return Ok(TrackedFetch {
             tracked: Vec::new(),
             rate: None,
+            access: AccessGaps::default(),
         });
     }
     let query = with_tracked_nodes(TRACKED_ONLY_QUERY)?;
-    let body = transport.graphql_with_ids(&query, &[("who", me)], ids)?;
+    let mut body = transport.graphql_with_ids(&query, &[("who", me)], ids)?;
+    let access = tolerate_access_errors(&mut body);
     let rate = parse_tracked_response(&body)?;
     Ok(TrackedFetch {
         tracked: derive_tracked(&body, ids, "", me, cfg),
         rate,
+        access,
     })
 }
 
@@ -519,16 +531,17 @@ pub fn fetch_board_scoped_with_tracked(
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
             .collect();
-        let body = transport.graphql_with_ids(query, &variables, tracked_ids)?;
-        match scope_repository_error(&body, repo) {
-            Some(error) => Err(error),
-            None => Ok(body),
+        let mut body = transport.graphql_with_ids(query, &variables, tracked_ids)?;
+        if let Some(error) = scope_repository_error(&body, repo) {
+            return Err(error);
         }
+        let access = tolerate_access_errors(&mut body);
+        Ok((body, access))
     };
     match mode {
         Mode::Authored => {
             let search = scope_search_string(scope, mode, me, cfg);
-            let body = request(
+            let (body, access) = request(
                 &initial_operation(PR_SEARCH_QUERY)?,
                 &with_scope_variables(vec![("q", search), ("who", me.to_owned())]),
             )?;
@@ -551,12 +564,13 @@ pub fn fetch_board_scoped_with_tracked(
                 truncated,
                 pagination,
                 tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
+                access,
             })
         }
         Mode::Review => {
             let requested_search = scope_search_string(scope, mode, me, cfg);
             let available_search = scope_available_search_string(scope, me);
-            let body = request(
+            let (body, access) = request(
                 &initial_operation(REVIEW_SEARCH_QUERY)?,
                 &with_scope_variables(vec![
                     ("requested", requested_search),
@@ -607,6 +621,7 @@ pub fn fetch_board_scoped_with_tracked(
                     ..Default::default()
                 },
                 tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
+                access,
             })
         }
     }
@@ -694,10 +709,11 @@ pub fn fetch_more_board_scoped(
             }
             let search = scope_search_string(scope, mode, me, cfg);
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let body = transport.graphql(
+            let mut body = transport.graphql(
                 PR_SEARCH_PAGE_QUERY,
                 &[("q", &search), ("after", &cursor), ("who", me)],
             )?;
+            next.access = next.access.plus(tolerate_access_errors(&mut body));
             let (prs, rate) = parse_search_response(&body)?;
             next.pagination.authored.update(page_info(&body, "search"));
             if scope.is_all() {
@@ -720,7 +736,7 @@ pub fn fetch_more_board_scoped(
             if requested && available {
                 let rc = next.pagination.requested.end_cursor.clone().unwrap();
                 let ac = next.pagination.available.end_cursor.clone().unwrap();
-                let body = transport.graphql(
+                let mut body = transport.graphql(
                     REVIEW_BOTH_PAGE_QUERY,
                     &[
                         ("requested", &requested_search),
@@ -730,6 +746,7 @@ pub fn fetch_more_board_scoped(
                         ("who", me),
                     ],
                 )?;
+                next.access = next.access.plus(tolerate_access_errors(&mut body));
                 let parsed = parse_review_response(&body)?;
                 requested_prs = parsed.requested;
                 available_prs = parsed.available;
@@ -752,8 +769,9 @@ pub fn fetch_more_board_scoped(
                         next.pagination.available.end_cursor.clone().unwrap(),
                     )
                 };
-                let body = transport
+                let mut body = transport
                     .graphql(query, &[(alias, search), ("after", &cursor), ("who", me)])?;
+                next.access = next.access.plus(tolerate_access_errors(&mut body));
                 let (prs, page, rate) = parse_alias_response(&body, alias)?;
                 if requested {
                     requested_prs = prs;
@@ -1142,13 +1160,15 @@ fn derive_review_row(
 }
 
 fn derive_ci(pr: &RawPr) -> Ci {
-    let state = pr
+    let rollup = pr
         .commits
         .nodes
         .first()
-        .and_then(|c| c.commit.status_check_rollup.as_ref())
-        .and_then(|r| r.state.as_deref())
-        .unwrap_or("NONE");
+        .and_then(|c| c.commit.status_check_rollup.as_ref());
+    if rollup.is_some_and(|r| r.hidden) {
+        return Ci::Hidden;
+    }
+    let state = rollup.and_then(|r| r.state.as_deref()).unwrap_or("NONE");
     match state {
         "SUCCESS" => Ci::Pass,
         "FAILURE" | "ERROR" => Ci::Fail,
@@ -1527,6 +1547,86 @@ mod tests {
             .into_iter()
             .next()
             .unwrap()
+    }
+
+    #[test]
+    fn a_token_refused_checks_and_teams_still_gets_its_board() {
+        let refused = |path: serde_json::Value| {
+            json!({"type": "FORBIDDEN", "path": path,
+                   "message": "Resource not accessible by personal access token"})
+        };
+        // The shape GitHub returned to a fine-grained token on 2026-09-18: the
+        // head commit node refused and null, once per pull request.
+        let mut first = base(1);
+        first["commits"] = json!({"nodes": [null]});
+        first["reviewRequests"] = json!({"totalCount": 1, "nodes": [{"requestedReviewer": null}]});
+        let mut second = base(2);
+        second["commits"] = json!({"nodes": [null]});
+        let rollup = |i: u64| json!(["search", "nodes", i, "commits", "nodes", 0]);
+        let body = json!({
+            "data": {
+                "search": {"pageInfo": {"hasNextPage": false}, "nodes": [first, second]},
+                "rateLimit": null
+            },
+            "errors": [
+                refused(rollup(0)),
+                refused(rollup(1)),
+                refused(json!(["search", "nodes", 0, "reviewRequests", "nodes", 0, "requestedReviewer"])),
+            ]
+        });
+
+        let fetch = fetch_board_scoped(
+            &SequenceTransport::new(vec![Ok(body)]),
+            Mode::Authored,
+            &BoardScope::AllRepositories,
+            "me",
+            &cfg(),
+        )
+        .expect("refused fields are not a failed refresh");
+
+        assert_eq!(fetch.rows.len(), 2);
+        assert!(fetch.rows.iter().all(|row| row.ci == Ci::Hidden));
+        let asked_a_team = fetch.rows.iter().find(|row| row.number == 1).unwrap();
+        assert_eq!(
+            asked_a_team.requested,
+            vec![crate::github::access::HIDDEN_TEAM]
+        );
+        assert!(
+            !asked_a_team.note.contains("No reviewers"),
+            "a team the token cannot see was still asked: {}",
+            asked_a_team.note
+        );
+        assert_eq!(
+            fetch.access,
+            AccessGaps {
+                ci: 2,
+                teams: 1,
+                other: 0,
+                pull_requests: 0
+            }
+        );
+        let notice = crate::status::access_notice(&fetch.access).unwrap();
+        assert!(notice.starts_with("This token can't read CI on 2 pull requests"));
+        assert!(!notice.contains('\n'));
+    }
+
+    #[test]
+    fn a_refused_search_still_fails_and_says_so_once() {
+        let refused = json!({"type": "FORBIDDEN", "path": ["search"],
+                             "message": "Resource not accessible by personal access token"});
+        let body = json!({"data": null, "errors": [refused.clone(), refused]});
+        let error = fetch_board_scoped(
+            &SequenceTransport::new(vec![Ok(body)]),
+            Mode::Authored,
+            &BoardScope::AllRepositories,
+            "me",
+            &cfg(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GraphQL errors: Resource not accessible by personal access token"
+        );
     }
 
     #[test]

@@ -122,8 +122,9 @@ pub fn judge_open(condition: Condition, row: &BoardRow) -> Verdict {
         Condition::CiPass => match row.ci {
             Ci::Pass => Verdict::Met,
             Ci::Fail => Verdict::Blocked(Blocked::CiFailed),
-            // No checks at all never turns green; `--timeout` bounds that wait.
-            Ci::Running | Ci::None => Verdict::Pending,
+            // No checks at all never turns green, and neither do checks the
+            // token may not read; `--timeout` bounds that wait.
+            Ci::Running | Ci::None | Ci::Hidden => Verdict::Pending,
         },
         Condition::Approved if approved(row) => Verdict::Met,
         Condition::Approved if changes_requested(row) => {

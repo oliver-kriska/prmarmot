@@ -335,5 +335,6 @@ fn board(
         truncated: fetched.truncated,
         more_pages_available: fetched.pagination.can_load_more(core_mode),
         page_limit_reached: fetched.pagination.page_limit_reached(core_mode),
+        access_notice: prmarmot_core::status::access_notice(&fetched.access),
     })
 }

@@ -312,6 +312,7 @@ pub mod tests {
             truncated: false,
             pagination: BoardPagination::default(),
             tracked: Vec::new(),
+            access: Default::default(),
         }
     }
 

@@ -389,6 +389,10 @@ pub struct ThreadNode {
 pub struct StatusCheckRollup {
     #[serde(default)]
     pub state: Option<String>,
+    /// GitHub refused the rollup to this token (never part of GitHub's own
+    /// answer; written by [`super::access::tolerate_access_errors`]).
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -613,8 +617,9 @@ fn parse_pr_nodes(body: &Value, pointer: &str) -> Result<Vec<RawPr>, GhError> {
 
     let mut prs = Vec::with_capacity(nodes.len());
     for node in nodes {
-        // Non-PR search hits surface as `{}` through the inline fragment.
-        if node.as_object().is_some_and(|o| o.is_empty()) {
+        // Non-PR search hits surface as `{}` through the inline fragment; a
+        // pull request the token may not read at all comes back `null`.
+        if node.is_null() || node.as_object().is_some_and(|o| o.is_empty()) {
             continue;
         }
         let pr: RawPr = serde_json::from_value(node.clone())

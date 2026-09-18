@@ -748,6 +748,7 @@ fn fetch_pull_request(
         truncated: false,
         pagination: BoardPagination::default(),
         tracked: Vec::new(),
+        access: fetched.access,
     };
     Ok((board, gone))
 }
