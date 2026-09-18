@@ -4,8 +4,8 @@ This is the complete list of what the PR Marmot desktop app and `prmarmot-cli` d
 Each id (`F-board-3`) is stable and never reused, so other documents (the site, the iPad app's parity list) can point at one.
 
 Each entry gives the version it first shipped in. `unreleased` marks work that is on `main` but not yet released,
-with the version once it is chosen. An entry that names no platform works on both macOS and Linux. Limits are the values in the code. New
-features get the next free number in their area.
+with the version once it is chosen. An entry that names no platform works on both macOS and Linux. Limits are the
+values in the code. New features get the next free number in their area.
 
 ## Board and queues
 
@@ -219,7 +219,7 @@ features get the next free number in their area.
   nothing to set up. You type an eight-character code at github.com/login/device. It asks for `repo` and
   `read:org`, and there is no client secret and no server of ours. _since v0.9.0_ The code screen says that an
   organization which restricts OAuth apps hides its repositories until an owner approves PR Marmot, and that
-  GitHub offers the request when you authorize. _unreleased_
+  GitHub offers the request when you authorize. _since v0.10.0_
 - **F-auth-3** **Use a token** takes a personal access token. A fine-grained one needs Pull requests: read and
   Metadata: read and covers one owner. A classic one with `repo` and `read:org` covers several organizations and
   shows CI. The token is never displayed. _since v0.9.0_
@@ -281,7 +281,7 @@ features get the next free number in their area.
   until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
   `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`), from the file or the environment.
-  It shows four lines at most; the last counts the rest and lists them in its tooltip. _unreleased_
+  It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_
@@ -326,7 +326,7 @@ features get the next free number in their area.
   `~/.local/bin`. There are no prebuilt Linux packages yet. _since v0.1.0_
 - **F-install-9** Nix: the repository has a flake. `nix develop`, or direnv, gives the build environment, and
   `nix build` or `nix run` builds the app from source. Only Apple silicon has been tried; Linux and Intel Macs are
-  untested. _unreleased_
+  untested. _since v0.10.0_
 
 ## Terminal and agent CLI
 
