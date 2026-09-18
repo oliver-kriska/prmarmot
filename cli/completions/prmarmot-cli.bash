@@ -8,7 +8,7 @@
 _prmarmot_cli() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     local command="" action="" flagged="" word words i
-    local value_flags=" --repo -f --format --pages --sort --interval --events --pr --until --timeout --agent --dir "
+    local value_flags=" --repo -f --format --pages --sort --interval --events --pr --until --timeout --agent --dir --host --auth --client-id "
 
     # The command and its first word, skipping flag values
     # (`--flag value`, or `--flag = value` once bash splits at "=").
@@ -74,32 +74,42 @@ _prmarmot_cli() {
             COMPREPLY=($(compgen -W "claude agents all" -- "$cur"))
             return
             ;;
+        --auth)
+            COMPREPLY=($(compgen -W "auto gh device token" -- "$cur"))
+            return
+            ;;
         --dir)
             compopt -o filenames 2>/dev/null
             local IFS=$'\n'
             COMPREPLY=($(compgen -d -- "$cur"))
             return
             ;;
-        --repo | --pr | --interval | --events)
+        --filter)
+            # A free-text query; offer the qualifier words as a starting point.
+            COMPREPLY=($(compgen -W "label: author: repo: is:stale" -- "$cur"))
+            compopt -o nospace 2>/dev/null
+            return
+            ;;
+        --repo | --pr | --interval | --events | --host | --client-id)
             COMPREPLY=()
             return
             ;;
     esac
 
-    local view="--repo --all-repos --format --json --watched --snoozed --no-color --help"
+    local view="--repo --all-repos --format --json --watched --snoozed --no-color --help --host --auth"
     case $command in
         "")
             if [[ $cur == -* ]]; then
                 words="--help --version"
             else
-                words="mine review watch skill completions help"
+                words="mine review watch auth skill completions help"
             fi
             ;;
         mine | authored)
-            words="$view --authored --changed --stale --pages"
+            words="$view --authored --changed --stale --filter --pages"
             ;;
         review | reviews)
-            words="$view --changed --stale --sort --pages"
+            words="$view --changed --stale --filter --sort --pages"
             ;;
         watch)
             # A view word only right after `watch`.
@@ -109,6 +119,15 @@ _prmarmot_cli() {
                 words="$view --interval --events"
             else
                 words="$view --authored --interval --events --pr --until --timeout"
+            fi
+            ;;
+        auth)
+            if [[ -z $action ]]; then
+                words="login status logout --help"
+            elif [[ $action == login ]]; then
+                words="--with-token --host --client-id --help"
+            else
+                words="--host --help"
             fi
             ;;
         skill)

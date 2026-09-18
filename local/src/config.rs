@@ -11,33 +11,32 @@ use std::time::Duration;
 
 use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule};
 use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FileConfig {
     /// Default repo (`owner/name`) when neither `--repo` nor `PRMARMOT_REPO` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     /// `all` or `repo`. Absent keeps old configs compatible: a saved repo is
     /// specific, while a clean config defaults to all repositories.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Entries for the repo picker; the active repo is always included.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_repos: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u64>,
     /// `system` | `light` | `dark`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     /// `authored` | `review` — the view to open with.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_reviewers: Vec<String>,
-    /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
-    /// (`"acme/api"`), used before `default_reviewers`.
-    #[serde(default)]
-    pub repo_reviewers: BTreeMap<String, Vec<String>>,
-    pub issue_link: Option<IssueLinkSection>,
-    pub window: Option<WindowSection>,
     #[serde(default = "default_true")]
     pub notifications: bool,
     #[serde(default = "default_true")]
@@ -51,7 +50,20 @@ pub struct FileConfig {
     pub automatic_update_checks: bool,
     /// Days a PR may wait for a reviewer before it counts as stale
     /// (`is:stale`, `--stale`); at least 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_after_days: Option<u64>,
+    // TOML requires plain keys before tables, so these come last.
+    /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
+    /// (`"acme/api"`), used before `default_reviewers`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repo_reviewers: BTreeMap<String, Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_link: Option<IssueLinkSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowSection>,
+    /// `[auth]`: which GitHub host to talk to and how to sign in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthSection>,
 }
 
 fn default_true() -> bool {
@@ -78,17 +90,33 @@ impl Default for FileConfig {
             dock_badge: true,
             automatic_update_checks: true,
             stale_after_days: None,
+            auth: None,
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// `[auth]` in the config file. Absent means "whatever works": a token stored
+/// by `prmarmot-cli auth login`, else the `gh` CLI, exactly as before.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AuthSection {
+    /// `github.com`, or a GitHub Enterprise Server hostname.
+    pub host: Option<String>,
+    /// The OAuth client ID for this host. Public by design — the device flow
+    /// has no client secret. GHES instances need their own registration.
+    pub client_id: Option<String>,
+    /// `auto` | `gh` | `device` | `token`.
+    pub mode: Option<String>,
+    /// `auto` | `keychain` | `file`.
+    pub store: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WindowSection {
     pub width: f32,
     pub height: f32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IssueLinkSection {
     pub pattern: String,
     pub url_template: String,
@@ -263,6 +291,129 @@ pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// How PR Marmot gets a GitHub token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthMode {
+    /// A token this machine stored, else the `gh` CLI. The default, and what
+    /// every existing install keeps doing until someone signs in directly.
+    #[default]
+    Auto,
+    /// The `gh` CLI owns authentication (the original behaviour).
+    Gh,
+    /// A device-flow token stored by `prmarmot-cli auth login`.
+    Device,
+    /// A pasted personal access token: `PRMARMOT_TOKEN`, else the stored one.
+    Token,
+}
+
+impl AuthMode {
+    pub fn parse(word: &str) -> Option<Self> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Some(Self::Auto),
+            "gh" | "cli" => Some(Self::Gh),
+            "device" | "oauth" => Some(Self::Device),
+            "token" | "pat" => Some(Self::Token),
+            _ => None,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Gh => "gh",
+            Self::Device => "device",
+            Self::Token => "token",
+        }
+    }
+}
+
+/// Everything needed to obtain a token, resolved across CLI, environment and
+/// config file. Unknown words in the file or the environment are reported and
+/// then ignored — a typo must never make the app unlaunchable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthSettings {
+    pub host: String,
+    pub client_id: String,
+    pub mode: AuthMode,
+    pub store: crate::auth::StoreKind,
+    /// `PRMARMOT_TOKEN`, when set: a token passed in for this run only and
+    /// never written to the store.
+    pub inline_token: Option<String>,
+}
+
+impl AuthSettings {
+    /// True while the GitHub App has not been registered, so the device flow
+    /// cannot work and callers should steer the user to the token path.
+    pub fn client_id_is_placeholder(&self) -> bool {
+        prmarmot_core::github::device_flow::is_placeholder_client_id(&self.client_id)
+    }
+}
+
+/// Resolve `[auth]`. `cli_host` and `cli_mode` come from flags and win;
+/// then the environment; then the file.
+pub fn auth_settings(
+    file: &FileConfig,
+    cli_host: Option<&str>,
+    cli_mode: Option<AuthMode>,
+    warnings: &mut Vec<String>,
+) -> AuthSettings {
+    let section = file.auth.clone().unwrap_or_default();
+    let env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let host = cli_host
+        .map(str::to_owned)
+        .filter(|host| !host.trim().is_empty())
+        .or_else(|| env("PRMARMOT_HOST"))
+        // GH_HOST is what `gh` itself reads; honouring it keeps one setting
+        // for both front doors.
+        .or_else(|| env("GH_HOST"))
+        .or_else(|| section.host.clone())
+        .unwrap_or_else(|| "github.com".into());
+    let client_id = env("PRMARMOT_CLIENT_ID")
+        .or_else(|| section.client_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| prmarmot_core::github::device_flow::PLACEHOLDER_CLIENT_ID.to_owned());
+    let word_mode = |word: Option<String>, source: &str, warnings: &mut Vec<String>| {
+        word.and_then(|word| match AuthMode::parse(&word) {
+            Some(mode) => Some(mode),
+            None => {
+                warnings.push(format!(
+                    "ignoring {source} auth mode {word:?}: use auto, gh, device, or token"
+                ));
+                None
+            }
+        })
+    };
+    let mode = cli_mode
+        .or_else(|| word_mode(env("PRMARMOT_AUTH"), "PRMARMOT_AUTH", warnings))
+        .or_else(|| word_mode(section.mode.clone(), "[auth] mode", warnings))
+        .unwrap_or_default();
+    let store = section
+        .store
+        .clone()
+        .and_then(|word| match crate::auth::StoreKind::parse(&word) {
+            Some(kind) => Some(kind),
+            None => {
+                warnings.push(format!(
+                    "ignoring [auth] store {word:?}: use auto, keychain, or file"
+                ));
+                None
+            }
+        })
+        .unwrap_or_default();
+    AuthSettings {
+        host: prmarmot_core::github::normalize_host(&host),
+        client_id,
+        mode,
+        store,
+        inline_token: env("PRMARMOT_TOKEN"),
+    }
+}
+
 /// `$XDG_STATE_HOME/prmarmot` (default `~/.local/state/prmarmot`).
 pub fn state_root() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
@@ -323,6 +474,65 @@ mod tests {
     }
 
     #[test]
+    fn auth_settings_follow_env_over_file_and_report_typos() {
+        let file: FileConfig = toml::from_str(
+            r#"
+            [auth]
+            host = "ghe.acme.test"
+            client_id = "ghes-client"
+            mode = "device"
+            store = "file"
+            "#,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let resolved = auth_settings(&file, None, None, &mut warnings);
+        assert_eq!(resolved.host, "ghe.acme.test");
+        assert_eq!(resolved.client_id, "ghes-client");
+        assert_eq!(resolved.mode, AuthMode::Device);
+        assert_eq!(resolved.store, crate::auth::StoreKind::File);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!resolved.client_id_is_placeholder());
+
+        // A flag beats the file.
+        let mut warnings = Vec::new();
+        let cli = auth_settings(&file, Some("github.com"), Some(AuthMode::Gh), &mut warnings);
+        assert_eq!(cli.host, "github.com");
+        assert_eq!(cli.mode, AuthMode::Gh);
+
+        let bad: FileConfig = toml::from_str(
+            "[auth]
+mode = 'magic'
+store = 'vault'",
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let fallback = auth_settings(&bad, None, None, &mut warnings);
+        assert_eq!(fallback.mode, AuthMode::Auto);
+        assert_eq!(fallback.store, crate::auth::StoreKind::Auto);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_clean_config_still_defaults_to_github_com_with_no_client_id() {
+        let mut warnings = Vec::new();
+        let resolved = auth_settings(&FileConfig::default(), None, None, &mut warnings);
+        assert_eq!(resolved.host, "github.com");
+        assert_eq!(resolved.mode, AuthMode::Auto);
+        assert!(resolved.client_id_is_placeholder());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn auth_modes_parse_the_documented_words() {
+        assert_eq!(AuthMode::parse("gh"), Some(AuthMode::Gh));
+        assert_eq!(AuthMode::parse("Device"), Some(AuthMode::Device));
+        assert_eq!(AuthMode::parse("pat"), Some(AuthMode::Token));
+        assert_eq!(AuthMode::parse("nonsense"), None);
+        assert_eq!(AuthMode::default().word(), "auto");
+    }
+
+    #[test]
     fn scope_precedence_and_clean_default_are_explicit() {
         let clean = FileConfig::default();
         assert_eq!(
@@ -352,5 +562,126 @@ mod tests {
             ),
             BoardScope::AllRepositories
         );
+    }
+}
+
+impl FileConfig {
+    /// The whole config as TOML text.
+    ///
+    /// The desktop edits `config.toml` in place with `toml_edit`, which keeps
+    /// the user's comments and ordering; this writes a clean canonical file
+    /// instead, for a front end that has no such file to edit (the iPad
+    /// exporting its settings). Both are read back by `from_toml_str`.
+    pub fn to_toml_string(&self) -> Result<String, String> {
+        toml::to_string(self).map_err(|error| error.to_string())
+    }
+
+    /// Parse a config file, e.g. one exported from the desktop.
+    pub fn from_toml_str(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod toml_round_trip_tests {
+    use super::*;
+
+    /// A file with every section set, as the desktop would have written it.
+    const FULL: &str = r#"
+repo = "acme/widgets"
+scope = "repo"
+repos = ["acme/widgets", "acme/api"]
+pinned_repos = ["acme/widgets"]
+refresh_secs = 600
+theme = "dark"
+view = "authored"
+default_reviewers = ["alice", "bob"]
+notifications = false
+notification_sound = false
+notify_all_needs_action = true
+dock_badge = false
+automatic_update_checks = false
+stale_after_days = 5
+
+[repo_reviewers]
+acme = ["carol"]
+"acme/api" = ["dave"]
+
+[issue_link]
+pattern = "PROJ-[0-9]+"
+url_template = "https://tracker.example.test/issues/{id}"
+
+[auth]
+host = "git.acme.test"
+client_id = "Iv1.example"
+mode = "device"
+store = "file"
+"#;
+
+    #[test]
+    fn a_config_survives_being_written_and_read_again() {
+        let original = FileConfig::from_toml_str(FULL).unwrap();
+        let text = original.to_toml_string().unwrap();
+        let again = FileConfig::from_toml_str(&text).unwrap();
+
+        assert_eq!(again.repo.as_deref(), Some("acme/widgets"));
+        assert_eq!(again.scope.as_deref(), Some("repo"));
+        assert_eq!(again.repos, vec!["acme/widgets", "acme/api"]);
+        assert_eq!(again.pinned_repos, vec!["acme/widgets"]);
+        assert_eq!(again.refresh_secs, Some(600));
+        assert_eq!(again.theme.as_deref(), Some("dark"));
+        assert_eq!(again.view.as_deref(), Some("authored"));
+        assert_eq!(again.default_reviewers, vec!["alice", "bob"]);
+        assert!(!again.notifications);
+        assert!(!again.notification_sound);
+        assert!(again.notify_all_needs_action);
+        assert!(!again.dock_badge);
+        assert!(!again.automatic_update_checks);
+        assert_eq!(again.stale_after_days, Some(5));
+        assert_eq!(again.repo_reviewers["acme"], vec!["carol"]);
+        assert_eq!(again.repo_reviewers["acme/api"], vec!["dave"]);
+        assert_eq!(
+            again.issue_link.as_ref().map(|link| link.pattern.as_str()),
+            Some("PROJ-[0-9]+")
+        );
+        let auth = again.auth.as_ref().unwrap();
+        assert_eq!(auth.host.as_deref(), Some("git.acme.test"));
+        assert_eq!(auth.mode.as_deref(), Some("device"));
+    }
+
+    /// The whole reason the fields are ordered the way they are: TOML wants
+    /// every plain key before the first table.
+    #[test]
+    fn the_written_file_puts_tables_last() {
+        let text = FileConfig::from_toml_str(FULL)
+            .unwrap()
+            .to_toml_string()
+            .unwrap();
+        let first_table = text.find("[repo_reviewers]").unwrap();
+        for key in ["repo =", "notifications =", "stale_after_days ="] {
+            assert!(
+                text.find(key).unwrap() < first_table,
+                "{key} is written after a table, which TOML cannot read back"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_config_writes_nothing_it_does_not_have() {
+        let text = FileConfig::default().to_toml_string().unwrap();
+        for absent in ["repo =", "repos =", "[auth]", "[issue_link]", "[window]"] {
+            assert!(
+                !text.contains(absent),
+                "empty config wrote {absent}:\n{text}"
+            );
+        }
+        // The booleans always have a value, so they are always written.
+        assert!(text.contains("notifications = true"));
+    }
+
+    #[test]
+    fn nonsense_is_an_error_and_not_a_default_config() {
+        assert!(FileConfig::from_toml_str("this is not toml = = =").is_err());
+        assert!(FileConfig::from_toml_str("refresh_secs = \"soon\"").is_err());
     }
 }

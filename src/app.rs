@@ -8,9 +8,9 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_base::SelectableText;
 use gpui_component::button::{Button, ButtonVariants};
@@ -23,10 +23,10 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
-use prmarmot_core::board::{BoardScope, Category, Mode};
-use prmarmot_core::layout::{group_label, Sort};
+use prmarmot_core::board::{BoardScope, Mode};
+use prmarmot_core::layout::Sort;
 
-use crate::state::{relative, AppState, SetupStatus};
+use crate::state::{AppState, SetupStatus};
 use crate::table::{
     changed_marker_tooltip, columns_for, detail_text, label_chip, matches_filter,
     take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule,
@@ -149,12 +149,15 @@ pub struct RootView {
     update_starting: bool,
     update_check_task: Option<gpui::Task<()>>,
     notification_help_shown: bool,
+    /// The sign-in screen shown when neither a stored token nor `gh` works.
+    onboarding: Entity<crate::onboarding::OnboardingView>,
 }
 
 impl RootView {
     pub fn new(
         state: Entity<AppState>,
         launch: Launch,
+        auth: prmarmot_local::config::AuthSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -347,7 +350,9 @@ impl RootView {
                     state.wake_timed_snoozes(cx);
                 });
                 let state = this.state.read(cx);
-                let sync_label = state.last_synced.map(relative);
+                let sync_label = state
+                    .last_synced
+                    .map(|t| relative((Local::now() - t).num_seconds()));
                 let counting_down = state.backoff_remaining().is_some();
                 let label_changed = sync_label != shown_sync_label;
                 shown_sync_label = sync_label;
@@ -400,6 +405,17 @@ impl RootView {
         })
         .detach();
 
+        let onboarding = cx.new(|cx| crate::onboarding::OnboardingView::new(auth, window, cx));
+        // A completed sign-in re-runs the setup check, which picks up the new
+        // token and swaps the transport.
+        cx.subscribe(
+            &onboarding,
+            |this: &mut Self, _, _: &crate::onboarding::SignedIn, cx| {
+                this.state.update(cx, |state, cx| state.validate_setup(cx));
+            },
+        )
+        .detach();
+
         let mut this = Self {
             state,
             table,
@@ -442,6 +458,7 @@ impl RootView {
             update_starting: false,
             update_check_task: None,
             notification_help_shown: false,
+            onboarding,
         };
         if this.state.read(cx).attention_preferences.notifications {
             this.state.read(cx).check_notification_permission();
@@ -717,10 +734,11 @@ impl RootView {
         self.discovering_repos = true;
         self.repo_status = "Finding accessible repositories…".into();
         cx.notify();
+        let connector = self.state.read(cx).connector();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async { prmarmot_core::github::gh_cli::list_repos() })
+                .spawn(async move { connector.list_repos() })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.discovering_repos = false;
@@ -2353,150 +2371,33 @@ fn view_toggle(
         })
 }
 
-fn changed_toggle_tooltip(on: bool, count: usize) -> String {
-    match (on, count) {
-        (true, _) => "Showing only PRs that changed since you looked. Click to show all.".into(),
-        (false, 0) => "No loaded PRs changed since you looked".into(),
-        (false, 1) => "Show only the PR that changed since you looked".into(),
-        (false, n) => format!("Show only the {n} PRs that changed since you looked"),
-    }
-}
+// The header sentence, the toggle tooltips and the two duration phrasings
+// live in `prmarmot_core::status`, so the iPad shows the same words.
+use prmarmot_core::status::{
+    changed_toggle_tooltip, header_counts as core_header_counts, human_duration, needs_you_here,
+    queue_loading_text, queue_sync_text as core_queue_sync_text, relative, snoozed_toggle_tooltip,
+    BadgeName, HeaderCounts,
+};
 
-fn snoozed_toggle_tooltip(on: bool, count: usize) -> String {
-    match (on, count) {
-        (true, _) => "Collapse the snoozed PRs".into(),
-        (false, 0) => "No snoozed PRs here".into(),
-        (false, 1) => "Show the snoozed PR".into(),
-        (false, n) => format!("Show the {n} snoozed PRs"),
-    }
-}
-
-/// Whether a row of this view counts toward the header's "need you": My
-/// PRs' Needs action section, or the review queue's Requested from you and
-/// Available to review sections.
-fn needs_you_here(mode: Mode, category: Category) -> bool {
-    match mode {
-        Mode::Authored => category == Category::Action,
-        Mode::Review => matches!(category, Category::Todo | Category::Available),
-    }
-}
-
-/// The numbers behind the header's count line.
-struct HeaderCounts {
-    loaded: usize,
-    truncated: bool,
-    mode: Mode,
-    all_repos: bool,
-    /// Rows of this view that need you ([`needs_you_here`]), snoozed ones
-    /// excluded.
-    need_you: usize,
-    /// The Dock badge, across both views: your PRs that need action plus
-    /// reviews requested from you, snoozed ones excluded.
-    badge: usize,
-    /// Both views have loaded, so `badge` is the whole count.
-    badge_complete: bool,
-    tracked_loaded: usize,
-    tracked_total: usize,
-}
-
-/// The header's count line and the tooltip that explains it.
+/// The header's count line and the tooltip that explains it, with the badge
+/// called by its desktop name.
 fn header_counts(c: &HeaderCounts) -> (String, String) {
-    let need_you = match c.need_you {
-        0 => "nothing needs you".to_owned(),
-        1 => "1 needs you".to_owned(),
-        n => format!("{n} need you"),
-    };
-    let mut line = format!("{} loaded", c.loaded);
-    if c.truncated {
-        line.push_str(" · partial results");
-    }
-    line.push_str(&format!(" · {need_you}"));
-    let tracked = match (c.tracked_loaded, c.tracked_total) {
-        (_, 0) => None,
-        (loaded, total) if loaded >= total => Some(format!("{total} watched/snoozed")),
-        (loaded, total) => Some(format!("{loaded} of {total} watched/snoozed")),
-    };
-    if let Some(tracked) = &tracked {
-        line.push_str(&format!(" · {tracked}"));
-    }
-
-    let mut tip = format!("{} PRs loaded in this view", c.loaded);
-    tip.push_str(if c.truncated {
-        "; GitHub has more (Load more)."
-    } else {
-        "."
-    });
-    let sections = match c.mode {
-        Mode::Authored => group_label(Mode::Authored, Category::Action, c.all_repos).to_owned(),
-        Mode::Review => format!(
-            "{} and Available to review",
-            group_label(Mode::Review, Category::Todo, c.all_repos)
-        ),
-    };
-    tip.push_str(&format!(
-        "\n{}: the PRs under {sections}, not counting snoozed ones.",
-        upper_first(&need_you)
-    ));
-    tip.push_str(&format!(
-        "\nThe Dock badge shows {} across both views: your PRs that need action plus \
-         reviews requested from you, not counting snoozed ones.",
-        c.badge
-    ));
-    if !c.badge_complete {
-        tip.push_str(" Only the views loaded since launch are counted so far.");
-    }
-    if let Some(tracked) = tracked {
-        tip.push_str(&format!(
-            "\n{}: watched and snoozed PRs, refreshed with this view (up to 50 each time).",
-            upper_first(&tracked)
-        ));
-    }
-    (line, tip)
+    core_header_counts(c, BadgeName::Dock)
 }
 
-fn upper_first(text: &str) -> String {
-    let mut chars = text.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
-/// The header's right-side status line, specific to the active queue. Keeps
-/// the "synced Xm ago" anchor visible during a background refresh so switching
-/// feels like navigation, not a command re-run.
+/// [`core_queue_sync_text`] with a local timestamp rather than an elapsed count.
 fn queue_sync_text(
     mode: Mode,
     all_repos: bool,
     syncing: bool,
     last_synced: Option<DateTime<Local>>,
 ) -> String {
-    let loading = match (mode, all_repos) {
-        (Mode::Authored, true) => "Loading pull requests involving you…",
-        (Mode::Authored, false) => "Loading your open PRs…",
-        (Mode::Review, _) => "Loading review queue…",
-    };
-    match (syncing, last_synced) {
-        (true, None) | (false, None) => loading.to_string(),
-        (true, Some(t)) => {
-            let verb = match (mode, all_repos) {
-                (Mode::Authored, true) => "Updating involving PRs…",
-                (Mode::Authored, false) => "Updating your PRs…",
-                (Mode::Review, _) => "Updating review queue…",
-            };
-            format!("{verb} · synced {}", relative(t))
-        }
-        (false, Some(t)) => format!("synced {}", relative(t)),
-    }
-}
-
-/// The centered body copy shown before a queue's first rows ever arrive.
-fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
-    match (mode, all_repos) {
-        (Mode::Authored, true) => "Loading pull requests involving you…",
-        (Mode::Authored, false) => "Loading your open PRs…",
-        (Mode::Review, _) => "Loading review queue…",
-    }
+    core_queue_sync_text(
+        mode,
+        all_repos,
+        syncing,
+        last_synced.map(|t| (Local::now() - t).num_seconds()),
+    )
 }
 
 /// What the table area shows, derived from `AppState` truth (`last_synced` /
@@ -2525,38 +2426,74 @@ fn unix_now() -> i64 {
 }
 
 impl RootView {
-    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> impl IntoElement {
+    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (title, detail, show_auth_command) = match &setup {
+        // Not signed in: the sign-in screen takes over, with the GitHub CLI
+        // route offered underneath for people who already use it.
+        if matches!(
+            setup,
+            SetupStatus::MissingGh | SetupStatus::NotAuthenticated
+        ) {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_4()
+                .px_4()
+                .child(self.onboarding.clone())
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .max_w(px(560.))
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    "Already use the GitHub CLI? Run `gh auth login` in Terminal, \
+                                     then choose Retry.",
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("copy-gh-auth")
+                                        .small()
+                                        .label("Copy `gh auth login`")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                "gh auth login".to_owned(),
+                                            ));
+                                            this.show_feedback("Command copied", cx);
+                                        })),
+                                )
+                                .child(Button::new("retry-setup").small().label("Retry").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| state.validate_setup(cx));
+                                    }),
+                                )),
+                        ),
+                )
+                .into_any_element();
+        }
+        let (title, detail) = match &setup {
             SetupStatus::Checking => (
-                "Checking GitHub CLI…".to_owned(),
-                "PR Marmot uses your existing GitHub CLI session. No credentials are stored by the app."
+                "Checking your GitHub sign-in…".to_owned(),
+                "PR Marmot uses a token you sign in with here, or your existing GitHub CLI session."
                     .to_owned(),
-                false,
             ),
-            SetupStatus::MissingGh => (
-                "Install the GitHub CLI".to_owned(),
-                "The `gh` command was not found. Install it with `brew install gh` or from cli.github.com, then authenticate."
-                    .to_owned(),
-                true,
-            ),
-            SetupStatus::NotAuthenticated => (
-                "Sign in with GitHub CLI".to_owned(),
-                "Run the command below in Terminal, complete GitHub's sign-in flow, then retry. PR Marmot never displays or stores your token."
-                    .to_owned(),
-                true,
-            ),
+            SetupStatus::MissingGh | SetupStatus::NotAuthenticated => {
+                (String::new(), String::new())
+            }
             SetupStatus::Network(_) => (
                 "GitHub could not be reached".to_owned(),
-                "Check your connection and GitHub CLI access, then retry.".to_owned(),
-                false,
+                "Check your connection and your GitHub sign-in, then retry.".to_owned(),
             ),
-            SetupStatus::Failed(message) => (
-                "GitHub setup failed".to_owned(),
-                message.clone(),
-                false,
-            ),
-            SetupStatus::Ready => (String::new(), String::new(), false),
+            SetupStatus::Failed(message) => ("GitHub setup failed".to_owned(), message.clone()),
+            SetupStatus::Ready => (String::new(), String::new()),
         };
         v_flex()
             .size_full()
@@ -2576,33 +2513,6 @@ impl RootView {
                     .text_color(theme.muted_foreground)
                     .child(detail),
             )
-            .when(show_auth_command, |view| {
-                view.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .rounded(px(5.))
-                                .bg(theme.muted)
-                                .font_family("monospace")
-                                .child("gh auth login"),
-                        )
-                        .child(
-                            Button::new("copy-gh-auth")
-                                .small()
-                                .label("Copy command")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        "gh auth login".to_owned(),
-                                    ));
-                                    this.show_feedback("Command copied", cx);
-                                })),
-                        ),
-                )
-            })
             .when(setup != SetupStatus::Checking, |view| {
                 view.child(
                     Button::new("retry-setup")
@@ -2613,18 +2523,11 @@ impl RootView {
                         })),
                 )
             })
+            .into_any_element()
     }
 }
 
 /// "45s" / "3m" / "1h 5m" — compact, for the back-off retry countdown.
-fn human_duration(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m", secs / 60),
-        _ => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
-    }
-}
-
 impl Focusable for RootView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -2758,110 +2661,5 @@ impl Render for RootView {
             })
             .child(self.render_footer(cx))
             .children(dialog_layer)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn counts(need_you: usize, complete: bool, tracked: (usize, usize)) -> HeaderCounts {
-        HeaderCounts {
-            loaded: 56,
-            truncated: true,
-            mode: Mode::Authored,
-            all_repos: false,
-            need_you,
-            badge: need_you,
-            badge_complete: complete,
-            tracked_loaded: tracked.0,
-            tracked_total: tracked.1,
-        }
-    }
-
-    #[test]
-    fn the_header_says_who_needs_you_in_plain_words() {
-        let line = |c: HeaderCounts| header_counts(&c).0;
-        assert_eq!(
-            line(counts(0, true, (0, 0))),
-            "56 loaded · partial results · nothing needs you"
-        );
-        assert_eq!(
-            line(counts(1, false, (2, 2))),
-            "56 loaded · partial results · 1 needs you · 2 watched/snoozed"
-        );
-        assert_eq!(
-            line(counts(3, true, (50, 64))),
-            "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed"
-        );
-        let (_, tip) = header_counts(&counts(3, false, (2, 2)));
-        assert_eq!(
-            tip,
-            "56 PRs loaded in this view; GitHub has more (Load more).\n\
-             3 need you: the PRs under Needs action, not counting snoozed ones.\n\
-             The Dock badge shows 3 across both views: your PRs that need action plus \
-             reviews requested from you, not counting snoozed ones. Only the views loaded \
-             since launch are counted so far.\n\
-             2 watched/snoozed: watched and snoozed PRs, refreshed with this view (up to 50 \
-             each time)."
-        );
-    }
-
-    /// Once both views have loaded, the Dock badge is the total, but the
-    /// header still counts only the view on screen.
-    #[test]
-    fn the_header_counts_this_view_even_when_the_badge_covers_both() {
-        let count = |mode, categories: &[Category]| {
-            categories
-                .iter()
-                .filter(|&&category| needs_you_here(mode, category))
-                .count()
-        };
-        let mine = count(
-            Mode::Authored,
-            &[
-                Category::Action,
-                Category::Action,
-                Category::Await,
-                Category::Draft,
-            ],
-        );
-        let review = count(
-            Mode::Review,
-            &[
-                Category::Todo,
-                Category::Available,
-                Category::Available,
-                Category::Done,
-                Category::Draft,
-            ],
-        );
-        assert_eq!((mine, review), (2, 3));
-        let both_loaded = |mode, need_you| HeaderCounts {
-            loaded: 5,
-            truncated: false,
-            mode,
-            all_repos: true,
-            need_you,
-            badge: 3,
-            badge_complete: true,
-            tracked_loaded: 0,
-            tracked_total: 0,
-        };
-        let (line, tip) = header_counts(&both_loaded(Mode::Review, review));
-        assert_eq!(line, "5 loaded · 3 need you");
-        assert_eq!(
-            tip,
-            "5 PRs loaded in this view.\n\
-             3 need you: the PRs under Requested from you and Available to review, not \
-             counting snoozed ones.\n\
-             The Dock badge shows 3 across both views: your PRs that need action plus \
-             reviews requested from you, not counting snoozed ones."
-        );
-        let (line, tip) = header_counts(&both_loaded(Mode::Authored, mine));
-        assert_eq!(line, "5 loaded · 2 need you");
-        assert!(tip.contains("2 need you: the PRs under Needs attention, not counting"));
-        assert!(tip.contains("The Dock badge shows 3 across both views"));
-        assert!(!tip.contains("so far"));
     }
 }

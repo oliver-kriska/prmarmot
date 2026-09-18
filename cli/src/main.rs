@@ -3,6 +3,7 @@
 //! state as the desktop app; no GPUI, no runtime, read-only.
 
 mod args;
+mod auth;
 mod completions;
 mod render;
 mod skill;
@@ -21,9 +22,9 @@ use std::process::ExitCode;
 
 use chrono::Utc;
 use prmarmot_core::board::carry_forward_conflicts;
-use prmarmot_core::github::gh_cli::{current_login, GhCliTransport};
 use prmarmot_core::github::GhError;
 use prmarmot_local::config;
+use prmarmot_local::session::Session;
 
 use args::{Command, EventFormat, Format, SkillAction, ViewArgs, WatchArgs};
 use term::Paint;
@@ -48,11 +49,20 @@ fn main() -> ExitCode {
         Ok(Command::Version) => print(&format!("prmarmot-cli {}", env!("CARGO_PKG_VERSION"))),
         Ok(Command::View(args)) => run_view(args),
         Ok(Command::Watch(args)) => run_watch(args),
+        Ok(Command::Auth(action, options)) => run_auth(action, options),
         Ok(Command::Skill(SkillAction::Show)) => print(skill::SKILL_MD),
         Ok(Command::Completions(shell)) => print(shell.script()),
         Ok(Command::Skill(SkillAction::Install { dir, agent, force })) => {
             run_skill_install(dir, agent, force)
         }
+    }
+}
+
+fn run_auth(action: auth::Action, options: auth::Options) -> ExitCode {
+    match auth::run(action, options, env!("CARGO_PKG_VERSION")) {
+        auth::Outcome::Ok => ExitCode::SUCCESS,
+        auth::Outcome::NotSignedIn => ExitCode::from(EXIT_AUTH),
+        auth::Outcome::Failed(error) => fail(&error),
     }
 }
 
@@ -131,24 +141,27 @@ fn fail(error: &GhError) -> ExitCode {
 
 fn resolve(
     cli_scope: Option<prmarmot_core::board::BoardScope>,
-) -> Result<(view::Setup, String), GhError> {
-    let setup = view::setup(cli_scope);
+    cli_host: Option<&str>,
+    cli_auth: Option<config::AuthMode>,
+) -> Result<(view::Setup, Session, String), GhError> {
+    let setup = view::setup(cli_scope, cli_host, cli_auth);
     for warning in &setup.warnings {
         eprintln!("prmarmot-cli: {warning}");
     }
-    let login = current_login()?;
-    Ok((setup, login))
+    let session = view::connect(&setup)?;
+    let login = session.login()?;
+    Ok((setup, session, login))
 }
 
 fn run_view(args: ViewArgs) -> ExitCode {
-    let (mut setup, login) = match resolve(args.scope.clone()) {
-        Ok(resolved) => resolved,
-        Err(error) => return fail(&error),
-    };
+    let (mut setup, session, login) =
+        match resolve(args.scope.clone(), args.host.as_deref(), args.auth) {
+            Ok(resolved) => resolved,
+            Err(error) => return fail(&error),
+        };
     setup.board.authored_only = args.authored;
-    let transport = GhCliTransport::new();
     let mut fetch = match view::fetch(
-        &transport,
+        session.transport(),
         args.mode,
         &setup.scope,
         &login,
@@ -158,7 +171,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
         Ok(fetch) => fetch,
         Err(error) => return fail(&error),
     };
-    let attention = view::attention(&view::github_host(), &login);
+    let attention = view::attention(&setup.auth.host, &login);
     // GitHub reports mergeability as UNKNOWN while it recomputes; show the
     // conflict the app saw last instead of a momentarily clean PR.
     carry_forward_conflicts(
@@ -179,6 +192,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
             watched: args.watched,
             stale: args.stale,
             stale_after_days: setup.board.stale_after_days,
+            query: args.filter.clone(),
         },
         Utc::now(),
     );
@@ -204,10 +218,11 @@ fn run_view(args: ViewArgs) -> ExitCode {
 }
 
 fn run_watch(args: WatchArgs) -> ExitCode {
-    let (mut setup, login) = match resolve(args.scope.clone()) {
-        Ok(resolved) => resolved,
-        Err(error) => return fail(&error),
-    };
+    let (mut setup, session, login) =
+        match resolve(args.scope.clone(), args.host.as_deref(), args.auth) {
+            Ok(resolved) => resolved,
+            Err(error) => return fail(&error),
+        };
     setup.board.authored_only = args.authored;
     let interval = args
         .interval_secs
@@ -221,10 +236,9 @@ fn run_watch(args: WatchArgs) -> ExitCode {
         EventFormat::Json => watch::Output::Json,
         EventFormat::Text => watch::Output::Text(Paint::new(term::color_enabled(args.no_color))),
     };
-    let transport = GhCliTransport::new();
-    let session = watch::Session {
-        transport: &transport,
-        host: view::github_host(),
+    let watch_session = watch::Session {
+        transport: session.transport(),
+        host: setup.auth.host.clone(),
         viewer: login,
         // A followed PR is classified as in Involving me, whatever the mode word.
         mode: if args.pr.is_some() {
@@ -247,7 +261,7 @@ fn run_watch(args: WatchArgs) -> ExitCode {
         output,
     };
     let mut stdout = std::io::stdout().lock();
-    let stop = watch::run(session, &mut stdout, &mut watch::SystemClock::start());
+    let stop = watch::run(watch_session, &mut stdout, &mut watch::SystemClock::start());
     match stop {
         watch::Stop::Failed(error) => fail(&error),
         stop => ExitCode::from(watch_exit_code(&stop)),

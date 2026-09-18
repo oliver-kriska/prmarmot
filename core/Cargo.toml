@@ -6,9 +6,35 @@ rust-version = "1.85"
 license = "MIT"
 description = "Framework-independent core for PR Marmot: GitHub transport, categorization, note logic"
 
+[features]
+# Full `regex`, the default everywhere except iOS. `small-regex` below is the
+# alternative; exactly one of the two must be on.
+default = ["regex"]
+
+# Direct HTTPS to GitHub, so the desktop app and the CLI can run without the
+# `gh` CLI. Off by default: iOS supplies its own URLSession transport over FFI
+# and must not link a second TLS stack.
+http = ["dep:ureq"]
+
+# Compile issue-link patterns with `regex-lite` instead of `regex`. Measured
+# at 789 KiB off the linked iOS library (1,638,520 -> 830,264 bytes for
+# aarch64-apple-ios, `--profile ios`), which is worth having on a phone and
+# worth nothing on a desktop. The two engines differ only in syntax `prmarmot` does not use:
+# regex-lite has no Unicode character classes (`\p{...}`) and its `\w`, `\d`
+# and `\b` are ASCII. Since the pattern comes from a user's `config.toml`,
+# the desktop and the CLI stay on full `regex`; only the iOS build turns this
+# on, and CI runs the whole core suite under it so the two cannot diverge on
+# anything the project itself does.
+small-regex = ["dep:regex-lite"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-regex = "1"
+regex = { version = "1", optional = true }
+regex-lite = { version = "0.1", optional = true }
 chrono = "0.4"
+# Blocking HTTP, no async runtime (guardrail). rustls + webpki roots so the
+# binary does not depend on a system OpenSSL. MSRV 1.85, checked against the
+# msrv CI job; verified to build for aarch64-apple-ios as well.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"], optional = true }

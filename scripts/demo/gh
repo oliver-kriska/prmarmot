@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Offline, fail-closed gh stand-in for PR Marmot screenshot fixtures."""
 
+import copy
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -9,9 +10,27 @@ import sys
 import unittest
 
 
+def now():
+    """The instant everything is relative to.
+
+    `PRMARMOT_DEMO_NOW` (RFC 3339, e.g. `2026-07-26T12:00:00Z`) pins it, which
+    is what fixture generation needs: a file that differs on every run is not a
+    fixture. Unset, it is the real clock, which is what the screenshots want.
+    """
+    pinned = os.environ.get("PRMARMOT_DEMO_NOW", "").strip()
+    if not pinned:
+        return datetime.now(timezone.utc)
+    return datetime.strptime(pinned, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+#: Whose board this is. `latestReview` is GitHub's `reviews(last:1, author:$who)`,
+#: so it only ever carries this login's own review.
+VIEWER = "demo-user"
+
+
 def ago(hours):
     """A timestamp `hours` before now, so pickup ages read the same any day."""
-    at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    at = now() - timedelta(hours=hours)
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -38,15 +57,25 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
          "submittedAt": f"2026-08-{day:02d}T12:00:00Z"}
         for day, (login, state) in enumerate(reviews, 1)
     ]
+    head_oid = f"head-{repo}-{number}"
+    # The viewer's own standing review, recorded against the commit that was
+    # the head when it was submitted. A later `push_commit` moves the head and
+    # leaves this behind, which is exactly what "new commits since your
+    # review" is computed from.
+    mine = [r for r in review_nodes if r["author"]["login"] == VIEWER]
+    latest_review = [
+        {"state": mine[-1]["state"], "submittedAt": mine[-1]["submittedAt"],
+         "commit": {"oid": head_oid}}
+    ] if mine else []
     node = {
         "id": f"PR_demo_{repo.replace('/', '_')}_{number}",
         "url": f"https://github.com/{repo}/pull/{number}",
         "repository": {"nameWithOwner": repo},
         "updatedAt": f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
-        "headRefOid": f"head-{repo}-{number}",
+        "headRefOid": head_oid,
         "state": "OPEN",
         "merged": False,
-        "latestReview": {"nodes": []},
+        "latestReview": {"nodes": latest_review},
         "number": number,
         "title": title,
         "isDraft": draft,
@@ -123,8 +152,286 @@ AVAILABLE = [
 ]
 
 
-def page(nodes):
-    return {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+def page(nodes, next_cursor=None):
+    """One page of a search.
+
+    `next_cursor` both says there is more and names the fixture file that holds
+    it: the scenario writer emits `<cursor>.json`, and the fake GitHub in the
+    iPad's test bundle serves whatever file the `after` variable names. The
+    cursor is the file name, so the two cannot disagree.
+    """
+    return {
+        "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor},
+        "nodes": nodes,
+    }
+
+
+# --- Scenarios -------------------------------------------------------------
+#
+# A scenario is an ordered list of refreshes. The iPad's tests replay them in
+# order, which is the only way to test anything that is a change rather than a
+# state: the blue "changed" marker, a snooze waking, a watched PR being merged,
+# CI going red then green. Each step is a function that edits a fresh copy of
+# the fixture data; `--fixtures DIR` writes every step of every scenario as the
+# JSON GitHub would have answered with.
+#
+# Timestamps come from `ago()`, so pin the clock with PRMARMOT_DEMO_NOW before
+# writing fixtures or they will differ on every run.
+
+
+def views_copy():
+    """A private copy of the three node lists.
+
+    One `deepcopy` call for all three, because AVAILABLE deliberately shares a
+    node with REQUESTED (a PR requested from you also appearing in the broad
+    search) and copying them separately would quietly break that.
+    """
+    return copy.deepcopy({"authored": AUTHORED, "requested": REQUESTED,
+                          "available": AVAILABLE})
+
+
+def find(views, number):
+    for nodes in views.values():
+        for node in nodes:
+            if node["number"] == number:
+                return node
+    raise KeyError(f"no fixture PR {number}")
+
+
+def set_ci(node, state):
+    rollup = None if state is None else {"state": state}
+    node["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = rollup
+
+
+def push_commit(node, tag="next"):
+    """A new head commit: what "New commits" is computed from."""
+    node["headRefOid"] = f"{node['headRefOid']}-{tag}"
+    node["updatedAt"] = ago(0)
+
+
+def add_review(node, login, state, hours=1):
+    node["reviews"]["nodes"].append(
+        {"author": {"login": login}, "state": state, "submittedAt": ago(hours)})
+    if login == VIEWER:
+        # Reviewing again re-pins the review to the commit on screen.
+        node["latestReview"]["nodes"] = [
+            {"state": state, "submittedAt": ago(hours),
+             "commit": {"oid": node["headRefOid"]}}]
+    node["updatedAt"] = ago(0)
+
+
+def request_review(node, login):
+    reviewer = {"__typename": "User", "login": login}
+    node["reviewRequests"]["nodes"].append({"requestedReviewer": reviewer})
+    node["reviewRequests"]["totalCount"] = len(node["reviewRequests"]["nodes"])
+    node["timelineItems"]["nodes"].append(
+        {"__typename": "ReviewRequestedEvent", "createdAt": ago(1),
+         "requestedReviewer": reviewer})
+
+
+def resolve_threads(node):
+    node["reviewThreads"]["nodes"] = []
+
+
+def leave_board(views, number, *, merged):
+    """The PR is merged or closed, so the search stops returning it.
+
+    It stays in the step's node index, which is how a watched PR that has left
+    the board still comes back through the `tracked` alias.
+    """
+    node = find(views, number)
+    node["state"] = "MERGED" if merged else "CLOSED"
+    node["merged"] = merged
+    for alias, nodes in views.items():
+        views[alias] = [item for item in nodes if item["number"] != number]
+    return node
+
+
+def extra_rows(alias, first_number, count):
+    """Filler rows for a multi-page scenario: enough to tell pages apart."""
+    return [
+        pr(first_number + index,
+           f"Page filler {first_number + index}: tighten {SCALE_WORDS[index % len(SCALE_WORDS)]}",
+           author="demo-user" if alias == "authored" else f"dev{index % 5}",
+           labels=(SCALE_LABELS[index % len(SCALE_LABELS)],),
+           requested=("demo-user",) if alias == "requested" else (),
+           waited=(index * 9) % 120,
+           repo=("demo-labs/atlas", "demo-labs/mobile")[index % 2])
+        for index in range(count)
+    ]
+
+
+def _changed_second(views):
+    # A red build turns green, a PR gets new commits, and somebody reviews.
+    set_ci(find(views, 418), "SUCCESS")
+    push_commit(find(views, 417))
+    add_review(find(views, 528), "taylor", "COMMENTED")
+
+
+def _changed_third(views):
+    _changed_second(views)
+    # A PR the viewer has already reviewed gets a new commit: this is what
+    # "changed since your review" is computed from.
+    push_commit(find(views, 526), tag="after-review")
+    # Then a reviewer is added and the open threads are resolved.
+    request_review(find(views, 418), "sam")
+    resolve_threads(find(views, 418))
+    push_commit(find(views, 416), "third")
+
+
+def _snooze_waiting(views):
+    # Armed: the build this PR is snoozed on has not finished.
+    set_ci(find(views, 524), "PENDING")
+
+
+def _snooze_still_waiting(views):
+    _snooze_waiting(views)
+    find(views, 524)["updatedAt"] = ago(0)
+
+
+def _snooze_finished(views):
+    # Terminal, and different from the baseline: this is what wakes it.
+    set_ci(find(views, 524), "FAILURE")
+    add_review(find(views, 528), "river", "APPROVED")
+
+
+def _watch_merged(views):
+    leave_board(views, 418, merged=True)
+
+
+def _empty(views):
+    for alias in views:
+        views[alias] = []
+
+
+SCENARIOS = {
+    "steady": {
+        "description": "One refresh of both views: stacks, size bands, a stale PR, a draft.",
+        "steps": [None],
+    },
+    "changed": {
+        "description": "Three refreshes: CI goes green, commits land, a review arrives, "
+                       "then a reviewer is added and threads are resolved.",
+        "steps": [None, _changed_second, _changed_third],
+    },
+    "paged": {
+        "description": "An authored search with three pages, for Load more.",
+        "steps": [None],
+        "pages": {"authored": [("p2", 700), ("p3", 800)]},
+    },
+    "deep": {
+        "description": "Six authored pages, so Load more can be driven past core's "
+                       "five-page cap: the sixth is never fetched.",
+        "steps": [None],
+        "pages": {"authored": [("p2", 700), ("p3", 800), ("p4", 900), ("p5", 1000),
+                               ("p6", 1100)]},
+        # Enough rows across the five pages core will fetch to fill the
+        # fifty-watch bound and evict from it.
+        "page_rows": 12,
+    },
+    "snoozing": {
+        "description": "A PR snoozed on its build: pending, still pending, then failing.",
+        "steps": [_snooze_waiting, _snooze_still_waiting, _snooze_finished],
+    },
+    "watching": {
+        "description": "A watched PR is merged and leaves the board, but is still tracked.",
+        "steps": [None, _watch_merged],
+    },
+    "empty": {
+        "description": "Both views empty, for the empty states.",
+        "steps": [_empty],
+    },
+}
+
+
+def scenario_step(name, step):
+    """The node lists for one refresh, plus every node by id for `tracked`."""
+    scenario = SCENARIOS[name]
+    views = views_copy()
+    index = {node["id"]: node for nodes in views.values() for node in nodes}
+    mutate = scenario["steps"][step - 1]
+    if mutate is not None:
+        mutate(views)
+    # Nodes that left the board are still answerable by id.
+    for nodes in views.values():
+        for node in nodes:
+            index[node["id"]] = node
+    return views, index
+
+
+def scenario_files(name, step):
+    """`{filename: body}` for one refresh of one scenario."""
+    views, index = scenario_step(name, step)
+    pages = SCENARIOS[name].get("pages", {})
+    files = {}
+
+    def cursor_for(alias, position):
+        names = pages.get(alias, [])
+        return f"{alias}-{names[position][0]}" if position < len(names) else None
+
+    authored_cursor = cursor_for("authored", 0)
+    files[f"step{step}-authored.json"] = {
+        "data": {"search": page(views["authored"], authored_cursor), "rateLimit": rate(3)}
+    }
+    requested_cursor = cursor_for("requested", 0)
+    files[f"step{step}-review.json"] = {
+        "data": {
+            "requested": page(views["requested"], requested_cursor),
+            "available": page(views["available"], cursor_for("available", 0)),
+            "rateLimit": rate(5),
+        }
+    }
+    for alias, extra in pages.items():
+        for position, (suffix, first_number) in enumerate(extra):
+            nodes = extra_rows(alias, first_number, SCENARIOS[name].get("page_rows", 6))
+            for node in nodes:
+                index[node["id"]] = node
+            body_key = "search" if alias == "authored" else alias
+            body = {body_key: page(nodes, cursor_for(alias, position + 1)),
+                    "rateLimit": rate(3)}
+            if alias != "authored":
+                other = "available" if alias == "requested" else "requested"
+                body[other] = page([], None)
+            files[f"step{step}-{alias}-{suffix}.json"] = {"data": body}
+    # Every node this refresh knows about, so the fake can answer a `tracked`
+    # request for a PR that is no longer in either search.
+    files[f"step{step}-nodes.json"] = index
+    return files
+
+
+def write_fixtures(root):
+    """Write every scenario under `root`, one directory each."""
+    root = Path(root)
+    written = []
+    for name, scenario in SCENARIOS.items():
+        directory = root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        steps = len(scenario["steps"])
+        for step in range(1, steps + 1):
+            for filename, body in scenario_files(name, step).items():
+                path = directory / filename
+                path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
+                written.append(path)
+        manifest = {
+            "name": name,
+            "description": scenario["description"],
+            "steps": steps,
+            "nowEpoch": int(now().timestamp()),
+            "now": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        path = directory / "manifest.json"
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        written.append(path)
+    # The REST walk behind the repository picker, shared by every scenario.
+    repos = [{"full_name": name} for name in (
+        "demo-labs/atlas", "demo-labs/mobile", "demo-labs/web", "demo-labs/infra",
+        "demo-labs/docs", "demo-labs/design-system", "demo-labs/billing",
+        "demo-labs/analytics", "acme/widgets", "acme/api", "acme/legacy",
+        "personal/dotfiles")]
+    path = root / "repos.json"
+    path.write_text(json.dumps(repos, indent=2) + "\n")
+    written.append(path)
+    return written
 
 
 # PRMARMOT_DEMO_ROWS=N: N fictional PRs per search, 60 per page, for measuring
@@ -283,7 +590,11 @@ class FixtureTests(unittest.TestCase):
                          ["ReadyForReviewEvent", "ReviewRequestedEvent"])
         self.assertEqual(events[1]["requestedReviewer"], {"__typename": "Team", "slug": "mobile"})
         self.assertLess(events[0]["createdAt"], events[1]["createdAt"])
-        self.assertGreater(events[1]["createdAt"], "2026-09-01")
+        # Recent relative to the clock, whichever clock that is: with
+        # PRMARMOT_DEMO_NOW pinned for fixtures, a fixed date here would be a
+        # test of the calendar rather than of the data.
+        self.assertGreater(events[1]["createdAt"], ago(99 + 1))
+        self.assertLessEqual(events[1]["createdAt"], ago(0))
         drafts = [item for item in AUTHORED + REQUESTED if item["isDraft"]]
         self.assertTrue(drafts and all(not item["timelineItems"]["nodes"] for item in drafts))
 
@@ -327,6 +638,148 @@ class FixtureTests(unittest.TestCase):
         finally:
             del os.environ["PRMARMOT_DEMO_ROWS"]
 
+    def test_the_clock_can_be_pinned_so_fixtures_are_reproducible(self):
+        previous = os.environ.get("PRMARMOT_DEMO_NOW")
+        os.environ["PRMARMOT_DEMO_NOW"] = "2026-07-26T12:00:00Z"
+        try:
+            self.assertEqual(ago(0), "2026-07-26T12:00:00Z")
+            self.assertEqual(ago(24), "2026-07-25T12:00:00Z")
+        finally:
+            if previous is None:
+                del os.environ["PRMARMOT_DEMO_NOW"]
+            else:
+                os.environ["PRMARMOT_DEMO_NOW"] = previous
+
+    def test_every_scenario_step_produces_both_views(self):
+        for name, scenario in SCENARIOS.items():
+            for step in range(1, len(scenario["steps"]) + 1):
+                files = scenario_files(name, step)
+                self.assertIn(f"step{step}-authored.json", files, name)
+                self.assertIn(f"step{step}-review.json", files, name)
+                authored = files[f"step{step}-authored.json"]["data"]
+                self.assertIn("pageInfo", authored["search"])
+                self.assertIn("rateLimit", authored)
+                review = files[f"step{step}-review.json"]["data"]
+                self.assertIn("requested", review)
+                self.assertIn("available", review)
+
+    def test_a_scenario_step_changes_something_a_person_would_notice(self):
+        first, _ = scenario_step("changed", 1)
+        second, _ = scenario_step("changed", 2)
+        before = find(first, 418)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+        after = find(second, 418)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+        self.assertEqual(before["state"], "FAILURE")
+        self.assertEqual(after["state"], "SUCCESS")
+        self.assertNotEqual(find(first, 417)["headRefOid"], find(second, 417)["headRefOid"])
+        self.assertLess(len(find(first, 528)["reviews"]["nodes"]),
+                        len(find(second, 528)["reviews"]["nodes"]))
+
+    def test_editing_one_step_does_not_leak_into_another(self):
+        second, _ = scenario_step("changed", 2)
+        again, _ = scenario_step("changed", 1)
+        self.assertEqual(
+            find(again, 418)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"],
+            "FAILURE",
+            "step 1 was edited by step 2 — the copies are shared")
+        self.assertEqual(second["authored"][0]["number"], 418)
+
+    def test_a_watched_pr_that_leaves_the_board_is_still_answerable_by_id(self):
+        views, index = scenario_step("watching", 2)
+        self.assertFalse(any(node["number"] == 418 for node in views["authored"]))
+        merged = next(node for node in index.values() if node["number"] == 418)
+        self.assertEqual(merged["state"], "MERGED")
+        self.assertTrue(merged["merged"])
+
+    def test_pages_name_the_file_that_holds_them(self):
+        files = scenario_files("paged", 1)
+        first = files["step1-authored.json"]["data"]["search"]["pageInfo"]
+        self.assertTrue(first["hasNextPage"])
+        self.assertEqual(first["endCursor"], "authored-p2")
+        self.assertIn("step1-authored-p2.json", files)
+        second = files["step1-authored-p2.json"]["data"]["search"]["pageInfo"]
+        self.assertEqual(second["endCursor"], "authored-p3")
+        third = files["step1-authored-p3.json"]["data"]["search"]["pageInfo"]
+        self.assertFalse(third["hasNextPage"])
+        self.assertIsNone(third["endCursor"])
+        numbers = {node["number"] for node in
+                   files["step1-authored-p2.json"]["data"]["search"]["nodes"]}
+        self.assertTrue(numbers.isdisjoint(
+            {node["number"] for node in files["step1-authored.json"]["data"]["search"]["nodes"]}))
+
+    def test_the_deep_scenario_offers_more_pages_than_the_cap_allows(self):
+        # core stops at five pages per alias, so the sixth page must exist and
+        # must be reachable only by a client that ignores the cap.
+        files = scenario_files("deep", 1)
+        cursors = ["authored-p2", "authored-p3", "authored-p4", "authored-p5", "authored-p6"]
+        self.assertEqual(files["step1-authored.json"]["data"]["search"]["pageInfo"]["endCursor"],
+                         cursors[0])
+        for current, following in zip(cursors, cursors[1:]):
+            page_info = files[f"step1-{current}.json"]["data"]["search"]["pageInfo"]
+            self.assertTrue(page_info["hasNextPage"], current)
+            self.assertEqual(page_info["endCursor"], following)
+        last = files[f"step1-{cursors[-1]}.json"]["data"]["search"]["pageInfo"]
+        self.assertFalse(last["hasNextPage"])
+        numbers = [node["number"] for cursor in cursors
+                   for node in files[f"step1-{cursor}.json"]["data"]["search"]["nodes"]]
+        self.assertEqual(len(numbers), len(set(numbers)), "pages must not repeat rows")
+
+    def test_a_reviewed_pr_gets_a_commit_so_review_again_can_be_tested(self):
+        first, _ = scenario_step("changed", 1)
+        third, _ = scenario_step("changed", 3)
+        reviewed = find(first, 526)
+        self.assertEqual([review["author"]["login"] for review in reviewed["reviews"]["nodes"]],
+                         ["demo-user"], "526 is the PR the viewer has reviewed")
+        self.assertNotEqual(reviewed["headRefOid"], find(third, 526)["headRefOid"])
+
+    def test_the_viewers_review_names_the_commit_it_was_left_on(self):
+        # `reviewed_oid` comes from latestReview.commit.oid; without it the
+        # Note can never say "new commits since your review".
+        first, _ = scenario_step("changed", 1)
+        third, _ = scenario_step("changed", 3)
+        before = find(first, 526)
+        self.assertEqual(before["latestReview"]["nodes"][0]["commit"]["oid"],
+                         before["headRefOid"], "reviewed at the head of the day")
+        after = find(third, 526)
+        self.assertEqual(after["latestReview"]["nodes"][0]["commit"]["oid"],
+                         before["headRefOid"], "the review stays on its commit")
+        self.assertNotEqual(after["latestReview"]["nodes"][0]["commit"]["oid"],
+                            after["headRefOid"])
+
+    def test_a_pr_nobody_you_know_reviewed_has_no_latest_review(self):
+        first, _ = scenario_step("changed", 1)
+        # 528's reviews are other people's, and GitHub filters by author.
+        self.assertEqual(find(first, 528)["latestReview"]["nodes"], [])
+
+    def test_the_deep_scenario_can_fill_the_fifty_watch_bound(self):
+        files = scenario_files("deep", 1)
+        fetched = len(files["step1-authored.json"]["data"]["search"]["nodes"])
+        # core fetches five pages at most: page one plus four more.
+        for cursor in ("authored-p2", "authored-p3", "authored-p4", "authored-p5"):
+            fetched += len(files[f"step1-{cursor}.json"]["data"]["search"]["nodes"])
+        self.assertGreater(fetched, 51, "51 rows are needed to evict from a bound of 50")
+
+    def test_the_empty_scenario_is_empty_in_both_views(self):
+        files = scenario_files("empty", 1)
+        self.assertEqual(files["step1-authored.json"]["data"]["search"]["nodes"], [])
+        self.assertEqual(files["step1-review.json"]["data"]["requested"]["nodes"], [])
+
+    def test_writing_fixtures_twice_writes_the_same_bytes(self):
+        import tempfile
+        previous = os.environ.get("PRMARMOT_DEMO_NOW")
+        os.environ["PRMARMOT_DEMO_NOW"] = "2026-07-26T12:00:00Z"
+        try:
+            with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+                write_fixtures(first)
+                write_fixtures(second)
+                for path in sorted(Path(first).rglob("*.json")):
+                    twin = Path(second) / path.relative_to(first)
+                    self.assertEqual(path.read_bytes(), twin.read_bytes(), str(path))
+        finally:
+            if previous is None:
+                del os.environ["PRMARMOT_DEMO_NOW"]
+            else:
+                os.environ["PRMARMOT_DEMO_NOW"] = previous
+
     def test_release_fixture_is_stable_and_repository_bound(self):
         tag = "v99.0.0"
         self.assertEqual(
@@ -344,6 +797,18 @@ def main():
     args = sys.argv[1:]
     if args == ["--self-test"]:
         unittest.main(argv=[sys.argv[0]], verbosity=2)
+        return
+    if len(args) == 2 and args[0] == "--fixtures":
+        if not os.environ.get("PRMARMOT_DEMO_NOW"):
+            print("set PRMARMOT_DEMO_NOW=YYYY-MM-DDTHH:MM:SSZ first, or the "
+                  "fixtures differ on every run", file=sys.stderr)
+            raise SystemExit(2)
+        for path in write_fixtures(args[1]):
+            print(path)
+        return
+    if args == ["--scenarios"]:
+        for name, scenario in SCENARIOS.items():
+            print(f"{name}\t{len(scenario['steps'])}\t{scenario['description']}")
         return
     try:
         if args == ["api", "user", "--jq", ".login"]:

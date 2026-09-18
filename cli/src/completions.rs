@@ -64,6 +64,10 @@ mod tests {
                 "mine",
                 "review",
                 "watch",
+                "auth",
+                "login",
+                "status",
+                "logout",
                 "skill",
                 "install",
                 "completions",
@@ -141,7 +145,7 @@ mod tests {
 
     #[test]
     fn bash_offers_what_each_position_accepts() {
-        let cases: [(&[&str], &str); 13] = [
+        let cases: [(&[&str], &str); 18] = [
             (&["prmarmot-cli", "wa"], "watch"),
             (&["prmarmot-cli", "--v"], "--version"),
             (&["prmarmot-cli", "watch", ""], "mine review"),
@@ -153,7 +157,7 @@ mod tests {
                 &["prmarmot-cli", "watch", "--pr", "o/n#1", ""],
                 concat!(
                     "--repo --all-repos --format --json --watched --snoozed --no-color --help ",
-                    "--authored --interval --events --pr --until --timeout"
+                    "--host --auth --authored --interval --events --pr --until --timeout"
                 ),
             ),
             (
@@ -162,7 +166,10 @@ mod tests {
             ),
             (&["prmarmot-cli", "watch", "-f", ""], "text json"),
             (&["prmarmot-cli", "mine", "--format", "=", "j"], "json"),
-            (&["prmarmot-cli", "review", "--au"], ""),
+            // `--auth` applies everywhere; `--authored` still does not apply
+            // to the review queue.
+            (&["prmarmot-cli", "review", "--au"], "--auth"),
+            (&["prmarmot-cli", "review", "--auth"], "--auth"),
             (&["prmarmot-cli", "review", "--so"], "--sort"),
             (&["prmarmot-cli", "review", "--sort", "s"], "smallest"),
             (
@@ -170,6 +177,13 @@ mod tests {
                 "agents all",
             ),
             (&["prmarmot-cli", "completions", ""], "bash zsh fish"),
+            (&["prmarmot-cli", "auth", ""], "login status logout --help"),
+            (
+                &["prmarmot-cli", "auth", "login", ""],
+                "--with-token --host --client-id --help",
+            ),
+            (&["prmarmot-cli", "mine", "--au"], "--auth --authored"),
+            (&["prmarmot-cli", "mine", "--auth", "de"], "device"),
         ];
         for (words, expected) in cases {
             let Some(offered) = bash_offers(words) else {

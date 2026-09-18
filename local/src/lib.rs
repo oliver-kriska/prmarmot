@@ -3,4 +3,7 @@
 //! snoozes, change snapshots). `prmarmot-core` stays free of filesystem code.
 
 pub mod attention_state;
+pub mod auth;
 pub mod config;
+#[cfg(feature = "http")]
+pub mod session;

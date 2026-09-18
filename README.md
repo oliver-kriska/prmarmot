@@ -43,9 +43,13 @@ pretending GitHub assigned it to you.
 
 ### Requirements
 
-PR Marmot checks the GitHub CLI after its window opens. If it is missing or not
-authenticated, the setup screen provides installation guidance, a copyable
-login command, and Retry. You can also prepare it first:
+None beyond the app itself. PR Marmot checks for a GitHub sign-in after its
+window opens; if it finds none, the sign-in screen offers **Sign in with
+GitHub** (a one-time code you type at github.com), **Use a token**, and
+**Enterprise host**. See [Signing in](#signing-in).
+
+If you already use the [GitHub CLI](https://cli.github.com), PR Marmot picks up
+its session instead and you can skip signing in:
 
 ```sh
 gh auth login
@@ -121,8 +125,9 @@ checkout does the same, replacing a Homebrew-installed app until the next
 ## First run
 
 1. Launch **PR Marmot** from Spotlight/Finder on macOS, or run `prmarmot` on Linux.
-2. If prompted, install/authenticate `gh`, copy `gh auth login`, complete it in
-   Terminal, and click **Retry**. Credentials never appear in PR Marmot.
+2. If prompted, sign in on the screen that appears (see
+   [Signing in](#signing-in)), or complete `gh auth login` in Terminal and click
+   **Retry**. Your token is never displayed.
 3. The default **All repositories** scope shows open PRs involving your resolved
    GitHub login. Pick a specific repository for its complete scoped result.
 4. Switch between **Involving me** (or **My PRs** in one repo) and **Review
@@ -142,6 +147,59 @@ successful save.
 
 *Settings shown with fictional reviewer names. Environment-controlled fields
 are disabled and labeled; saving other settings leaves their file values alone.*
+
+## Signing in
+
+PR Marmot reads GitHub with your own token and nothing else: there is no PR
+Marmot account, no server of ours in the path, and the token never leaves the
+machine it was stored on.
+
+Three ways in, in the order the sign-in screen offers them:
+
+- **Sign in with GitHub** — GitHub's OAuth *device flow*. The app shows an
+  eight-character code, you open `https://github.com/login/device` and type it,
+  and the app continues on its own. There is no client secret and no callback
+  URL, which is why it works with no server. The access token is refreshed
+  automatically; roughly every six months the refresh token expires and you sign
+  in again.
+- **Use a token** — paste a personal access token. A *fine-grained* token needs
+  **Pull requests: read** and **Metadata: read** and covers one owner; a
+  *classic* token with `repo` covers several organizations at once.
+- **Enterprise host** — a GitHub Enterprise Server hostname. GHES supports the
+  device flow, but each instance is a separate app registration, so set
+  `client_id` for it (below) or sign in with a token.
+
+The same three paths exist in the terminal:
+
+```sh
+prmarmot-cli auth login                     # device flow
+gh auth token | prmarmot-cli auth login --with-token
+prmarmot-cli auth login --host ghe.example.com
+prmarmot-cli auth status
+prmarmot-cli auth logout
+```
+
+**Where the token is kept.** macOS: the login keychain, service
+`dev.prmarmot.auth`. Linux: `$XDG_STATE_HOME/prmarmot/auth.json`, mode `0600`.
+Set `[auth] store = "file"` to use the file on macOS too — worth doing if the
+keychain prompts you once per binary, which it does because keychain access
+control is per-application.
+
+**Disconnecting.** Settings → **Disconnect**, or `prmarmot-cli auth logout`,
+removes the token from this machine. Revoking PR Marmot's access at GitHub is a
+separate step you take at `https://github.com/settings/applications`: doing it
+from the app would need a client secret, and PR Marmot has none by design.
+
+**Environment overrides**, highest precedence first: `--host` / `--auth` flags
+(CLI), then `PRMARMOT_HOST`, `GH_HOST`, `PRMARMOT_AUTH`, `PRMARMOT_CLIENT_ID`,
+`PRMARMOT_TOKEN`, then the `[auth]` block in the config file.
+`PRMARMOT_AUTH` takes `auto` (a stored token, else the GitHub CLI — the
+default), `gh`, `device`, or `token`. `PRMARMOT_TOKEN` supplies a token for one
+run and is never written to the store, which makes it the right switch for CI:
+
+```sh
+PRMARMOT_AUTH=token PRMARMOT_TOKEN=$GITHUB_TOKEN prmarmot-cli mine --json
+```
 
 ## Configuration
 
@@ -184,6 +242,12 @@ url_template = "https://linear.app/acme/issue/{id}"
 [window]
 width = 1440
 height = 860
+
+[auth]
+host = "github.com"                      # or a GitHub Enterprise Server host
+client_id = "Iv1.xxxxxxxxxxxx"           # OAuth client ID; public by design
+mode = "auto"                            # auto | gh | device | token
+store = "auto"                           # auto (keychain on macOS) | keychain | file
 ```
 
 ### What `default_reviewers` does—and does not do
@@ -330,9 +394,10 @@ opening the panel makes no additional GitHub request.*
 `prmarmot-cli` prints the same **My PRs** and **Review queue** views in a
 terminal, as Markdown, or as JSON for coding agents. It uses the app's GraphQL
 query, categorization, Notes, sections, stack grouping, config file, and
-`gh` login. It has no GPUI dependency, so it builds without Metal. The CLI
-reads PR Marmot's watch and snooze state but never writes it, and never clears
-a changed marker.
+sign-in — either a token you stored with `prmarmot-cli auth login` or the `gh`
+CLI's, see [Signing in](#signing-in). It has no GPUI dependency, so it builds
+without Metal. The CLI reads PR Marmot's watch and snooze state but never writes
+it, and never clears a changed marker.
 
 The app installers above already put it on `PATH` (the binary lives inside
 `prmarmot.app`, so app updates update it). Without the app:
@@ -348,11 +413,14 @@ prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any reposit
 prmarmot-cli review --all-repos        # Review queue across repositories
 prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
 prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
+prmarmot-cli review --filter 'label:"help wanted" is:stale'   # the app's search, in the terminal
 prmarmot-cli review --sort smallest    # small changes first, by the app's size band
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
 prmarmot-cli watch --pr acme/api#42 --until ci-pass --timeout 30m   # wait for green CI
+prmarmot-cli auth login                # sign in without the GitHub CLI
+prmarmot-cli auth status               # which account and token this machine uses
 ```
 
 Scope follows the app: `--repo owner/name` or `--all-repos`, then
@@ -368,6 +436,16 @@ way **Smallest first** does (`--sort wait`, the default, lists the longest wait
 first). `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
 cap as **Load more**.
+
+`--filter "<query>"` runs the app's search box over the loaded PRs, with the
+same grammar the desktop search field uses, so a saved query means one thing in
+both places. Bare words match the number, repository, title, author, labels,
+linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME` and
+`is:stale` match a whole field; quote a value that has spaces
+(`label:"help wanted"`); every term must match, and matching ignores case.
+`is:stale` uses the same `stale_after_days` as `--stale`. The grammar lives in
+`prmarmot-core` and is pinned by a golden test, so the desktop app, the CLI and
+future front ends cannot drift on what a query means.
 
 **Formats.** The default is a width-aware table on a terminal and Markdown when
 piped. `--format markdown` gives one GitHub-flavored table per section with

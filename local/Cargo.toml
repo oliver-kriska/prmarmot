@@ -6,10 +6,26 @@ rust-version = "1.85"
 license = "MIT"
 description = "Local config and attention state for PR Marmot, shared by the desktop app and the CLI"
 
+[features]
+default = ["regex"]
+# Direct HTTPS sign-in and transport (`session`), forwarded to prmarmot-core.
+# The front ends turn it on; the crate itself stays usable without it.
+http = ["prmarmot-core/http"]
+# Which regex engine core compiles with, forwarded so a consumer of this crate
+# can choose. `prmarmot-ffi` picks `small-regex` for the iOS binary; without
+# this passthrough Cargo would unify the features and link the full engine.
+regex = ["prmarmot-core/regex"]
+small-regex = ["prmarmot-core/small-regex"]
+
 [dependencies]
-prmarmot-core = { path = "../core" }
+prmarmot-core = { path = "../core", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
+
+# The macOS login keychain for the GitHub token. macOS-only, so the Linux CI
+# job and the Rust 1.85 MSRV job never compile it; MSRV 1.85 all the same.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", default-features = false }

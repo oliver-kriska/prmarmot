@@ -20,6 +20,8 @@ _prmarmot-cli() {
   view=(
     '--watched[only PRs you watch in PR Marmot]'
     '--no-color[plain text]'
+    '--host=[GitHub host (github.com or an Enterprise Server host)]:host: '
+    '--auth=[how to get a token]:mode:(auto gh device token)'
   )
 
   _arguments -C \
@@ -35,6 +37,7 @@ _prmarmot-cli() {
         'mine:PRs you authored (My PRs), or every PR involving you with --all-repos'
         'review:PRs waiting for your review (Review queue)'
         'watch:poll and print what changes, one event per line'
+        'auth:sign in to GitHub without the gh CLI'
         'skill:print or install the coding-agent skill'
         'completions:print a shell completion script'
         'help:show help'
@@ -51,6 +54,7 @@ _prmarmot-cli() {
             '(-f --format --json)--json[same as --format json]'
             '--changed[only PRs changed since you last looked in PR Marmot]'
             '--stale[only PRs that have waited too long for a reviewer]'
+            '--filter=[only PRs matching a search query: words, label:, author:, repo:, is:stale]:query: '
             '--snoozed[show snoozed PRs instead of collapsing them]'
             '--pages=[result pages to load per queue]:pages:(1 2 3 4 5)'
           )
@@ -78,6 +82,13 @@ _prmarmot-cli() {
             '(--pr)--authored[with --all-repos: only PRs you authored]'
           )
           _arguments -s $help $scope $view $watch && ret=0
+          ;;
+        auth)
+          _arguments -s $help \
+            '1::action:(login status logout)' \
+            '--with-token[read a personal access token from standard input]' \
+            '--host=[GitHub host]:host: ' \
+            '--client-id=[OAuth client ID for that host]:client id: ' && ret=0
           ;;
         skill)
           _arguments -s $help \

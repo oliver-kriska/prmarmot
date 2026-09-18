@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 prmarmot-core = { path = "../core" }
-prmarmot-local = { path = "../local" }
+prmarmot-local = { path = "../local", features = ["http"] }
 chrono = "0.4"
 libc = "0.2"
 serde_json = { version = "1", features = ["preserve_order"] }
