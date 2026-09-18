@@ -159,5 +159,6 @@ Also test the curl installer. Remove the old `prboard.app` only after the new
 app and storage migration are verified; automation intentionally does not
 delete historical installations or user data.
 
-The app shells out to `gh`; the cask declares that dependency, but each user
-still needs `gh auth login` once.
+The GitHub CLI is optional, and the cask does not depend on it. The app uses
+the `gh` login when there is one; otherwise it asks the user to sign in when its
+window opens (device flow or a token).

@@ -25,9 +25,6 @@ cask "prmarmot" do
     strategy :github_latest
   end
 
-  # PR Marmot shells out to the GitHub CLI for all API access; without gh
-  # (authenticated via `gh auth login`) the app cannot load any data.
-  depends_on formula: "gh"
   depends_on arch: :arm64
   depends_on macos: :monterey
 

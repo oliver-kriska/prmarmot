@@ -19,8 +19,9 @@ queues with a plain-language **Note** on every row.
   reviewer requested that are available for someone to pick up.
 - **Read-only by design:** PR Marmot can open a PR or linked issue and copy its
   URL, but it never assigns reviewers, comments, merges, or changes GitHub.
-- **Uses your existing GitHub CLI login:** API access goes through an
-  authenticated [`gh`](https://cli.github.com) installation.
+- **Signs in with your GitHub account:** it uses your
+  [GitHub CLI](https://cli.github.com) login when you have one, and otherwise
+  asks you to sign in with a one-time code or a token.
 
 ![My PRs view showing authored pull requests grouped by next action](assets/screenshots/my-prs.png)
 

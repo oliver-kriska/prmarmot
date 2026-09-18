@@ -53,14 +53,16 @@ configure_repo() {
   if [ -z "$CANDIDATE" ] && command -v gh >/dev/null 2>&1; then
     CANDIDATE=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
   fi
-  if [ -z "$CANDIDATE" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+  # Only ask when the answer can be checked; without gh, repos are picked in
+  # the app after signing in.
+  if [ -z "$CANDIDATE" ] && command -v gh >/dev/null 2>&1 && [ -t 1 ] && [ -r /dev/tty ]; then
     printf 'Default GitHub repo for PR Marmot (owner/name, or Enter to skip): ' >/dev/tty
     IFS= read -r CANDIDATE </dev/tty || CANDIDATE=""
   fi
   [ -n "$CANDIDATE" ] || return 0
 
   command -v gh >/dev/null 2>&1 || {
-    printf 'warning: cannot validate repo without the GitHub CLI; config not written\n' >&2
+    printf 'note: %s not checked without the GitHub CLI, so no config was written; pick repos in the app after signing in\n' "$CANDIDATE" >&2
     return 0
   }
   CANONICAL=$(gh repo view "$CANDIDATE" --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
@@ -163,23 +165,12 @@ link_completions() {
 
 post_install_notes() {
   CONFIG=$(config_path)
+  # The GitHub CLI is optional: the app uses its login when there is one and
+  # otherwise asks you to sign in when its window opens.
   if ! command -v gh >/dev/null 2>&1; then
-    cat <<'EOF'
-
-PR Marmot needs the GitHub CLI. Install it, then authenticate:
-
-    brew install gh
-    gh auth login
-
-EOF
+    printf '\nPR Marmot asks you to sign in to GitHub when it first opens.\n\n'
   elif ! gh auth status >/dev/null 2>&1; then
-    cat <<'EOF'
-
-Authenticate the GitHub CLI before launching PR Marmot:
-
-    gh auth login
-
-EOF
+    printf '\nPR Marmot asks you to sign in to GitHub when it first opens (or run: gh auth login).\n\n'
   fi
   if [ ! -e "$CONFIG" ]; then
     cat <<EOF
