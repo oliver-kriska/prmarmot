@@ -329,9 +329,16 @@ impl AttentionState {
         (previous != status).then_some(previous)
     }
 
+    /// Stop watching a PR by its id alone. A watch outlives the board that
+    /// showed it: a merged, closed or long-idle PR may be on no board a
+    /// front end has loaded, and the list of watches is where it is removed.
+    pub fn unwatch(&mut self, pr_id: &str) -> Option<Watch> {
+        let index = self.watches.iter().position(|watch| watch.pr_id == pr_id)?;
+        self.watches.remove(index)
+    }
+
     pub fn toggle_watch(&mut self, row: &BoardRow) -> Option<Watch> {
-        if let Some(index) = self.watches.iter().position(|watch| watch.pr_id == row.id) {
-            self.watches.remove(index);
+        if self.unwatch(&row.id).is_some() {
             return None;
         }
         let evicted = (self.watches.len() == MAX_WATCHES)
@@ -591,6 +598,18 @@ mod tests {
         assert_eq!(total, MAX_WATCHES + 1);
         let (rotated, _) = state.tracked_ids(MAX_WATCHES, MAX_WATCHES);
         assert_eq!(rotated.first().map(String::as_str), Some("PR_1000"));
+    }
+
+    #[test]
+    fn a_watch_is_removed_by_id_without_its_row() {
+        let mut state = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        state.toggle_watch(&row(1));
+        state.toggle_watch(&row(2));
+        let removed = state.unwatch("PR_1").unwrap();
+        assert_eq!(removed.number, 1);
+        assert!(!state.is_watched("PR_1"));
+        assert!(state.is_watched("PR_2"), "only that one");
+        assert!(state.unwatch("PR_1").is_none(), "twice is not an unwatch");
     }
 
     #[test]

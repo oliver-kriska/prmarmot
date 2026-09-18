@@ -324,6 +324,13 @@ impl AttentionStore {
         }
     }
 
+    /// Stop watching a PR from the list of watches, where there may be no row
+    /// to toggle: it merged, closed, or is outside the tracked rotation.
+    /// False when it was not being watched.
+    pub fn unwatch(&self, pr_id: String) -> bool {
+        self.lock().unwatch(&pr_id).is_some()
+    }
+
     /// Everything being watched, oldest first — the order the bound evicts in.
     pub fn watches(&self) -> Vec<WatchedPr> {
         self.lock().watches.iter().map(WatchedPr::from).collect()
