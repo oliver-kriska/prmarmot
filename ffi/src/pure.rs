@@ -19,7 +19,8 @@ use prmarmot_core::status as core_status;
 use crate::error::FfiError;
 use crate::types::{
     instant, into_rows, BoardItem, ChangeSize, Ci, CiCell, FilterChip, FilterQualifier, Mode,
-    NotePresentation, PullRequest, ReviewCell, ShareFormat, SharePayload, SizeBand, Sort,
+    NotePresentation, PullRequest, ReviewCell, SectionKind, ShareFormat, SharePayload, SizeBand,
+    Sort, Tone,
 };
 
 /// Lay out a board: section headers in their fixed order, stack sub-groups,
@@ -359,6 +360,13 @@ pub fn ci_cell(ci: Ci) -> CiCell {
         text: text.to_owned(),
         tone: tone.into(),
     }
+}
+
+/// How alarming a section is, so that a front end can decorate its heading
+/// without deciding for itself that "needs action" outranks "awaiting review".
+#[uniffi::export]
+pub fn section_tone(kind: SectionKind) -> Tone {
+    core_cells::section_tone(&kind.into()).into()
 }
 
 /// The branch prefix drawn before a stacked row's title: `└─ 3/3` for the last

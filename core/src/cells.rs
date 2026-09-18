@@ -324,6 +324,36 @@ pub fn ci_cell(ci: Ci) -> (&'static str, Tone) {
     }
 }
 
+/// How alarming a section is, as a whole. The board's sections are core's and
+/// so is their order; this says which of them a front end should decorate as
+/// urgent, so that the iPad and the desktop cannot disagree about whether
+/// "needs action" reads louder than "awaiting review". A front end maps the
+/// [`Tone`] to its own palette and decides nothing else.
+///
+/// Deliberately not a function of the rows inside the section: the section's
+/// own meaning is the signal, and a section with no red rows in it is still
+/// the section you have to act on.
+pub fn section_tone(kind: &crate::layout::SectionKind) -> Tone {
+    use crate::layout::SectionKind;
+    match kind {
+        SectionKind::Approved => Tone::Success,
+        SectionKind::Category(Category::Action) => Tone::Danger,
+        // Waiting on somebody else, and waiting on you, are both "not done
+        // yet" rather than "broken": visible, never a wall of alarm.
+        SectionKind::Category(Category::Await) | SectionKind::Category(Category::Todo) => {
+            Tone::Warning
+        }
+        // Nobody has been asked yet, so nothing is late; it is work you may
+        // pick up, not work that is waiting on you.
+        SectionKind::Category(Category::Available) | SectionKind::Category(Category::Done) => {
+            Tone::Routine
+        }
+        SectionKind::Category(Category::Draft) | SectionKind::Stack | SectionKind::Snoozed => {
+            Tone::Muted
+        }
+    }
+}
+
 /// The line under a stack sub-header, and the hover text that explains why a
 /// layer may be missing from the group.
 pub fn stack_layer_hover(number: u64, position: Option<u64>, size: u64, base_ref: &str) -> String {
@@ -553,5 +583,61 @@ mod tests {
         assert_eq!(stack_branch(None, 3, true), "└─ ?/3");
         assert!(stack_layer_hover(11776, Some(2), 3, "main")
             .starts_with("Stack #11776 · layer 2/3 · base main."));
+    }
+}
+
+#[cfg(test)]
+mod section_tone_tests {
+    use super::*;
+    use crate::layout::SectionKind;
+
+    #[test]
+    fn the_section_you_must_act_on_is_the_only_red_one() {
+        assert_eq!(
+            section_tone(&SectionKind::Category(Category::Action)),
+            Tone::Danger
+        );
+        for kind in [
+            SectionKind::Approved,
+            SectionKind::Category(Category::Await),
+            SectionKind::Category(Category::Todo),
+            SectionKind::Category(Category::Available),
+            SectionKind::Category(Category::Done),
+            SectionKind::Category(Category::Draft),
+            SectionKind::Stack,
+            SectionKind::Snoozed,
+        ] {
+            assert_ne!(
+                section_tone(&kind),
+                Tone::Danger,
+                "{kind:?} should not alarm"
+            );
+        }
+    }
+
+    #[test]
+    fn waiting_is_warned_and_unasked_work_is_not() {
+        assert_eq!(
+            section_tone(&SectionKind::Category(Category::Await)),
+            Tone::Warning
+        );
+        assert_eq!(
+            section_tone(&SectionKind::Category(Category::Todo)),
+            Tone::Warning
+        );
+        assert_eq!(
+            section_tone(&SectionKind::Category(Category::Available)),
+            Tone::Routine
+        );
+    }
+
+    #[test]
+    fn approved_is_the_good_news_and_drafts_are_quiet() {
+        assert_eq!(section_tone(&SectionKind::Approved), Tone::Success);
+        assert_eq!(
+            section_tone(&SectionKind::Category(Category::Draft)),
+            Tone::Muted
+        );
+        assert_eq!(section_tone(&SectionKind::Snoozed), Tone::Muted);
     }
 }
