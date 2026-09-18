@@ -341,6 +341,14 @@ SCENARIOS = {
         "description": "Both views empty, for the empty states.",
         "steps": [_empty],
     },
+    "full": {
+        "description": "One refresh with enough rows on the first page to fill a "
+                       "landscape iPad, for the layout screenshots.",
+        "steps": [None],
+        # The curated rows first, so the stacks, the draft and the stale PR are
+        # all on screen, then filler until the screen runs out.
+        "fill": {"authored": (1200, 30), "requested": (1300, 20), "available": (1400, 20)},
+    },
 }
 
 
@@ -364,6 +372,13 @@ def scenario_files(name, step):
     views, index = scenario_step(name, step)
     pages = SCENARIOS[name].get("pages", {})
     files = {}
+
+    # A scenario can pad its first page, for screens that show twenty rows.
+    for alias, (first_number, count) in SCENARIOS[name].get("fill", {}).items():
+        nodes = extra_rows(alias, first_number, count)
+        views[alias] = views[alias] + nodes
+        for node in nodes:
+            index[node["id"]] = node
 
     def cursor_for(alias, position):
         names = pages.get(alias, [])
@@ -658,6 +673,10 @@ class FixtureTests(unittest.TestCase):
                 self.assertIn(f"step{step}-review.json", files, name)
                 authored = files[f"step{step}-authored.json"]["data"]
                 self.assertIn("pageInfo", authored["search"])
+                if name == "full":
+                    # The layout screenshots need a screenful, not a sample.
+                    self.assertGreaterEqual(
+                        len(authored["search"]["nodes"]), 30, "the full scenario is not full")
                 self.assertIn("rateLimit", authored)
                 review = files[f"step{step}-review.json"]["data"]
                 self.assertIn("requested", review)

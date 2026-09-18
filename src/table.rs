@@ -23,7 +23,8 @@ use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
-use prmarmot_core::board::{strip_note_glyphs, Blocker, BoardRow, Category, Ci, Mode, ReviewState};
+use prmarmot_core::board::{BoardRow, Ci, Mode};
+use prmarmot_core::cells::{note_presentation, review_cell, NotePresentation, ReviewCell, Tone};
 use prmarmot_core::layout::{layout, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
@@ -690,32 +691,6 @@ fn group_copy_menu(
     menu
 }
 
-/// Aggregate review-state word for the merged Review column ("✓ alice —
-/// approved"). Requested-but-unreviewed is handled separately (no reviews yet).
-fn review_state_word_aggregate(state: ReviewState) -> &'static str {
-    match state {
-        ReviewState::Approved => "approved",
-        ReviewState::Changes => "changes requested",
-        ReviewState::Commented => "commented",
-        ReviewState::Waiting => "requested",
-        ReviewState::None => "reviewed",
-    }
-}
-
-/// Calm reviewer-state glyph + its color token, per the design spec (§8).
-/// Rendered BEFORE the login: on truncation the glyph is the information.
-fn review_glyph(state: &str, theme: &gpui_component::theme::Theme) -> (&'static str, Hsla) {
-    match state {
-        "APPROVED" => ("✓", theme.success),
-        "COMMENTED" => ("·", theme.muted_foreground),
-        "CHANGES_REQUESTED" => ("±", theme.danger),
-        // ✕, not "–": a bare dash reads as "nothing" — dismissed is an
-        // invalidated review, which is information.
-        "DISMISSED" => ("✕", theme.muted_foreground),
-        _ => ("·", theme.muted_foreground),
-    }
-}
-
 impl BoardTableDelegate {
     /// Cell text that adds `chip` to the search when clicked, if the board
     /// handles filter clicks. The click never reaches the row.
@@ -756,202 +731,23 @@ pub fn changed_marker_tooltip(changes: &[String]) -> SharedString {
     prmarmot_core::status::changed_marker_tooltip(changes).into()
 }
 
+/// The theme colour for one of core's tones. Core decides *which* tone a cell
+/// has; each front end decides what that looks like.
+fn tone_color(tone: Tone, theme: &gpui_component::theme::Theme) -> Hsla {
+    match tone {
+        Tone::Danger => theme.danger,
+        Tone::Warning => theme.warning,
+        Tone::Success => theme.success,
+        Tone::Routine | Tone::Muted => theme.muted_foreground,
+    }
+}
+
 fn status_dot(color: Hsla) -> Div {
     div()
         .size(px(STATUS_DOT))
         .rounded_full()
         .flex_shrink_0()
         .bg(color)
-}
-
-fn review_state_word(state: &str) -> &'static str {
-    match state {
-        "APPROVED" => "approved",
-        "COMMENTED" => "commented",
-        "CHANGES_REQUESTED" => "requested changes",
-        "DISMISSED" => "dismissed",
-        _ => "reviewed",
-    }
-}
-
-/// The visual tone of a Note cell: it picks the dot color and whether the
-/// primary phrase is alarm-colored. Severity is a *presentation* concern and
-/// lives here, never in core (`prmarmot_core::board::Blocker` carries only
-/// facts). See the rendering rules in the note-hierarchy plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NoteTone {
-    /// Exceptional blocker — merge conflict / CI failure / changes requested.
-    /// Red dot, red primary phrase; it should interrupt the scan.
-    Danger,
-    /// Routine action needed — reviewers to assign, comments to resolve, a
-    /// review still owed. Amber dot, muted text: visible but peripheral, so a
-    /// column of them never forms a red wall.
-    Warning,
-    /// Merged-path good news — approved / awaiting after approval. Green dot.
-    Success,
-    /// Completed but neutral — you already reviewed, nothing outstanding on
-    /// you. A muted dot, muted text.
-    Routine,
-    /// Draft / inactive: no dot, dim text.
-    Muted,
-}
-
-/// A Note cell decomposed for exception-first rendering: one emphasized
-/// `primary` phrase, an optional inline `remedy`, and muted `context` facts so
-/// no blocker disappears into the tooltip alone. Pure data (no GPUI types), so
-/// it is unit-tested without a window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NotePresentation {
-    tone: NoteTone,
-    primary: String,
-    remedy: Option<String>,
-    context: Vec<String>,
-    /// The full, glyph-stripped canonical note — always the hover tooltip.
-    tooltip: String,
-}
-
-/// Presentation priority — deliberately different from the canonical note
-/// order: the most operationally urgent blocker is shown first and colored.
-fn blocker_rank(blocker: &Blocker) -> u8 {
-    match blocker {
-        Blocker::MergeConflict => 0,
-        Blocker::CiFailing => 1,
-        Blocker::ChangesRequested => 2,
-        Blocker::UnresolvedComments(_) => 3,
-        Blocker::NoReviewers { .. } => 4,
-    }
-}
-
-/// Merge conflict / CI failure / changes-requested interrupt the scan (danger);
-/// unresolved comments and missing reviewers are routine follow-up (warning).
-fn is_exceptional(blocker: &Blocker) -> bool {
-    matches!(
-        blocker,
-        Blocker::MergeConflict | Blocker::CiFailing | Blocker::ChangesRequested
-    )
-}
-
-/// The blocker as the emphasized primary phrase (+ optional muted remedy).
-fn blocker_primary(blocker: &Blocker) -> (String, Option<String>) {
-    match blocker {
-        Blocker::MergeConflict => ("merge conflict".into(), Some("rebase".into())),
-        Blocker::CiFailing => ("CI failing".into(), None),
-        Blocker::ChangesRequested => ("changes requested".into(), None),
-        Blocker::UnresolvedComments(n) => (
-            format!("resolve {n} comment{}", if *n == 1 { "" } else { "s" }),
-            None,
-        ),
-        Blocker::NoReviewers { suggested } => {
-            if suggested.is_empty() {
-                ("assign reviewers".into(), None)
-            } else {
-                (format!("assign {}", suggested.join(" + ")), None)
-            }
-        }
-    }
-}
-
-/// The blocker as a compact muted context fact (shown when a higher-priority
-/// blocker is the primary), so it stays visible on the row, not only on hover.
-fn blocker_context(blocker: &Blocker) -> String {
-    match blocker {
-        Blocker::MergeConflict => "merge conflict".into(),
-        Blocker::CiFailing => "CI failing".into(),
-        Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) => format!("{n} unresolved"),
-        Blocker::NoReviewers { .. } => "reviewers missing".into(),
-    }
-}
-
-/// Split a note into a primary phrase and an optional " — " remedy, for the
-/// review-queue exceptional notes ("CI red — maybe wait for green").
-fn split_remedy(text: &str) -> (String, Option<String>) {
-    match text.split_once(" — ") {
-        Some((head, tail)) => (head.to_string(), Some(tail.to_string())),
-        None => (text.to_string(), None),
-    }
-}
-
-/// Exception-first decomposition of an authored **Action** row: the highest
-/// presentation-priority blocker becomes the primary (danger-colored when it is
-/// exceptional), and every remaining blocker becomes a muted context fact in
-/// priority order — nothing is dropped.
-fn action_presentation(row: &BoardRow, tooltip: String) -> NotePresentation {
-    let mut ranked: Vec<&Blocker> = row.blockers.iter().collect();
-    ranked.sort_by_key(|b| blocker_rank(b));
-    let Some((primary_blocker, rest)) = ranked.split_first() else {
-        // An Action row always carries >=1 blocker; degrade calmly if not.
-        return NotePresentation {
-            tone: NoteTone::Warning,
-            primary: tooltip.clone(),
-            remedy: None,
-            context: Vec::new(),
-            tooltip,
-        };
-    };
-    let tone = if is_exceptional(primary_blocker) {
-        NoteTone::Danger
-    } else {
-        NoteTone::Warning
-    };
-    let (primary, remedy) = blocker_primary(primary_blocker);
-    let context = rest.iter().map(|b| blocker_context(b)).collect();
-    NotePresentation {
-        tone,
-        primary,
-        remedy,
-        context,
-        tooltip,
-    }
-}
-
-/// A one-phrase note: the whole (stripped) note as the primary, no remedy or
-/// context. Used for the calm await/done/draft/routine states.
-fn plain_note(tone: NoteTone, tooltip: String) -> NotePresentation {
-    NotePresentation {
-        tone,
-        primary: tooltip.clone(),
-        remedy: None,
-        context: Vec::new(),
-        tooltip,
-    }
-}
-
-/// Turn a row into its calm-then-exception Note presentation. Pure — the
-/// rendering in `render_td` only maps tone → colors. Each arm moves `tooltip`
-/// exactly once (the arms are mutually exclusive), so no clone is needed.
-fn note_presentation(row: &BoardRow) -> NotePresentation {
-    let tooltip = strip_note_glyphs(&row.note);
-    match row.category {
-        Category::Action => action_presentation(row, tooltip),
-        // Review queue: a red health signal interrupts; otherwise it is a
-        // routine "please review", warned but calm — never a danger wall.
-        Category::Todo | Category::Available => {
-            if row.ci == Ci::Fail || row.conflict {
-                let (primary, remedy) = split_remedy(&tooltip);
-                NotePresentation {
-                    tone: NoteTone::Danger,
-                    primary,
-                    remedy,
-                    context: Vec::new(),
-                    tooltip,
-                }
-            } else {
-                plain_note(NoteTone::Warning, tooltip)
-            }
-        }
-        Category::Await => plain_note(NoteTone::Success, tooltip),
-        // "You approved" is good news; "you commented / requested changes" is
-        // neutral — the ball is on the author, nothing is wrong.
-        Category::Done => {
-            if row.my_review.as_deref() == Some("APPROVED") {
-                plain_note(NoteTone::Success, tooltip)
-            } else {
-                plain_note(NoteTone::Routine, tooltip)
-            }
-        }
-        Category::Draft => plain_note(NoteTone::Muted, tooltip),
-    }
 }
 
 impl TableDelegate for BoardTableDelegate {
@@ -1456,76 +1252,75 @@ impl TableDelegate for BoardTableDelegate {
             "review" => {
                 // Merged Requested + Reviewed by: completed reviews win (they
                 // supersede a pending request); else show who's requested; else
-                // blank. Most cells were empty split across two columns — this
-                // recovers ~150px for Title/Note. Glyph-first so state survives
-                // truncation.
-                if !row.reviews.is_empty() {
-                    let mut cell = h_flex().gap_2().items_center().overflow_hidden();
-                    for r in &row.reviews {
-                        let (glyph, color) = review_glyph(&r.state, theme);
-                        cell = cell.child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .whitespace_nowrap()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(color)
-                                        .child(glyph),
-                                )
-                                .child(r.login.clone().unwrap_or_else(|| "?".into())),
-                        );
+                // "Not requested". Most cells were empty split across two
+                // columns — this recovers ~150px for Title/Note. The wording,
+                // the glyphs and the order are core's, so the iPad says the
+                // same; only the colours are the theme's.
+                match review_cell(row) {
+                    ReviewCell::Reviewed {
+                        marks,
+                        summary,
+                        hover,
+                    } => {
+                        let mut cell = h_flex().gap_2().items_center().overflow_hidden();
+                        for mark in marks {
+                            cell = cell.child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .whitespace_nowrap()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(tone_color(mark.tone, theme))
+                                            .child(mark.glyph),
+                                    )
+                                    .child(mark.login),
+                            );
+                        }
+                        cell = cell.child(div().flex_shrink_0().text_color(muted).child(summary));
+                        return cell
+                            .id(("review", row_ix))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(hover.clone()).build(window, cx)
+                            })
+                            .into_any_element();
                     }
-                    cell = cell.child(div().flex_shrink_0().text_color(muted).child(format!(
-                        "— {}",
-                        review_state_word_aggregate(row.review_state)
-                    )));
-                    let full = row
-                        .reviews
-                        .iter()
-                        .map(|r| {
-                            format!(
-                                "{} {}",
-                                r.login.as_deref().unwrap_or("?"),
-                                review_state_word(&r.state)
+                    ReviewCell::Requested {
+                        names,
+                        arrow,
+                        suffix,
+                        hover,
+                    } => {
+                        let full = hover;
+                        // Elide the names to the room left by the "→" and the
+                        // "— requested" suffix (both flex_shrink_0), with a real "…".
+                        let arrow_w = measure_width(window, &arrow);
+                        let suffix_w = measure_width(window, &suffix);
+                        let col_w = self.columns[col_ix].width;
+                        let avail = col_w
+                            - arrow_w
+                            - suffix_w
+                            - px(CELL_PAD_X + GAP_1 + GAP_1 + ELIDE_SAFETY);
+                        let names = elide(window, &names, avail);
+                        return h_flex()
+                            .w_full()
+                            .gap_1()
+                            .items_center()
+                            .overflow_hidden()
+                            .child(div().flex_shrink_0().text_color(muted).child(arrow))
+                            .child(div().flex_shrink_0().child(names))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_color(muted.opacity(0.7))
+                                    .child(suffix),
                             )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    return cell
-                        .id(("review", row_ix))
-                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                        .into_any_element();
-                } else if !row.requested.is_empty() {
-                    let names = row.requested.join(", ");
-                    let full = format!("requested: {names}");
-                    // Elide the names to the room left by the "→" and the
-                    // "— requested" suffix (both flex_shrink_0), with a real "…".
-                    let arrow_w = measure_width(window, "→");
-                    let suffix_w = measure_width(window, "— requested");
-                    let col_w = self.columns[col_ix].width;
-                    let avail =
-                        col_w - arrow_w - suffix_w - px(CELL_PAD_X + GAP_1 + GAP_1 + ELIDE_SAFETY);
-                    let names = elide(window, &names, avail);
-                    return h_flex()
-                        .w_full()
-                        .gap_1()
-                        .items_center()
-                        .overflow_hidden()
-                        .child(div().flex_shrink_0().text_color(muted).child("→"))
-                        .child(div().flex_shrink_0().child(names))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_color(muted.opacity(0.7))
-                                .child("— requested"),
-                        )
-                        .id(("review", row_ix))
-                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                        .into_any_element();
-                } else {
-                    div().text_color(muted).child("Not requested")
+                            .id(("review", row_ix))
+                            .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                            .into_any_element();
+                    }
+                    ReviewCell::NotRequested { text } => div().text_color(muted).child(text),
                 }
             }
             "title" => {
@@ -1653,11 +1448,11 @@ impl TableDelegate for BoardTableDelegate {
                 }
                 let size = size.map(|size| format!(" · {}", size.band().label()));
                 let (dot_color, primary_color) = match tone {
-                    NoteTone::Danger => (Some(theme.danger), theme.danger),
-                    NoteTone::Warning => (Some(theme.warning), muted),
-                    NoteTone::Success => (Some(theme.success), muted),
-                    NoteTone::Routine => (Some(muted), muted),
-                    NoteTone::Muted => (None, muted),
+                    Tone::Danger => (Some(theme.danger), theme.danger),
+                    Tone::Warning => (Some(theme.warning), muted),
+                    Tone::Success => (Some(theme.success), muted),
+                    Tone::Routine => (Some(muted), muted),
+                    Tone::Muted => (None, muted),
                 };
                 // The muted tail: the primary's remedy, then the remaining
                 // blockers as context, in presentation-priority order.
@@ -1768,6 +1563,7 @@ mod tests {
     //! They run under `cargo test` (which compiles the GPUI binary), not the
     //! fast core-only `make check`.
     use super::*;
+    use prmarmot_core::board::{Blocker, Category, ReviewState};
     use prmarmot_core::layout::group_label;
 
     fn rule() -> StaleRule {
@@ -1853,7 +1649,7 @@ mod tests {
             }],
             "⚠️ no reviewers — assign alice + bob",
         ));
-        assert_eq!(p.tone, NoteTone::Warning);
+        assert_eq!(p.tone, Tone::Warning);
         assert_eq!(p.primary, "assign alice + bob");
         assert!(p.remedy.is_none());
         assert!(p.context.is_empty());
@@ -1865,7 +1661,7 @@ mod tests {
             vec![Blocker::NoReviewers { suggested: vec![] }],
             "⚠️ no reviewers",
         ));
-        assert_eq!(p.tone, NoteTone::Warning);
+        assert_eq!(p.tone, Tone::Warning);
         assert_eq!(p.primary, "assign reviewers");
     }
 
@@ -1880,7 +1676,7 @@ mod tests {
             ],
             "⚠️ no reviewers — assign alice + bob · 🔴 merge conflict — rebase",
         ));
-        assert_eq!(p.tone, NoteTone::Danger);
+        assert_eq!(p.tone, Tone::Danger);
         assert_eq!(p.primary, "merge conflict");
         assert_eq!(p.remedy.as_deref(), Some("rebase"));
         assert_eq!(p.context, vec!["reviewers missing".to_string()]);
@@ -1900,7 +1696,7 @@ mod tests {
             ],
             "canonical",
         ));
-        assert_eq!(p.tone, NoteTone::Danger);
+        assert_eq!(p.tone, Tone::Danger);
         assert_eq!(p.primary, "merge conflict");
         assert_eq!(
             p.context,
@@ -1920,7 +1716,7 @@ mod tests {
             vec![Blocker::UnresolvedComments(2), Blocker::CiFailing],
             "canonical",
         ));
-        assert_eq!(p.tone, NoteTone::Danger);
+        assert_eq!(p.tone, Tone::Danger);
         assert_eq!(p.primary, "CI failing");
         assert_eq!(p.context, vec!["2 unresolved".to_string()]);
     }
@@ -1930,7 +1726,7 @@ mod tests {
         let mut r = row(5, Category::Todo);
         r.note = "🔵 needs your review".into();
         let p = note_presentation(&r);
-        assert_eq!(p.tone, NoteTone::Warning);
+        assert_eq!(p.tone, Tone::Warning);
         assert_eq!(p.primary, "needs your review");
     }
 
@@ -1940,14 +1736,14 @@ mod tests {
         r.ci = Ci::Fail;
         r.note = "⚠️ CI red — maybe wait for green".into();
         let p = note_presentation(&r);
-        assert_eq!(p.tone, NoteTone::Danger);
+        assert_eq!(p.tone, Tone::Danger);
         assert_eq!(p.primary, "CI red");
         assert_eq!(p.remedy.as_deref(), Some("maybe wait for green"));
 
         let mut r2 = row(7, Category::Todo);
         r2.conflict = true;
         r2.note = "⚠️ has conflicts".into();
-        assert_eq!(note_presentation(&r2).tone, NoteTone::Danger);
+        assert_eq!(note_presentation(&r2).tone, Tone::Danger);
     }
 
     #[test]
@@ -2381,7 +2177,7 @@ mod tests {
         );
         let mut r = row(1, Category::Available);
         r.note = "available for review".into();
-        assert_eq!(note_presentation(&r).tone, NoteTone::Warning);
+        assert_eq!(note_presentation(&r).tone, Tone::Warning);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use prmarmot_core::cells as core_cells;
 use prmarmot_core::detail as core_detail;
 use prmarmot_core::layout as core_layout;
 use prmarmot_core::pickup;
@@ -17,8 +18,8 @@ use prmarmot_core::status as core_status;
 
 use crate::error::FfiError;
 use crate::types::{
-    instant, into_rows, BoardItem, ChangeSize, FilterChip, FilterQualifier, Mode, PullRequest,
-    ShareFormat, SharePayload, SizeBand, Sort,
+    instant, into_rows, BoardItem, ChangeSize, Ci, CiCell, FilterChip, FilterQualifier, Mode,
+    NotePresentation, PullRequest, ReviewCell, ShareFormat, SharePayload, SizeBand, Sort,
 };
 
 /// Lay out a board: section headers in their fixed order, stack sub-groups,
@@ -329,4 +330,52 @@ pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
 #[uniffi::export]
 pub fn group_label(mode: Mode, category: crate::types::Category, all_repos: bool) -> String {
     core_layout::group_label(mode.into(), category.into(), all_repos).to_owned()
+}
+
+/// The Note cell for one row: which phrase is emphasised, which facts trail it
+/// muted, and how alarming the whole thing is.
+///
+/// The iPad must not decide this for itself. Whether a merge conflict outranks
+/// three unresolved comments, and whether that is red or amber, is the same
+/// judgement on both products or they are two products.
+#[uniffi::export]
+pub fn note_presentation(row: PullRequest) -> NotePresentation {
+    core_cells::note_presentation(&row.into_row()).into()
+}
+
+/// The Review cell for one row: who reviewed and with what mark, or who was
+/// asked, or that nobody was.
+#[uniffi::export]
+pub fn review_cell(row: PullRequest) -> ReviewCell {
+    core_cells::review_cell(&row.into_row()).into()
+}
+
+/// The CI cell: the word and its tone. `None` is an em dash, never an empty
+/// cell, because "no checks" and "not loaded" must not look the same.
+#[uniffi::export]
+pub fn ci_cell(ci: Ci) -> CiCell {
+    let (text, tone) = core_cells::ci_cell(ci.into());
+    CiCell {
+        text: text.to_owned(),
+        tone: tone.into(),
+    }
+}
+
+/// The branch prefix drawn before a stacked row's title: `└─ 3/3` for the last
+/// layer shown in its group, `├─ 2/3` for one with more below it.
+#[uniffi::export]
+pub fn stack_branch(position: Option<u64>, size: u64, last_in_group: bool) -> String {
+    core_cells::stack_branch(position, size, last_in_group)
+}
+
+/// Why a stack may look incomplete: the layers that do not match the current
+/// view are in other sections, not missing.
+#[uniffi::export]
+pub fn stack_layer_hover(
+    number: u64,
+    position: Option<u64>,
+    size: u64,
+    base_ref: String,
+) -> String {
+    core_cells::stack_layer_hover(number, position, size, &base_ref)
 }
