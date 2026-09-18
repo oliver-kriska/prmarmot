@@ -304,6 +304,9 @@ require a restart; changes saved in Settings do not.
 
 ## Using PR Marmot
 
+Every feature, with its limits and the version it shipped in, is listed in
+[FEATURES.md](FEATURES.md).
+
 - **Shortcuts:** the footer opens the full keyboard reference. Character shortcuts
   work from dashboard controls, but never while typing in search, the repo picker,
   or Settings. Arrow keys, Enter, and Space belong to the focused control.

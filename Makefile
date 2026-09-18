@@ -6,7 +6,7 @@
 # Metal Toolchain locally — see CLAUDE.md.
 
 .PHONY: help fmt fmt-check lint lint-all verify test build release run cli install check ci fix \
-        hooks changelog unreleased bump clean
+        hooks changelog unreleased bump features-check clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -82,6 +82,9 @@ unreleased: ## Print what's on main but not in the latest tag
 bump: ## Set app + CLI version, Cargo.lock, CHANGELOG for a release commit: make bump V=X.Y.Z (no commit/tag)
 	@test -n "$(V)" || { echo "usage: make bump V=X.Y.Z"; exit 2; }
 	scripts/bump-version.sh $(V)
+
+features-check: ## Fail when a release with Features in CHANGELOG.md is missing from FEATURES.md
+	scripts/features-check.sh
 
 ## ---- Setup -------------------------------------------------------------------
 
