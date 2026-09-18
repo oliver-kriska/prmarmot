@@ -156,7 +156,8 @@ features get the next free number in their area.
   - **Waiting for CI** wakes when checks change to passing or failing.
   - **Review again when changed** wakes on a new commit, review, review request, review decision, unresolved-thread
     count, or draft change.
-  - **Waiting on** the PR's author wakes when the author submits a newer review.
+  - **Waiting on** the PR's author wakes when the author submits a newer review. It isn't offered on your own PRs,
+    where it could never wake. _unreleased (0.9.1)_
 
   A conditional snooze wakes only when PR Marmot sees the PR, and missing data never wakes one. Snoozing again
   replaces a snooze, and **Cancel snooze** ends it. Up to 200 snoozes are kept; a 201st drops the oldest. _since

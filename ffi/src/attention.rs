@@ -357,6 +357,17 @@ impl AttentionStore {
             .map(local_attention::Snooze::description)
     }
 
+    /// Who "Waiting on …" would wait for: the row's author, or `None` on your
+    /// own PR or one with no author, because your own reviews never reach a
+    /// row and that snooze could never wake. Offer
+    /// `SnoozeChoice::WaitingPerson` only when this is `Some`, as the desktop
+    /// does.
+    pub fn waiting_on(&self, row: PullRequest) -> Option<String> {
+        let row = row.into_row();
+        let me = self.lock().snapshots.namespace().account.clone();
+        local_attention::AttentionState::waiting_on_author(&row, &me).and(row.author)
+    }
+
     /// Snooze a row. `now_epoch` is the caller's clock: core owns none.
     pub fn snooze(&self, row: PullRequest, choice: SnoozeChoice, now_epoch: i64) {
         let row = row.into_row();

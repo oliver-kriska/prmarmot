@@ -411,6 +411,14 @@ impl AttentionState {
         }
     }
 
+    /// "Waiting on <author>" for a row, or `None` when there is no one to wait
+    /// on: the author is unknown or is `me`. Your own reviews never reach a
+    /// row, so a snooze waiting on yourself could never wake.
+    pub fn waiting_on_author(row: &BoardRow, me: &str) -> Option<SnoozeCondition> {
+        let author = row.author.as_deref()?;
+        (!author.eq_ignore_ascii_case(me)).then(|| Self::waiting_person(row, author.to_owned()))
+    }
+
     pub fn waiting_person(row: &BoardRow, login: String) -> SnoozeCondition {
         let baseline_submitted_at = row
             .reviews
@@ -610,6 +618,20 @@ mod tests {
         assert!(!state.is_watched("PR_1"));
         assert!(state.is_watched("PR_2"), "only that one");
         assert!(state.unwatch("PR_1").is_none(), "twice is not an unwatch");
+    }
+
+    #[test]
+    fn there_is_no_waiting_on_yourself() {
+        let mut own = row(1);
+        own.author = Some("Me".into());
+        assert_eq!(AttentionState::waiting_on_author(&own, "me"), None);
+        own.author = None;
+        assert_eq!(AttentionState::waiting_on_author(&own, "me"), None);
+        own.author = Some("bob".into());
+        assert_eq!(
+            AttentionState::waiting_on_author(&own, "me"),
+            Some(AttentionState::waiting_person(&own, "bob".into()))
+        );
     }
 
     #[test]

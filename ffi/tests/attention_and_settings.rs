@@ -293,6 +293,18 @@ fn waiting_on_a_person_wakes_only_on_a_newer_review_from_them() {
 }
 
 #[test]
+fn there_is_no_waiting_on_yourself() {
+    let store = store();
+    let mut pr = row(1);
+    pr.author = Some("alice".into());
+    assert_eq!(store.waiting_on(pr.clone()), Some("alice".into()));
+    pr.author = Some("ME".into());
+    assert_eq!(store.waiting_on(pr.clone()), None, "logins ignore case");
+    pr.author = None;
+    assert_eq!(store.waiting_on(pr), None);
+}
+
+#[test]
 fn a_snooze_can_be_cancelled_by_hand() {
     let store = store();
     store.snooze(row(1), SnoozeChoice::UntilTomorrow, NOW);

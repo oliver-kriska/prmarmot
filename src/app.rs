@@ -1372,6 +1372,11 @@ impl RootView {
         let state = self.state.clone();
         let focus = self.table.focus_handle(cx);
         let already = state.read(cx).snooze_description(&row.id).is_some();
+        let waiting_on_author = state
+            .read(cx)
+            .me
+            .as_deref()
+            .and_then(|me| crate::attention_state::AttentionState::waiting_on_author(&row, me));
         window.open_dialog(cx, move |dialog, _, cx| {
             let _ = cx;
             let mut options = v_flex().gap_2();
@@ -1410,14 +1415,18 @@ impl RootView {
                         },
                     ));
             }
-            if let Some(author) = row.author.clone() {
+            if let Some(waiting) = waiting_on_author.clone() {
                 let state = state.clone();
-                let waiting =
-                    crate::attention_state::AttentionState::waiting_person(&row, author.clone());
                 let row = row.clone();
                 options = options.child(
                     Button::new("snooze-person")
-                        .label(format!("Waiting on {author}"))
+                        .label(
+                            crate::attention_state::AttentionState::snooze_for(
+                                &row,
+                                waiting.clone(),
+                            )
+                            .description(),
+                        )
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
                                 state.set_snooze(&row, waiting.clone(), cx)
