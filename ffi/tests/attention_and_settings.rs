@@ -536,3 +536,103 @@ fn the_ipad_reads_the_same_clock_words_as_the_desktop() {
         "Changed since you last selected it: New commits. Select the PR to clear."
     );
 }
+
+/// The authored fixture with #105, its one conflicting PR, reported as
+/// `mergeable`, fetched as the iPad fetches it.
+fn rows_with_105_as(mergeable: &str) -> Vec<PullRequest> {
+    let body = std::fs::read_to_string(format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("the authored fixture");
+    assert_eq!(
+        body.matches("\"CONFLICTING\"").count(),
+        1,
+        "#105 is the one conflict"
+    );
+    let body = body.replace("\"CONFLICTING\"", &format!("\"{mergeable}\""));
+    let client = BoardClient::new(
+        ClientConfig {
+            host: "github.com".into(),
+            viewer: "me".into(),
+            user_agent: "prmarmot-ffi-test/0".into(),
+        },
+        Arc::new(Offline(body)),
+        Arc::new(Token),
+    );
+    pollster(client.fetch_board(
+        Mode::Authored,
+        BoardScope::Repository {
+            name: "acme/widgets".into(),
+        },
+        settings(),
+        NOW,
+    ))
+    .expect("the fixture board")
+    .rows
+}
+
+fn settings() -> BoardSettings {
+    BoardSettings {
+        stale_after_days: 3,
+        ..prmarmot_ffi::default_board_settings()
+    }
+}
+
+fn number(rows: &[PullRequest], number: u64) -> PullRequest {
+    rows.iter()
+        .find(|row| row.number == number)
+        .cloned()
+        .expect("the row")
+}
+
+#[test]
+fn a_known_conflict_stays_while_github_is_still_deciding() {
+    let conflicting = number(&rows(), 105);
+    assert!(conflicting.conflict);
+    let store = store();
+    store.observe(conflicting.clone()).unwrap();
+
+    let unknown = rows_with_105_as("UNKNOWN");
+    let deciding = number(&unknown, 105);
+    assert!(deciding.mergeable_unknown && !deciding.conflict);
+    assert_ne!(
+        deciding.note, conflicting.note,
+        "GitHub's answer alone drops the conflict"
+    );
+
+    let kept = store
+        .keep_known_conflicts(unknown.clone(), Mode::Authored, settings(), NOW)
+        .unwrap();
+    let still = number(&kept, 105);
+    assert!(still.conflict);
+    assert_eq!(still.note, conflicting.note);
+    assert_eq!(still.category, conflicting.category);
+    // Nothing else is touched.
+    let others = |rows: &[PullRequest]| -> Vec<PullRequest> {
+        rows.iter()
+            .filter(|row| row.number != 105)
+            .cloned()
+            .collect()
+    };
+    assert_eq!(others(&kept), others(&unknown));
+}
+
+#[test]
+fn github_deciding_or_no_history_leaves_the_row_as_github_says() {
+    let store = store();
+    // Never seen: an unknown is only an unknown.
+    let unknown = rows_with_105_as("UNKNOWN");
+    let kept = store
+        .keep_known_conflicts(unknown.clone(), Mode::Authored, settings(), NOW)
+        .unwrap();
+    assert!(!number(&kept, 105).conflict);
+
+    // Seen conflicting, then GitHub decides it merges: the conflict is gone.
+    store.observe(number(&rows(), 105)).unwrap();
+    let mergeable = rows_with_105_as("MERGEABLE");
+    let kept = store
+        .keep_known_conflicts(mergeable.clone(), Mode::Authored, settings(), NOW)
+        .unwrap();
+    assert_eq!(kept, mergeable);
+}

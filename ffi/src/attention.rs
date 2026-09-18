@@ -15,10 +15,11 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, TimeZone, Utc};
 use prmarmot_core::attention as core_attention;
+use prmarmot_core::board as core_board;
 use prmarmot_local::attention_state as local_attention;
 
 use crate::error::FfiError;
-use crate::types::PullRequest;
+use crate::types::{BoardSettings, Mode, PullRequest};
 
 /// What a change means for the person, most important first. The wording is
 /// each front end's own; this is the fact.
@@ -283,6 +284,43 @@ impl AttentionStore {
             }),
             needed_action_before,
         })
+    }
+
+    /// A PR this store last saw conflicting stays conflicting while GitHub
+    /// reports its mergeability as unknown, with the Note and the category
+    /// that go with a conflict. GitHub reports unknown for a while after a
+    /// push to the base branch; without this the marker flickers off and on
+    /// between refreshes, and `observe` records a conflict resolved that
+    /// never was. The desktop's `keep_known_conflicts`, through core's
+    /// `carry_forward_conflicts` (FEATURES.md F-note-11).
+    ///
+    /// Call it on every fetched board, before `observe`, with the `now_epoch`
+    /// and settings of the fetch. `mode` is the board's; tracked rows read as
+    /// in Involving me, so pass `Mode::Authored` for them, as the desktop
+    /// does. Whose PR a row is comes from the store's account.
+    pub fn keep_known_conflicts(
+        &self,
+        rows: Vec<PullRequest>,
+        mode: Mode,
+        settings: BoardSettings,
+        now_epoch: i64,
+    ) -> Result<Vec<PullRequest>, FfiError> {
+        let cfg = settings.to_core()?;
+        let now = crate::types::instant(now_epoch)?;
+        let mut rows = crate::types::into_rows(rows);
+        let state = self.lock();
+        let me = state.snapshots.namespace().account.clone();
+        core_board::carry_forward_conflicts(
+            &mut rows,
+            |id| state.snapshots.last_conflict(id),
+            mode.into(),
+            &me,
+            &cfg,
+        );
+        Ok(rows
+            .iter()
+            .map(|row| PullRequest::from_row(row, now, settings.stale_after_days))
+            .collect())
     }
 
     /// Mark a PR as seen. Returns whether anything changed, so the caller can
