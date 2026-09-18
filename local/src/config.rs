@@ -141,16 +141,29 @@ pub fn try_load() -> Result<FileConfig, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(FileConfig::default()),
         Err(e) => return Err(format!("could not read {}: {e}", path.display())),
     };
-    toml::from_str(&text).map_err(|e| format!("ignoring invalid {}: {e}", path.display()))
+    parse_file(&text, &path)
+}
+
+fn parse_file(text: &str, path: &std::path::Path) -> Result<FileConfig, String> {
+    toml::from_str(text).map_err(|e| format!("ignoring invalid {}: {e}", path.display()))
 }
 
 /// Missing file → defaults; unparseable file → defaults with a warning
 /// (a typo in the config must never make the app unlaunchable).
 pub fn load() -> FileConfig {
-    try_load().unwrap_or_else(|warning| {
-        eprintln!("prmarmot: {warning}");
-        FileConfig::default()
-    })
+    load_reporting().0
+}
+
+/// `load`, also returning the warning so the app can show it: a launch from
+/// Finder or Spotlight has nowhere to print stderr.
+pub fn load_reporting() -> (FileConfig, Option<String>) {
+    match try_load() {
+        Ok(file) => (file, None),
+        Err(warning) => {
+            eprintln!("prmarmot: {warning}");
+            (FileConfig::default(), Some(warning))
+        }
+    }
 }
 
 pub const MAX_PINNED_REPOS: usize = 12;
@@ -452,6 +465,19 @@ pub fn state_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_invalid_file_is_named_with_where_it_went_wrong() {
+        let path = std::path::Path::new("/home/me/.config/prmarmot/config.toml");
+        let warning = parse_file("refresh_secs = \"five\"\n", path).unwrap_err();
+        assert!(
+            warning.starts_with(
+                "ignoring invalid /home/me/.config/prmarmot/config.toml: TOML parse error at line 1"
+            ),
+            "{warning}"
+        );
+        assert!(parse_file("refresh_secs = 300\n", path).is_ok());
+    }
 
     #[test]
     fn repo_reviewers_are_normalized_and_bad_keys_warn() {

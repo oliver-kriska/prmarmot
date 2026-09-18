@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use prmarmot_core::board::BoardScope;
 
 pub use prmarmot_local::config::{
-    config_path, load, normalized_pins, resolve_scope, FileConfig, MAX_PINNED_REPOS,
+    config_path, load, load_reporting, normalized_pins, resolve_scope, FileConfig, MAX_PINNED_REPOS,
 };
 
 /// Editable values from the Settings dialog. `None` means an environment
@@ -190,6 +190,15 @@ pub fn update_paths() -> UpdatePaths {
     }
 }
 
+/// The banner line for a config file the app ignored: that it was ignored,
+/// then why, with no path, so a narrow window still shows where the error
+/// is. The path and the TOML excerpt are in the tooltip.
+pub fn config_warning_line(warning: &str) -> String {
+    let first = warning.lines().next().unwrap_or(warning).trim();
+    let why = first.rsplit_once(": ").map_or(first, |(_, why)| why);
+    format!("config.toml ignored, using default settings — {why}")
+}
+
 /// Persist one top-level string key (repo/theme/view) back to the config
 /// file so a closed-and-reopened app comes back the same. `toml_edit` keeps
 /// the user's comments and formatting intact; failures are logged, never
@@ -273,6 +282,21 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ignored_config_file_says_so_in_one_line() {
+        let warning = "ignoring invalid /home/me/.config/prmarmot/config.toml: TOML parse error at line 1, column 16\n  |\n1 | refresh_secs = \"five\"\n  |                ^^^^^^\ninvalid type: string \"five\", expected u64\n";
+        assert_eq!(
+            config_warning_line(warning),
+            "config.toml ignored, using default settings — TOML parse error at line 1, column 16"
+        );
+        assert_eq!(
+            config_warning_line(
+                "could not read /home/me/.config/prmarmot/config.toml: Permission denied (os error 13)"
+            ),
+            "config.toml ignored, using default settings — Permission denied (os error 13)"
+        );
+    }
 
     fn temp_config(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

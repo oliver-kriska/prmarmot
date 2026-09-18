@@ -276,7 +276,8 @@ features get the next free number in their area.
   badge and update switches since v0.6.0_
 - **F-settings-2** Every setting lives in an optional TOML file at `$XDG_CONFIG_HOME/prmarmot/config.toml` or
   `~/.config/prmarmot/config.toml`. The app writes changes back and keeps your comments. A file it can't parse is
-  never overwritten, and the app starts with defaults. _since v0.1.0_
+  never overwritten, and the app starts with defaults. _since v0.1.0_ A banner says the file was ignored and why,
+  until you dismiss it or a Settings save succeeds. _unreleased (0.9.1)_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_

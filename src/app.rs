@@ -67,6 +67,8 @@ pub struct Launch {
     pub automatic_update_checks: bool,
     pub update_paths: crate::config::UpdatePaths,
     pub update_failure: Option<String>,
+    /// Why `config.toml` was ignored, if it was.
+    pub config_warning: Option<String>,
 }
 
 #[derive(Clone)]
@@ -144,6 +146,7 @@ pub struct RootView {
     update_paths: crate::config::UpdatePaths,
     available_update: Option<AvailableUpdate>,
     update_error: Option<String>,
+    config_warning: Option<String>,
     update_check_pending: bool,
     update_starting: bool,
     update_check_task: Option<gpui::Task<()>>,
@@ -458,6 +461,7 @@ impl RootView {
             update_paths: launch.update_paths,
             available_update: None,
             update_error: launch.update_failure,
+            config_warning: launch.config_warning,
             update_check_pending: false,
             update_starting: false,
             update_check_task: None,
@@ -679,7 +683,10 @@ impl RootView {
             &settings,
             window,
             |this, _, _: &crate::settings::SettingsSaved, window, cx| {
-                let file = crate::config::load();
+                // Settings refuses to save into a file it can't read, so a
+                // save means the file reads now, and the warning goes.
+                let (file, config_warning) = crate::config::load_reporting();
+                this.config_warning = config_warning;
                 let was_enabled = this.automatic_update_checks;
                 this.automatic_update_checks = file.automatic_update_checks;
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
@@ -2037,6 +2044,40 @@ impl RootView {
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(tooltip.clone()).build(window, cx)
                                 }),
+                        ),
+                )
+            })
+            .when_some(self.config_warning.clone(), |banners, warning| {
+                banners.child(
+                    h_flex()
+                        .px(px(crate::design::HEADER_PAD_X))
+                        .py_1()
+                        .gap_2()
+                        .bg(theme.muted)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("config-warning-message")
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(theme.warning)
+                                .child(crate::config::config_warning_line(&warning))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(warning.clone()).build(window, cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("dismiss-config-warning")
+                                .small()
+                                .ghost()
+                                .label("Dismiss")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.config_warning = None;
+                                    cx.notify();
+                                })),
                         ),
                 )
             })
