@@ -25,10 +25,12 @@ Two ways to influence it:
   built-in coding-agent skill). Since v0.8.0: search chips (`label:` / `author:` / `repo:`), pickup age
   with `is:stale`, and a Small / Medium / Large size band with a smallest-first sort.
 - **Gate G0 measured (2026-09-17):** an 18 h unattended soak of the installed v0.8.1 went from 99 to 75 MB RSS,
-  never above 99, with no upward drift and about 1.5 % of one core; the maintainer accepted it. It also found
-  that v0.8.1 repaints once every 5 s while idle (about 29 ms of GPU work per minute); the fix, one repaint a
-  minute, landed on main on 2026-09-18 and ships in v0.8.2, when the measurement file also moves to
-  `benchmarks/`.
+  never above 99, with no upward drift and about 1.5 % of one core. RSS stayed flat and far under 150 MB;
+  physical footprint missed the mean and range thresholds because v0.8.1 repaints once every 5 s while idle
+  (about 29 ms of GPU work per minute), and each repaint briefly counts the window's graphics memory. The
+  fix, one repaint a minute, landed on main on 2026-09-18 and ships in v0.9.0; G0 is measured again on the
+  shipped v0.9.0 build. Method, raw samples and each threshold against the result:
+  [`benchmarks/2026-09-16-memory-gate-v0.8.1.md`](benchmarks/2026-09-16-memory-gate-v0.8.1.md).
 - Platforms: macOS (Apple Silicon) binaries. Linux and Intel Macs build from source until the `.deb`
   in Phase 2 ships.
 
