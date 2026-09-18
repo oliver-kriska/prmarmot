@@ -217,7 +217,9 @@ features get the next free number in their area.
   OAuth-app restrictions, and PR Marmot's own app isn't. _since v0.9.1_
 - **F-auth-2** **Sign in with GitHub** uses GitHub's device flow with PR Marmot's own registration, so there is
   nothing to set up. You type an eight-character code at github.com/login/device. It asks for `repo` and
-  `read:org`, and there is no client secret and no server of ours. _since v0.9.0_
+  `read:org`, and there is no client secret and no server of ours. _since v0.9.0_ The code screen says that an
+  organization which restricts OAuth apps hides its repositories until an owner approves PR Marmot, and that
+  GitHub offers the request when you authorize. _unreleased_
 - **F-auth-3** **Use a token** takes a personal access token. A fine-grained one needs Pull requests: read and
   Metadata: read and covers one owner. A classic one with `repo` and `read:org` covers several organizations and
   shows CI. The token is never displayed. _since v0.9.0_

@@ -209,6 +209,14 @@ pub fn token_can_refresh(token: Token, now_epoch: i64) -> bool {
     core_flow::TokenSet::from(token).can_refresh(now_epoch)
 }
 
+/// The one-time-code screen's note on organizations that restrict OAuth
+/// apps: core's sentence, the same one the desktop shows, so the iPad does
+/// not keep its own copy.
+#[uniffi::export]
+pub fn organization_approval_note() -> String {
+    prmarmot_core::status::organization_approval_note().to_owned()
+}
+
 /// A pasted personal access token, as a [`Token`] with no expiry.
 #[uniffi::export]
 pub fn token_from_pat(access_token: String) -> Token {

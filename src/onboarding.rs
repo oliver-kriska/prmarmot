@@ -366,6 +366,10 @@ impl Render for OnboardingView {
                                     })),
                             ),
                     )
+                    .child(self.note(
+                        prmarmot_core::status::organization_approval_note().to_owned(),
+                        cx,
+                    ))
             }
             Step::Token => body
                 .child(self.heading("Use a personal access token"))

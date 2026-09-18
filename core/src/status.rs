@@ -170,6 +170,18 @@ pub fn human_duration(secs: u64) -> String {
     }
 }
 
+/// Why an organization's repositories can be missing after signing in with
+/// PR Marmot's own OAuth app: an organization that restricts OAuth apps
+/// hides them until an owner approves, and GitHub offers that request on the
+/// page where you authorize. Both front ends show it on the one-time-code
+/// screen. The GitHub CLI's login is exempt from that restriction, so the
+/// sentence says nothing about it.
+pub fn organization_approval_note() -> &'static str {
+    "An organization that restricts OAuth apps hides its repositories from this sign-in until an \
+     owner approves PR Marmot. GitHub offers the request next to the organization when you \
+     authorize."
+}
+
 /// What the token was not allowed to read on this board, in one line, or
 /// `None` when it read everything. The rows still show; this says why some of
 /// their CI reads "hidden" and what would show it.
@@ -258,6 +270,17 @@ pub fn queue_sync_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_organization_approval_note_is_one_plain_sentence_pair() {
+        assert_eq!(
+            organization_approval_note(),
+            "An organization that restricts OAuth apps hides its repositories from this sign-in \
+             until an owner approves PR Marmot. GitHub offers the request next to the organization \
+             when you authorize."
+        );
+        assert!(!organization_approval_note().contains("CLI"));
+    }
 
     fn counts(need_you: usize, complete: bool, tracked: (usize, usize)) -> HeaderCounts {
         HeaderCounts {

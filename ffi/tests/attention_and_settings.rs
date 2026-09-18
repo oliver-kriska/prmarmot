@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use prmarmot_ffi::{
-    config_from_toml, config_to_toml, copy_items, default_app_config, detail_lines, AttentionStore,
-    AuthConfig, BoardClient, BoardScope, BoardSettings, Ci, ClientConfig, FfiError,
-    GithubTransport, GraphqlRequest, Header, HttpResponse, IssueLink, Mode, PullRequest,
-    RestRequest, Review, SnoozeChoice, TokenSource, WatchStatus,
+    config_from_toml, config_to_toml, copy_items, default_app_config, detail_lines,
+    organization_approval_note, AttentionStore, AuthConfig, BoardClient, BoardScope, BoardSettings,
+    Ci, ClientConfig, FfiError, GithubTransport, GraphqlRequest, Header, HttpResponse, IssueLink,
+    Mode, PullRequest, RestRequest, Review, SnoozeChoice, TokenSource, WatchStatus,
 };
 
 /// 2026-07-26T12:00:00Z, the instant the goldens are pinned at.
@@ -290,6 +290,15 @@ fn waiting_on_a_person_wakes_only_on_a_newer_review_from_them() {
         store.wake_due(vec![answered], NOW + HOUR),
         vec!["PR_1".to_string()]
     );
+}
+
+#[test]
+fn the_sign_in_note_about_organizations_is_cores_sentence() {
+    assert_eq!(
+        organization_approval_note(),
+        prmarmot_core::status::organization_approval_note()
+    );
+    assert!(organization_approval_note().contains("an owner approves PR Marmot"));
 }
 
 #[test]
