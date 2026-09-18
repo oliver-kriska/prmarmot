@@ -13,6 +13,7 @@ compile_error!(
 
 pub mod attention;
 pub mod board;
+pub mod cells;
 pub mod detail;
 pub mod github;
 pub mod layout;

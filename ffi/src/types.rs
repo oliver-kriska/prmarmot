@@ -10,6 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use prmarmot_core::board as core_board;
+use prmarmot_core::cells as core_cells;
 use prmarmot_core::layout as core_layout;
 use prmarmot_core::pickup;
 use prmarmot_core::share as core_share;
@@ -177,7 +178,8 @@ impl From<Queue> for core_board::QueueProvenance {
 }
 
 /// One thing keeping an authored PR out of the merge queue, most-blocking
-/// first. Core owns the facts; every front end owns the wording and the color.
+/// first. Core owns the facts and, since the iPad, the wording and the tone
+/// too — see [`NotePresentation`]. A front end owns only the colour.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Blocker {
     NoReviewers { suggested: Vec<String> },
@@ -825,4 +827,125 @@ pub fn decode_board(bytes: Vec<u8>) -> Result<RestoredBoard, FfiError> {
         board: cached.board,
         fetched_at_epoch: cached.fetched_at,
     })
+}
+
+/// How alarming a cell is, decided by core so both front ends decide it the
+/// same way. Swift maps this to its palette and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+pub enum Tone {
+    Danger,
+    Warning,
+    Success,
+    Routine,
+    Muted,
+}
+
+impl From<core_cells::Tone> for Tone {
+    fn from(tone: core_cells::Tone) -> Self {
+        match tone {
+            core_cells::Tone::Danger => Self::Danger,
+            core_cells::Tone::Warning => Self::Warning,
+            core_cells::Tone::Success => Self::Success,
+            core_cells::Tone::Routine => Self::Routine,
+            core_cells::Tone::Muted => Self::Muted,
+        }
+    }
+}
+
+/// A Note cell decomposed for exception-first rendering: one emphasised
+/// phrase, an optional remedy after an em dash, and the remaining blockers as
+/// muted context so none of them hides in the hover text alone.
+///
+/// The caller shortens `context` when the row is narrow, never `primary`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+pub struct NotePresentation {
+    pub tone: Tone,
+    pub primary: String,
+    pub remedy: Option<String>,
+    pub context: Vec<String>,
+    pub tooltip: String,
+}
+
+impl From<core_cells::NotePresentation> for NotePresentation {
+    fn from(note: core_cells::NotePresentation) -> Self {
+        Self {
+            tone: note.tone.into(),
+            primary: note.primary,
+            remedy: note.remedy,
+            context: note.context,
+            tooltip: note.tooltip,
+        }
+    }
+}
+
+/// One reviewer's mark in the Review column. The glyph comes first so the
+/// state survives truncation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+pub struct ReviewMark {
+    pub glyph: String,
+    pub tone: Tone,
+    pub login: String,
+}
+
+/// What the Review column says about one row. A completed review supersedes a
+/// pending request, and "nobody was asked" is said out loud because an empty
+/// cell reads as "not loaded".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+pub enum ReviewCell {
+    Reviewed {
+        marks: Vec<ReviewMark>,
+        summary: String,
+        hover: String,
+    },
+    Requested {
+        names: String,
+        arrow: String,
+        suffix: String,
+        hover: String,
+    },
+    NotRequested {
+        text: String,
+    },
+}
+
+impl From<core_cells::ReviewCell> for ReviewCell {
+    fn from(cell: core_cells::ReviewCell) -> Self {
+        match cell {
+            core_cells::ReviewCell::Reviewed {
+                marks,
+                summary,
+                hover,
+            } => Self::Reviewed {
+                marks: marks
+                    .into_iter()
+                    .map(|mark| ReviewMark {
+                        glyph: mark.glyph,
+                        tone: mark.tone.into(),
+                        login: mark.login,
+                    })
+                    .collect(),
+                summary,
+                hover,
+            },
+            core_cells::ReviewCell::Requested {
+                names,
+                arrow,
+                suffix,
+                hover,
+            } => Self::Requested {
+                names,
+                arrow,
+                suffix,
+                hover,
+            },
+            core_cells::ReviewCell::NotRequested { text } => Self::NotRequested { text },
+        }
+    }
+}
+
+/// The CI column: the word and how loud it is.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+pub struct CiCell {
+    pub text: String,
+    pub tone: Tone,
 }
