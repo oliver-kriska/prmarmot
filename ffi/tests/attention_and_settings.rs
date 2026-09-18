@@ -172,6 +172,17 @@ fn a_watch_remembers_what_became_of_the_pr() {
 }
 
 #[test]
+fn a_watch_can_be_dropped_from_the_list_without_its_row() {
+    let store = store();
+    store.toggle_watch(row(1));
+    store.toggle_watch(row(2));
+    assert!(store.unwatch("PR_1".into()));
+    assert!(!store.is_watched("PR_1".into()));
+    assert_eq!(store.watches().len(), 1, "only that one");
+    assert!(!store.unwatch("PR_1".into()), "twice is not an unwatch");
+}
+
+#[test]
 fn a_timed_snooze_wakes_when_its_hour_is_up_and_not_before() {
     let store = store();
     store.snooze(row(1), SnoozeChoice::OneHour, NOW);
