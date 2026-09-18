@@ -16,7 +16,8 @@ homepage = "https://github.com/oliver-kriska/prmarmot"
 perf = ["gpui/profiler"]
 
 [dependencies]
-prmarmot-core = { path = "core" }
+# `http`: the update check asks GitHub directly when there is no `gh`.
+prmarmot-core = { path = "core", features = ["http"] }
 prmarmot-local = { path = "local", features = ["http"] }
 # GPUI Kit 0.6 uses the published gpui-pre runtime and platform split.
 gpui = { package = "gpui-pre", version = "=0.3.5" }

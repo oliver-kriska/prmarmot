@@ -309,8 +309,8 @@ features get the next free number in their area.
   - For a Homebrew install, a helper process upgrades the cask after the app quits, reopens it, and reports any
     failure on the next launch.
 
-  The check can be turned off. It currently runs through the GitHub CLI, so it doesn't happen without one.
-  _since v0.6.0_
+  The check can be turned off. _since v0.6.0_ It asks through the GitHub CLI when that can answer, and otherwise
+  asks GitHub directly without a token. _unreleased (0.9.1)_
 - **F-install-7** The first PR Marmot launch copies the former `prboard` app's config and state once and leaves the
   originals alone. If the copy fails, the app stops with an error instead of starting empty. _since v0.6.0_
 - **F-install-8** Linux and Intel Macs build from source, and `install.sh --from-source` puts the binaries in

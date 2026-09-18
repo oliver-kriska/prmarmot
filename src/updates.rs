@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+use prmarmot_core::github::http::HttpTransport;
+use prmarmot_core::github::RestTransport;
 use serde::{Deserialize, Serialize};
 
 pub const AUTOMATIC_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -158,6 +160,76 @@ impl ReleaseSource for GhReleaseSource {
             return Err(UpdateError::InvalidRelease("response was too large".into()));
         }
         parse_release_line(&String::from_utf8_lossy(&output.stdout), identity)
+    }
+}
+
+/// The release check without the GitHub CLI: one unauthenticated REST GET.
+/// GitHub allows 60 of those an hour per address and the check runs at most
+/// once a day, so no token is needed.
+pub struct HttpReleaseSource<T> {
+    rest: T,
+}
+
+impl HttpReleaseSource<HttpTransport> {
+    pub fn github(user_agent: &str) -> Self {
+        Self::new(HttpTransport::unauthenticated("github.com").with_user_agent(user_agent))
+    }
+}
+
+impl<T: RestTransport> HttpReleaseSource<T> {
+    pub fn new(rest: T) -> Self {
+        Self { rest }
+    }
+}
+
+impl<T: RestTransport> ReleaseSource for HttpReleaseSource<T> {
+    fn latest_stable(&self, identity: &ReleaseIdentity) -> Result<ReleaseInfo, UpdateError> {
+        let path = format!("repos/{}/releases/latest", identity.github_repo());
+        let body = self
+            .rest
+            .rest_get(&path, &[])
+            .map_err(|error| UpdateError::Request(bounded_string(error.to_string())))?;
+        // The four fields the `gh` path asks for, checked by the same parser.
+        let text = |name: &str| body.get(name).and_then(serde_json::Value::as_str);
+        let flag = |name: &str| body.get(name).and_then(serde_json::Value::as_bool);
+        let (Some(tag), Some(url), Some(draft), Some(prerelease)) = (
+            text("tag_name"),
+            text("html_url"),
+            flag("draft"),
+            flag("prerelease"),
+        ) else {
+            return Err(UpdateError::InvalidRelease(
+                "the release is missing its tag, page, or flags".into(),
+            ));
+        };
+        if tag.contains(['\t', '\n', '\r']) || url.contains(['\t', '\n', '\r']) {
+            return Err(UpdateError::InvalidRelease(
+                "expected one release record".into(),
+            ));
+        }
+        parse_release_line(&format!("{tag}\t{url}\t{draft}\t{prerelease}"), identity)
+    }
+}
+
+/// Ask `first`, and `then` when it can't answer. The app puts the GitHub CLI
+/// first and GitHub directly second, so an install without `gh`, or with `gh`
+/// signed out, still hears about releases.
+pub struct FallbackReleaseSource<A, B> {
+    first: A,
+    then: B,
+}
+
+impl<A, B> FallbackReleaseSource<A, B> {
+    pub fn new(first: A, then: B) -> Self {
+        Self { first, then }
+    }
+}
+
+impl<A: ReleaseSource, B: ReleaseSource> ReleaseSource for FallbackReleaseSource<A, B> {
+    fn latest_stable(&self, identity: &ReleaseIdentity) -> Result<ReleaseInfo, UpdateError> {
+        self.first
+            .latest_stable(identity)
+            .or_else(|_| self.then.latest_stable(identity))
     }
 }
 
@@ -798,6 +870,8 @@ pub enum UpdateError {
     InvalidIdentity(String),
     InvalidRelease(String),
     CommandFailed(String),
+    /// The direct request to GitHub failed (network, rate limit, status).
+    Request(String),
     CommandTimedOut(Duration),
     ParentWaitTimedOut(Duration),
     State(String),
@@ -813,6 +887,7 @@ impl fmt::Display for UpdateError {
             Self::InvalidIdentity(value) => write!(f, "invalid update identity: {value}"),
             Self::InvalidRelease(value) => write!(f, "invalid latest release: {value}"),
             Self::CommandFailed(value) => write!(f, "update command failed: {value}"),
+            Self::Request(value) => write!(f, "update check request failed: {value}"),
             Self::CommandTimedOut(timeout) => {
                 write!(f, "update command timed out after {}s", timeout.as_secs())
             }
@@ -1136,6 +1211,137 @@ mod tests {
             tag: format!("v{version}"),
             page_url: format!("https://github.com/owner/product/releases/tag/v{version}"),
         }
+    }
+
+    /// GitHub's REST answer, and the paths it was asked for.
+    struct FakeRest {
+        paths: Mutex<Vec<String>>,
+        answer: Result<serde_json::Value, prmarmot_core::github::GhError>,
+    }
+
+    impl FakeRest {
+        fn answering(answer: Result<serde_json::Value, prmarmot_core::github::GhError>) -> Self {
+            Self {
+                paths: Mutex::new(Vec::new()),
+                answer,
+            }
+        }
+    }
+
+    impl RestTransport for FakeRest {
+        fn rest_get(
+            &self,
+            path: &str,
+            query: &[(&str, &str)],
+        ) -> Result<serde_json::Value, prmarmot_core::github::GhError> {
+            assert!(query.is_empty(), "the release check takes no query");
+            self.paths.lock().unwrap().push(path.to_owned());
+            self.answer.clone()
+        }
+    }
+
+    fn release_json(tag: &str, url: &str, draft: bool, prerelease: bool) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "html_url": url,
+            "draft": draft,
+            "prerelease": prerelease,
+            "name": "ignored",
+        })
+    }
+
+    #[test]
+    fn a_release_check_needs_no_github_cli() {
+        let source = HttpReleaseSource::new(FakeRest::answering(Ok(release_json(
+            "v1.2.3",
+            "https://github.com/owner/product/releases/tag/v1.2.3",
+            false,
+            false,
+        ))));
+        assert_eq!(
+            source.latest_stable(&identity()).unwrap(),
+            fake_release("1.2.3")
+        );
+        assert_eq!(
+            *source.rest.paths.lock().unwrap(),
+            ["repos/owner/product/releases/latest"]
+        );
+    }
+
+    #[test]
+    fn the_direct_check_refuses_what_the_gh_check_refuses() {
+        let page = "https://github.com/owner/product/releases/tag/v1.2.3";
+        for (label, body) in [
+            ("draft", release_json("v1.2.3", page, true, false)),
+            ("prerelease", release_json("v1.2.3", page, false, true)),
+            (
+                "another repository",
+                release_json(
+                    "v1.2.3",
+                    "https://github.com/else/where/releases/tag/v1.2.3",
+                    false,
+                    false,
+                ),
+            ),
+            (
+                "a tab in the tag",
+                release_json("v1.2.3\tx", page, false, false),
+            ),
+            (
+                "no tag",
+                serde_json::json!({"html_url": page, "draft": false, "prerelease": false}),
+            ),
+        ] {
+            let source = HttpReleaseSource::new(FakeRest::answering(Ok(body)));
+            assert!(
+                matches!(
+                    source.latest_stable(&identity()),
+                    Err(UpdateError::InvalidRelease(_))
+                ),
+                "{label}"
+            );
+        }
+        let limited = HttpReleaseSource::new(FakeRest::answering(Err(
+            prmarmot_core::github::GhError::RateLimited { reset_epoch: None },
+        )));
+        assert!(matches!(
+            limited.latest_stable(&identity()),
+            Err(UpdateError::Request(_))
+        ));
+    }
+
+    #[test]
+    fn the_github_cli_is_asked_first_and_github_directly_when_it_cannot_answer() {
+        let fake = |result: Result<ReleaseInfo, UpdateError>| FakeSource {
+            calls: Arc::new(Mutex::new(0)),
+            result,
+        };
+        let gh = fake(Ok(fake_release("1.0.0")));
+        let direct = fake(Ok(fake_release("2.0.0")));
+        let both = FallbackReleaseSource::new(gh.clone(), direct.clone());
+        assert_eq!(
+            both.latest_stable(&identity()).unwrap(),
+            fake_release("1.0.0")
+        );
+        assert_eq!(*direct.calls.lock().unwrap(), 0, "gh answered");
+
+        let no_gh = fake(Err(UpdateError::CommandFailed("gh: not found".into())));
+        let fallback = FallbackReleaseSource::new(no_gh, direct.clone());
+        assert_eq!(
+            fallback.latest_stable(&identity()).unwrap(),
+            fake_release("2.0.0")
+        );
+        assert_eq!(*direct.calls.lock().unwrap(), 1);
+
+        let offline = fake(Err(UpdateError::Request("offline".into())));
+        let neither = FallbackReleaseSource::new(
+            fake(Err(UpdateError::CommandFailed("gh: not found".into()))),
+            offline,
+        );
+        assert_eq!(
+            neither.latest_stable(&identity()),
+            Err(UpdateError::Request("offline".into()))
+        );
     }
 
     #[test]

@@ -823,8 +823,19 @@ impl RootView {
                 .background_executor()
                 .spawn(async move {
                     let identity = crate::updates::ReleaseIdentity::new(crate::RELEASE_REPO)?;
-                    let source = crate::updates::GhReleaseSource::new(
-                        prmarmot_core::github::gh_cli::resolve_gh_path(),
+                    // The GitHub CLI when it can answer, else GitHub directly
+                    // without a token, so an install without `gh` still hears
+                    // about releases.
+                    let source = crate::updates::FallbackReleaseSource::new(
+                        crate::updates::GhReleaseSource::new(
+                            prmarmot_core::github::gh_cli::resolve_gh_path(),
+                        ),
+                        crate::updates::HttpReleaseSource::github(
+                            &prmarmot_local::session::user_agent(
+                                "prmarmot",
+                                env!("CARGO_PKG_VERSION"),
+                            ),
+                        ),
                     );
                     let checker = crate::updates::UpdateChecker::new(state_path, source);
                     let checked = checker.automatic_check(
