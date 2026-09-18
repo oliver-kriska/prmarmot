@@ -171,7 +171,8 @@ features get the next free number in their area.
   By default only watched PRs notify. **Notify for every PR entering Needs action** adds your own PRs. Snoozed PRs,
   the row you have selected, and the first refresh after launch never notify. Clicking a notification selects the
   PR, or opens a watched PR that isn't loaded on GitHub. Notifications and their sound can be turned off, and they
-  arrive only while the app runs. _since v0.6.0_
+  arrive only while the app runs. _since v0.6.0_ Clicking one for any PR the board isn't showing opens it on GitHub.
+  _unreleased (0.9.1)_
 - **F-track-6** The Dock badge counts, across both views, your PRs that need action plus review requests. It can
   be turned off. _since v0.6.0 · macOS only_
 - **F-track-7** Watches, snoozes, and change history are stored apart from preferences under

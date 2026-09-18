@@ -140,7 +140,6 @@ pub struct RootView {
     /// Snoozed PRs among the rows the table shows.
     snoozed_count: usize,
     suppress_ack_for: Option<String>,
-    pending_notification_pr: Option<String>,
     automatic_update_checks: bool,
     update_paths: crate::config::UpdatePaths,
     available_update: Option<AvailableUpdate>,
@@ -362,9 +361,9 @@ impl RootView {
                 }
                 if let Some(event) = event {
                     match event {
-                        crate::platform::PlatformEvent::Clicked(pr_id) => {
+                        crate::platform::PlatformEvent::Clicked { pr_id, url } => {
                             window.activate_window();
-                            this.select_notification_pr(pr_id, cx);
+                            this.select_notification_pr(pr_id, url, cx);
                         }
                         crate::platform::PlatformEvent::NotificationError(error) => {
                             this.state
@@ -455,7 +454,6 @@ impl RootView {
             changed_count: 0,
             snoozed_count: 0,
             suppress_ack_for: None,
-            pending_notification_pr: None,
             automatic_update_checks: launch.automatic_update_checks,
             update_paths: launch.update_paths,
             available_update: None,
@@ -1457,35 +1455,19 @@ impl RootView {
         });
     }
 
-    fn select_notification_pr(&mut self, pr_id: String, cx: &mut Context<Self>) {
-        let current = self
-            .state
-            .read(cx)
-            .rows
-            .iter()
-            .find(|row| row.id == pr_id)
-            .cloned();
-        if let Some(row) = current {
-            self.sync_table(cx);
-            if let Some(index) = self
-                .table
-                .read(cx)
-                .delegate()
-                .display_index_of_url(&row.url)
-            {
-                self.table.update(cx, |table, cx| {
-                    table.set_selected_row(index, cx);
-                    table.scroll_to_row(index, cx);
-                });
-            }
-        } else {
-            if let Some((url, status)) = self.state.read(cx).watched_fallback(&pr_id) {
-                cx.open_url(&url);
-                self.show_feedback_owned(format!("Watched PR opened · {status}"), cx);
-            } else {
-                self.pending_notification_pr = Some(pr_id);
-            }
+    fn select_notification_pr(&mut self, pr_id: String, url: String, cx: &mut Context<Self>) {
+        self.sync_table(cx);
+        if let Some(index) = self.table.read(cx).delegate().display_index_of_url(&url) {
+            self.table.update(cx, |table, cx| {
+                table.set_selected_row(index, cx);
+                table.scroll_to_row(index, cx);
+            });
+            return;
         }
+        let watched = self.state.read(cx).watched_fallback(&pr_id);
+        let (url, feedback) = crate::state::off_board_click(url, watched);
+        cx.open_url(&url);
+        self.show_feedback_owned(feedback, cx);
     }
 
     fn toggle_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -49,7 +49,12 @@ pub enum NotificationPermissionOperation {
 
 #[derive(Debug)]
 pub enum PlatformEvent {
-    Clicked(String),
+    /// A notification's "Open pull request": its PR id, and its URL for when
+    /// the PR is no longer on the board.
+    Clicked {
+        pr_id: String,
+        url: String,
+    },
     NotificationError(String),
     NotificationPermissionChanged(NotificationPermission),
     NotificationPermissionError {
@@ -134,7 +139,7 @@ impl Platform {
         });
     }
 
-    pub fn notify(&self, title: String, body: String, pr_id: String, sound: bool) {
+    pub fn notify(&self, title: String, body: String, pr_id: String, url: String, sound: bool) {
         let Some(permit) = NotificationPermit::acquire(&self.workers) else {
             return;
         };
@@ -170,7 +175,7 @@ impl Platform {
                 Ok(handle) => {
                     handle.wait_for_action(move |action| {
                         if action == "default" {
-                            let _ = event_tx.try_send(PlatformEvent::Clicked(pr_id));
+                            let _ = event_tx.try_send(PlatformEvent::Clicked { pr_id, url });
                         }
                     });
                 }

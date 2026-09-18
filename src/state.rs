@@ -844,15 +844,24 @@ impl AppState {
                 )),
                 TrackedStatus::Open | TrackedStatus::Unknown => None,
             };
-            if let Some((title, body)) = message {
-                notices.push((title.to_owned(), body.to_owned(), tracked.pr_id.clone()));
+            let url = attention
+                .watch(&tracked.pr_id)
+                .map(|watch| watch.url.clone());
+            if let (Some((title, body)), Some(url)) = (message, url) {
+                notices.push((
+                    title.to_owned(),
+                    body.to_owned(),
+                    tracked.pr_id.clone(),
+                    url,
+                ));
             }
         }
-        for (title, body, pr_id) in notices {
+        for (title, body, pr_id, url) in notices {
             self.platform.notify(
                 title,
                 body,
                 pr_id,
+                url,
                 self.attention_preferences.notification_sound,
             );
         }
@@ -935,14 +944,15 @@ impl AppState {
                 continue;
             }
             if let Some(notice) = semantic_notice(previous.as_ref(), row) {
-                notices.push((notice.title, notice.body, row.id.clone()));
+                notices.push((notice.title, notice.body, row.id.clone(), row.url.clone()));
             }
         }
-        for (title, body, pr_id) in notices {
+        for (title, body, pr_id, url) in notices {
             self.platform.notify(
                 title,
                 body,
                 pr_id,
+                url,
                 self.attention_preferences.notification_sound,
             );
         }
@@ -1072,6 +1082,17 @@ impl AppState {
     }
 }
 
+/// Where a notification's "Open pull request" goes when its PR isn't shown
+/// on the board (the other queue, a filter, a collapsed group, or gone
+/// since): the browser, with a line saying so. Returns the URL to open and
+/// that line. `watched` is `AppState::watched_fallback`'s answer.
+pub fn off_board_click(url: String, watched: Option<(String, String)>) -> (String, String) {
+    match watched {
+        Some((url, status)) => (url, format!("Watched PR opened · {status}")),
+        None => (url, "Opened in the browser: it isn't shown here".into()),
+    }
+}
+
 fn loaded_badge_sources<'a>(
     active_mode: Mode,
     active_rows: &'a [BoardRow],
@@ -1097,6 +1118,26 @@ pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notification_for_a_pr_off_the_board_still_opens_it() {
+        let url = "https://github.com/acme/widgets/pull/7".to_owned();
+        assert_eq!(
+            off_board_click(url.clone(), None),
+            (
+                url.clone(),
+                "Opened in the browser: it isn't shown here".into()
+            ),
+            "neither loaded nor watched: this used to do nothing"
+        );
+        assert_eq!(
+            off_board_click(
+                url.clone(),
+                Some((url.clone(), "acme/widgets#7 · Merged".into()))
+            ),
+            (url, "Watched PR opened · acme/widgets#7 · Merged".into())
+        );
+    }
 
     #[test]
     fn a_host_from_the_sign_in_screen_is_where_the_app_connects() {
