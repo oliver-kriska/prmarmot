@@ -171,7 +171,7 @@ fn main() {
         eprintln!("prmarmot: could not migrate existing data: {error}");
         std::process::exit(1);
     }
-    let (file, config_warning) = config::load_reporting();
+    let (file, config_warnings) = config::ConfigWarnings::load();
     // --review > persisted `view` in config > authored.
     let mode = mode_arg.unwrap_or(match file.view.as_deref() {
         Some("review") => Mode::Review,
@@ -217,7 +217,7 @@ fn main() {
         pinned_repos,
         automatic_update_checks: file.automatic_update_checks,
         update_failure: consume_update_failure(&update_paths),
-        config_warning,
+        config_warnings,
         update_paths,
     };
     let attention_preferences = AttentionPreferences {

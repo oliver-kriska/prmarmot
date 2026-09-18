@@ -3,8 +3,8 @@
 This is the complete list of what the PR Marmot desktop app and `prmarmot-cli` do. The README summarises it.
 Each id (`F-board-3`) is stable and never reused, so other documents (the site, the iPad app's parity list) can point at one.
 
-Each entry gives the version it first shipped in. `unreleased (x.y.z)` marks work that is on `main` but not yet
-released. An entry that names no platform works on both macOS and Linux. Limits are the values in the code. New
+Each entry gives the version it first shipped in. `unreleased` marks work that is on `main` but not yet released,
+with the version once it is chosen. An entry that names no platform works on both macOS and Linux. Limits are the values in the code. New
 features get the next free number in their area.
 
 ## Board and queues
@@ -276,7 +276,10 @@ features get the next free number in their area.
 - **F-settings-2** Every setting lives in an optional TOML file at `$XDG_CONFIG_HOME/prmarmot/config.toml` or
   `~/.config/prmarmot/config.toml`. The app writes changes back and keeps your comments. A file it can't parse is
   never overwritten, and the app starts with defaults. _since v0.1.0_ A banner says the file was ignored and why,
-  until you dismiss it or a Settings save succeeds. _since v0.9.1_
+  until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
+  single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
+  `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`), from the file or the environment.
+  It shows four lines at most; the last counts the rest and lists them in its tooltip. _unreleased_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_

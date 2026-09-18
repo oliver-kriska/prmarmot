@@ -199,6 +199,66 @@ pub fn config_warning_line(warning: &str) -> String {
     format!("config.toml ignored, using default settings — {why}")
 }
 
+/// The most lines the banner shows. Past that, the last line counts the
+/// rest and its tooltip lists them, so a long `[repo_reviewers]` table can't
+/// push the board down the window.
+pub const MAX_WARNING_LINES: usize = 4;
+
+/// What the settings ignored, for the banner: the whole file, or single
+/// values from it or from the environment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigWarnings {
+    pub file: Option<String>,
+    pub values: Vec<String>,
+}
+
+impl ConfigWarnings {
+    /// Load the file and say what it ignored. Values are checked even when
+    /// the file is ignored, because the environment can still set them.
+    pub fn load() -> (FileConfig, Self) {
+        let (file, warning) = load_reporting();
+        let values = prmarmot_local::config::ignored_values(&file);
+        (
+            file,
+            Self {
+                file: warning,
+                values,
+            },
+        )
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.file.is_none() && self.values.is_empty()
+    }
+
+    /// The banner's lines as (shown, tooltip): each problem's first line,
+    /// with its whole text as the tooltip, the ignored file first.
+    pub fn banner_lines(&self) -> Vec<(String, String)> {
+        let first_line = |text: &str| text.lines().next().unwrap_or(text).trim().to_owned();
+        let mut lines: Vec<(String, String)> = self
+            .file
+            .iter()
+            .map(|warning| (config_warning_line(warning), warning.clone()))
+            .chain(self.values.iter().map(|warning| {
+                (
+                    prmarmot_core::status::upper_first(&first_line(warning)),
+                    warning.clone(),
+                )
+            }))
+            .collect();
+        if lines.len() > MAX_WARNING_LINES {
+            let rest = lines.split_off(MAX_WARNING_LINES - 1);
+            let tooltip = rest
+                .iter()
+                .map(|(_, whole)| first_line(whole))
+                .collect::<Vec<_>>()
+                .join("\n");
+            lines.push((format!("…and {} more", rest.len()), tooltip));
+        }
+        lines
+    }
+}
+
 /// Persist one top-level string key (repo/theme/view) back to the config
 /// file so a closed-and-reopened app comes back the same. `toml_edit` keeps
 /// the user's comments and formatting intact; failures are logged, never
@@ -282,6 +342,48 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_banner_lists_the_ignored_file_first_then_each_value() {
+        let warnings = ConfigWarnings {
+            file: Some(
+                "ignoring invalid /c/config.toml: TOML parse error at line 2, column 1\n  |".into(),
+            ),
+            values: vec![
+                "ignoring stale_after_days = 0: use 1 or more".into(),
+                "ignoring bad issue-link pattern \"DEMO-(\": unclosed group\nregex parse error:\n    DEMO-(\n".into(),
+            ],
+        };
+        let lines = warnings.banner_lines();
+        let shown: Vec<&str> = lines.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(
+            shown,
+            [
+                "config.toml ignored, using default settings — TOML parse error at line 2, column 1",
+                "Ignoring stale_after_days = 0: use 1 or more",
+                "Ignoring bad issue-link pattern \"DEMO-(\": unclosed group",
+            ]
+        );
+        assert!(lines[2].1.contains("DEMO-("), "the tooltip has it all");
+        assert!(ConfigWarnings::default().is_empty());
+        assert!(ConfigWarnings::default().banner_lines().is_empty());
+    }
+
+    #[test]
+    fn a_long_list_is_capped_and_counts_the_rest() {
+        let warnings = ConfigWarnings {
+            file: None,
+            values: (1..=7).map(|n| format!("ignoring key {n}")).collect(),
+        };
+        let lines = warnings.banner_lines();
+        assert_eq!(lines.len(), MAX_WARNING_LINES);
+        assert_eq!(lines[2].0, "Ignoring key 3");
+        assert_eq!(lines[3].0, "…and 4 more");
+        assert_eq!(
+            lines[3].1,
+            "ignoring key 4\nignoring key 5\nignoring key 6\nignoring key 7"
+        );
+    }
 
     #[test]
     fn an_ignored_config_file_says_so_in_one_line() {

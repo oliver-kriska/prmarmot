@@ -67,8 +67,8 @@ pub struct Launch {
     pub automatic_update_checks: bool,
     pub update_paths: crate::config::UpdatePaths,
     pub update_failure: Option<String>,
-    /// Why `config.toml` was ignored, if it was.
-    pub config_warning: Option<String>,
+    /// What the settings ignored: the whole file, or single values.
+    pub config_warnings: crate::config::ConfigWarnings,
 }
 
 #[derive(Clone)]
@@ -146,7 +146,7 @@ pub struct RootView {
     update_paths: crate::config::UpdatePaths,
     available_update: Option<AvailableUpdate>,
     update_error: Option<String>,
-    config_warning: Option<String>,
+    config_warnings: crate::config::ConfigWarnings,
     update_check_pending: bool,
     update_starting: bool,
     update_check_task: Option<gpui::Task<()>>,
@@ -461,7 +461,7 @@ impl RootView {
             update_paths: launch.update_paths,
             available_update: None,
             update_error: launch.update_failure,
-            config_warning: launch.config_warning,
+            config_warnings: launch.config_warnings,
             update_check_pending: false,
             update_starting: false,
             update_check_task: None,
@@ -684,9 +684,9 @@ impl RootView {
             window,
             |this, _, _: &crate::settings::SettingsSaved, window, cx| {
                 // Settings refuses to save into a file it can't read, so a
-                // save means the file reads now, and the warning goes.
-                let (file, config_warning) = crate::config::load_reporting();
-                this.config_warning = config_warning;
+                // save means the file reads now; its values are checked again.
+                let (file, config_warnings) = crate::config::ConfigWarnings::load();
+                this.config_warnings = config_warnings;
                 let was_enabled = this.automatic_update_checks;
                 this.automatic_update_checks = file.automatic_update_checks;
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
@@ -2047,35 +2047,41 @@ impl RootView {
                         ),
                 )
             })
-            .when_some(self.config_warning.clone(), |banners, warning| {
+            .when(!self.config_warnings.is_empty(), |banners| {
+                let mut lines = v_flex().flex_1().min_w_0();
+                for (index, (line, whole)) in
+                    self.config_warnings.banner_lines().into_iter().enumerate()
+                {
+                    lines = lines.child(
+                        div()
+                            .id(("config-warning", index))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(theme.warning)
+                            .child(line)
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(whole.clone()).build(window, cx)
+                            }),
+                    );
+                }
                 banners.child(
                     h_flex()
+                        .items_start()
                         .px(px(crate::design::HEADER_PAD_X))
                         .py_1()
                         .gap_2()
                         .bg(theme.muted)
                         .border_b_1()
                         .border_color(theme.border)
-                        .child(
-                            div()
-                                .id("config-warning-message")
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(12.))
-                                .text_color(theme.warning)
-                                .child(crate::config::config_warning_line(&warning))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(warning.clone()).build(window, cx)
-                                }),
-                        )
+                        .child(lines)
                         .child(
                             Button::new("dismiss-config-warning")
                                 .small()
                                 .ghost()
                                 .label("Dismiss")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.config_warning = None;
+                                    this.config_warnings = Default::default();
                                     cx.notify();
                                 })),
                         ),

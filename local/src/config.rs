@@ -225,12 +225,30 @@ pub fn resolve_scope(
 /// pattern or `[repo_reviewers]` key is dropped and described in the returned
 /// warning.
 pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
-    let mut config = BoardConfig::default();
     let mut warnings = Vec::new();
+    let config = board_rules(file, &mut warnings);
+    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    (config, warning)
+}
+
+/// Each value the settings ignore, one line apiece: the board rules' (an
+/// issue-link pattern, `[repo_reviewers]` keys, `stale_after_days = 0`) and
+/// the sign-in's (`[auth] mode` and `store` words), from the file or the
+/// environment. The app lists them in a banner, since a launch from Finder
+/// or Spotlight never shows stderr.
+pub fn ignored_values(file: &FileConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    board_rules(file, &mut warnings);
+    auth_settings(file, None, None, &mut warnings);
+    warnings
+}
+
+fn board_rules(file: &FileConfig, warnings: &mut Vec<String>) -> BoardConfig {
+    let mut config = BoardConfig::default();
     if !file.default_reviewers.is_empty() {
         config.default_reviewers = file.default_reviewers.clone();
     }
-    config.repo_reviewers = repo_reviewers(&file.repo_reviewers, &mut warnings);
+    config.repo_reviewers = repo_reviewers(&file.repo_reviewers, warnings);
     match file.stale_after_days {
         Some(0) => warnings.push("ignoring stale_after_days = 0: use 1 or more".into()),
         Some(days) => config.stale_after_days = days,
@@ -255,11 +273,29 @@ pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
     if let Some((pattern, template)) = issue_rule {
         match IssueLinkRule::new(&pattern, &template) {
             Ok(rule) => config.issue_link = Some(rule),
-            Err(e) => warnings.push(format!("ignoring bad issue-link pattern: {e}")),
+            Err(e) => warnings.push(pattern_warning(&pattern, &e.to_string())),
         }
     }
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
-    (config, warning)
+    config
+}
+
+/// `ignoring bad issue-link pattern "DEMO-(": unclosed group`, and when the
+/// regex engine explains over several lines (pointing at the spot), that
+/// explanation after it: the first line is what the app's banner shows.
+fn pattern_warning(pattern: &str, error: &str) -> String {
+    let reason = error
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(error);
+    let reason = reason.strip_prefix("error: ").unwrap_or(reason);
+    let first = format!("ignoring bad issue-link pattern {pattern:?}: {reason}");
+    if error.trim().contains('\n') {
+        format!("{first}\n{error}")
+    } else {
+        first
+    }
 }
 
 /// `[repo_reviewers]` with keys lowercased and checked to be `owner` or
@@ -420,7 +456,7 @@ pub fn auth_settings(
             Some(mode) => Some(mode),
             None => {
                 warnings.push(format!(
-                    "ignoring {source} auth mode {word:?}: use auto, gh, device, or token"
+                    "ignoring {source} {word:?}: use auto, gh, device, or token"
                 ));
                 None
             }
@@ -465,6 +501,41 @@ pub fn state_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_ignored_value_is_its_own_line() {
+        let file: FileConfig = toml::from_str(
+            r#"
+            stale_after_days = 0
+            [repo_reviewers]
+            "a/b/c" = ["nope"]
+            [issue_link]
+            pattern = "DEMO-("
+            url_template = "https://example.com/{id}"
+            [auth]
+            mode = "sometimes"
+            store = "drawer"
+            "#,
+        )
+        .unwrap();
+        let lines = ignored_values(&file);
+        for expected in [
+            "ignoring [repo_reviewers] key \"a/b/c\"",
+            "ignoring stale_after_days = 0",
+            // The reason is the regex engine's words, and the iOS build uses
+            // a smaller engine that phrases it differently.
+            "ignoring bad issue-link pattern \"DEMO-(\": ",
+            "ignoring [auth] mode \"sometimes\": use auto",
+            "ignoring [auth] store \"drawer\"",
+        ] {
+            assert!(
+                lines.iter().any(|line| line.starts_with(expected)),
+                "{expected} missing from {lines:#?}"
+            );
+        }
+        assert_eq!(lines.len(), 5, "one line each, not joined: {lines:#?}");
+        assert!(ignored_values(&FileConfig::default()).is_empty());
+    }
 
     #[test]
     fn an_invalid_file_is_named_with_where_it_went_wrong() {
