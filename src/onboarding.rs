@@ -21,14 +21,17 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::{h_flex, v_flex, ActiveTheme, Sizable};
 use prmarmot_core::github::device_flow::{DeviceCode, DeviceFlow, DevicePoll};
-use prmarmot_core::github::{normalize_host, viewer_login, AuthTransport, GhError};
+use prmarmot_core::github::{viewer_login, AuthTransport, GhError};
 use prmarmot_local::auth::{token_store, StoredAuth};
 use prmarmot_local::config::AuthSettings;
 use prmarmot_local::session;
 
 /// Emitted once a token is stored, so the shell can re-run its setup check.
-#[derive(Clone, Copy, Debug)]
-pub struct SignedIn;
+/// `host` is where it signed in, which the Enterprise field may have changed.
+#[derive(Clone, Debug)]
+pub struct SignedIn {
+    pub host: String,
+}
 
 impl EventEmitter<SignedIn> for OnboardingView {}
 
@@ -122,7 +125,9 @@ impl OnboardingView {
                     Ok(()) => {
                         this.step = Step::Choose;
                         this.message = None;
-                        cx.emit(SignedIn);
+                        cx.emit(SignedIn {
+                            host: this.settings.host.clone(),
+                        });
                         cx.notify();
                     }
                     Err(error) => this.fail(&error, cx),
@@ -267,17 +272,19 @@ impl OnboardingView {
     }
 
     fn submit_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let host = normalize_host(self.host_input.read(cx).value().as_ref());
-        self.settings.host = host.clone();
+        self.settings = self
+            .settings
+            .for_host(self.host_input.read(cx).value().as_ref());
+        let host = self.settings.host.clone();
         self.host_input
             .update(cx, |input, cx| input.set_value(host, window, cx));
         self.attempt += 1;
         self.step = Step::Choose;
-        self.message = Some(
+        self.message = self.settings.client_id_is_placeholder().then(|| {
             "An Enterprise Server needs its own app registration, so set [auth] client_id for \
              this host, or sign in with a token."
-                .into(),
-        );
+                .into()
+        });
         cx.notify();
     }
 

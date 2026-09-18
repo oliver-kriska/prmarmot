@@ -407,11 +407,17 @@ impl RootView {
 
         let onboarding = cx.new(|cx| crate::onboarding::OnboardingView::new(auth, window, cx));
         // A completed sign-in re-runs the setup check, which picks up the new
-        // token and swaps the transport.
+        // token and swaps the transport. A host typed in the Enterprise field
+        // becomes the one the app connects to, now and after a restart.
         cx.subscribe(
             &onboarding,
-            |this: &mut Self, _, _: &crate::onboarding::SignedIn, cx| {
-                this.state.update(cx, |state, cx| state.validate_setup(cx));
+            |this: &mut Self, _, signed_in: &crate::onboarding::SignedIn, cx| {
+                this.state.update(cx, |state, cx| {
+                    if state.connector().use_host(&signed_in.host) {
+                        crate::config::persist_auth_host(&signed_in.host);
+                    }
+                    state.validate_setup(cx)
+                });
             },
         )
         .detach();

@@ -222,7 +222,9 @@ features get the next free number in their area.
 - **F-auth-4** A fine-grained token still loads the board. CI it may not read shows as "hidden", and one line under
   the header explains why. _unreleased (0.9.1)_
 - **F-auth-5** GitHub Enterprise Server: set `[auth] host`, `PRMARMOT_HOST`, or `GH_HOST`. Sign in with a token, or
-  with the device flow once `[auth] client_id` names that instance's own registration. _since v0.9.0_
+  with the device flow once `[auth] client_id` names that instance's own registration. _since v0.9.0_ A host typed
+  in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _unreleased
+  (0.9.1)_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_

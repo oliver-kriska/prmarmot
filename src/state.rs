@@ -3,7 +3,7 @@
 //! the UI thread via `this.update`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
@@ -63,25 +63,40 @@ pub trait Connector: Send + Sync {
     fn connect(&self) -> Result<Connection, GhError>;
     /// Every repository this account can see, for the repo picker.
     fn list_repos(&self) -> Result<RepoDiscovery, GhError>;
+    /// Connect to `host` from now on (the sign-in screen's Enterprise field).
+    /// True when that changed the host.
+    fn use_host(&self, host: &str) -> bool {
+        let _ = host;
+        false
+    }
 }
 
 /// The real one: resolved `[auth]` settings, re-read on every attempt so a
-/// sign-in in the onboarding screen takes effect on the next Retry.
+/// sign-in in the onboarding screen takes effect on the next Retry. The host
+/// can change once running, when someone signs in to an Enterprise Server
+/// from that screen.
 pub struct ConfiguredConnector {
-    settings: AuthSettings,
+    settings: Mutex<AuthSettings>,
     user_agent: String,
 }
 
 impl ConfiguredConnector {
     pub fn new(settings: AuthSettings) -> Self {
         Self {
-            settings,
+            settings: Mutex::new(settings),
             user_agent: session::user_agent("prmarmot", env!("CARGO_PKG_VERSION")),
         }
     }
 
+    fn settings(&self) -> AuthSettings {
+        self.settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn open(&self) -> Result<session::Session, GhError> {
-        session::connect(&self.settings, &self.user_agent)
+        session::connect(&self.settings(), &self.user_agent)
     }
 }
 
@@ -99,6 +114,14 @@ impl Connector for ConfiguredConnector {
 
     fn list_repos(&self) -> Result<RepoDiscovery, GhError> {
         self.open()?.list_repos()
+    }
+
+    fn use_host(&self, host: &str) -> bool {
+        let mut settings = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = settings.for_host(host);
+        let changed = next.host != settings.host;
+        *settings = next;
+        changed
     }
 }
 
@@ -1074,6 +1097,28 @@ pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_from_the_sign_in_screen_is_where_the_app_connects() {
+        let mut warnings = Vec::new();
+        let file = prmarmot_local::config::FileConfig::default();
+        let settings =
+            prmarmot_local::config::auth_settings(&file, Some("github.com"), None, &mut warnings);
+        let connector = ConfiguredConnector::new(settings);
+        assert!(
+            !connector.use_host("github.com"),
+            "same host, nothing changes"
+        );
+        assert!(connector.use_host("https://ghe.acme.test/"));
+        let now = connector.settings();
+        assert_eq!(now.host, "ghe.acme.test");
+        assert!(
+            now.client_id_is_placeholder(),
+            "github.com's app ID stays behind"
+        );
+        assert!(connector.use_host("github.com"));
+        assert!(!connector.settings().client_id_is_placeholder());
+    }
 
     #[test]
     fn bounded_ids_evict_in_fifo_order() {

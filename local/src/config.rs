@@ -95,8 +95,8 @@ impl Default for FileConfig {
     }
 }
 
-/// `[auth]` in the config file. Absent means "whatever works": a token stored
-/// by `prmarmot-cli auth login`, else the `gh` CLI, exactly as before.
+/// `[auth]` in the config file. Absent means github.com in `auto` mode, whose
+/// order is `session::sign_in_used`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AuthSection {
     /// `github.com`, or a GitHub Enterprise Server hostname.
@@ -347,6 +347,28 @@ impl AuthSettings {
     pub fn client_id_is_placeholder(&self) -> bool {
         prmarmot_core::github::device_flow::is_placeholder_client_id(&self.client_id)
     }
+
+    /// The same settings for another host, as the sign-in screen's Enterprise
+    /// field needs. A client ID that came with the old host (PR Marmot's own,
+    /// or none) follows the new host; one the user configured is kept.
+    pub fn for_host(&self, host: &str) -> AuthSettings {
+        use prmarmot_core::github::device_flow::{default_client_id, PLACEHOLDER_CLIENT_ID};
+        let host = prmarmot_core::github::normalize_host(host);
+        let inherited = self.client_id_is_placeholder()
+            || default_client_id(&self.host) == Some(self.client_id.as_str());
+        let client_id = if inherited {
+            default_client_id(&host)
+                .unwrap_or(PLACEHOLDER_CLIENT_ID)
+                .to_owned()
+        } else {
+            self.client_id.clone()
+        };
+        AuthSettings {
+            host,
+            client_id,
+            ..self.clone()
+        }
+    }
 }
 
 /// Resolve `[auth]`. `cli_host` and `cli_mode` come from flags and win;
@@ -542,6 +564,32 @@ store = 'vault'",
             resolved.client_id
         );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn another_host_takes_its_own_client_id_unless_one_was_configured() {
+        use prmarmot_core::github::device_flow::GITHUB_COM_CLIENT_ID;
+        let github = AuthSettings {
+            host: "github.com".into(),
+            client_id: GITHUB_COM_CLIENT_ID.into(),
+            mode: AuthMode::Auto,
+            store: crate::auth::StoreKind::File,
+            inline_token: None,
+        };
+        let ghe = github.for_host("https://GHE.acme.test/");
+        assert_eq!(ghe.host, "ghe.acme.test");
+        assert!(
+            ghe.client_id_is_placeholder(),
+            "github.com's ID stays behind"
+        );
+        assert_eq!(ghe.mode, AuthMode::Auto);
+        assert_eq!(ghe.for_host("github.com").client_id, GITHUB_COM_CLIENT_ID);
+
+        let configured = AuthSettings {
+            client_id: "Iv1.acme".into(),
+            ..github
+        };
+        assert_eq!(configured.for_host("ghe.acme.test").client_id, "Iv1.acme");
     }
 
     #[test]

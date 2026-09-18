@@ -224,6 +224,21 @@ fn set_scope(doc: &mut toml_edit::DocumentMut, scope: &BoardScope) {
     }
 }
 
+/// Persist the host signed in to from the sign-in screen under `[auth]`, so the
+/// next launch connects there too.
+pub fn persist_auth_host(host: &str) {
+    persist(|doc| set_auth_host(doc, host));
+}
+
+fn set_auth_host(doc: &mut toml_edit::DocumentMut, host: &str) {
+    // An `[auth]` table rather than an inline one, unless the file already
+    // has an `auth` of its own shape.
+    if doc.get("auth").is_none() {
+        doc["auth"] = toml_edit::table();
+    }
+    doc["auth"]["host"] = toml_edit::value(host);
+}
+
 /// Persist the window size under `[window]`.
 pub fn persist_window(width: f32, height: f32) {
     persist(|doc| {
@@ -265,6 +280,25 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    #[test]
+    fn a_signed_in_host_lands_in_the_auth_table_and_keeps_the_rest() {
+        let text = "# mine\ntheme = 'dark'\n\n[auth]\nmode = \"auto\" # keep\n";
+        let mut doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+        set_auth_host(&mut doc, "ghe.acme.test");
+        let out = doc.to_string();
+        assert!(out.contains("# mine"), "{out}");
+        assert!(out.contains("mode = \"auto\" # keep"), "{out}");
+        let file: prmarmot_local::config::FileConfig = toml::from_str(&out).unwrap();
+        assert_eq!(
+            file.auth.and_then(|auth| auth.host).as_deref(),
+            Some("ghe.acme.test")
+        );
+
+        let mut empty = toml_edit::DocumentMut::new();
+        set_auth_host(&mut empty, "ghe.acme.test");
+        assert!(empty.to_string().contains("[auth]"), "{empty}");
     }
 
     #[test]
