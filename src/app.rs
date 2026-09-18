@@ -1999,8 +1999,35 @@ impl RootView {
 
     fn render_update_banners(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        // Core words the notice; the board below is still right, so it is
+        // muted, not an error, and cannot be dismissed while it stays true.
+        let access_notice = prmarmot_core::status::access_notice(&self.state.read(cx).access);
         v_flex()
             .flex_shrink_0()
+            .when_some(access_notice, |banners, notice| {
+                let tooltip = notice.clone();
+                banners.child(
+                    h_flex()
+                        .px(px(crate::design::HEADER_PAD_X))
+                        .py_1()
+                        .bg(theme.muted)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("access-notice")
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(notice)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                }),
+                        ),
+                )
+            })
             .when_some(self.update_error.clone(), |banners, error| {
                 let tooltip = error.clone();
                 banners.child(
