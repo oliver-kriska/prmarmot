@@ -38,12 +38,10 @@ pub enum GhError {
 impl fmt::Display for GhError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GhError::NotInstalled => {
-                write!(
-                    f,
-                    "gh not found — install it: brew install gh && gh auth login"
-                )
-            }
+            GhError::NotInstalled => write!(
+                f,
+                "no GitHub sign-in found — run `prmarmot-cli auth login`, or install the GitHub CLI and run `gh auth login`"
+            ),
             GhError::NotAuthenticated => write!(
                 f,
                 "not signed in to GitHub — run `gh auth login`, or `prmarmot-cli auth login`"
@@ -221,6 +219,17 @@ mod tests {
         }
         assert_eq!(normalize_host("ghe.acme.test"), "ghe.acme.test");
         assert_eq!(normalize_host("https://ghe.acme.test/"), "ghe.acme.test");
+    }
+
+    #[test]
+    fn a_missing_github_cli_is_not_presented_as_the_only_way_in() {
+        // Signing in directly works without gh, so both messages offer it.
+        for error in [GhError::NotInstalled, GhError::NotAuthenticated] {
+            let text = error.to_string();
+            assert!(text.contains("prmarmot-cli auth login"), "{text}");
+            assert!(text.contains("gh auth login"), "{text}");
+            assert!(!text.contains("brew install gh"), "{text}");
+        }
     }
 
     #[test]
