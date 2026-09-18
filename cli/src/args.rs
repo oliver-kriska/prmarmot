@@ -36,8 +36,9 @@ Usage:
   prmarmot-cli completions SHELL         Print a completion script for bash, zsh, or fish
 
 Sign-in (default: --auth > PRMARMOT_AUTH > [auth] mode > auto):
-      --auth MODE           auto (a stored token, else the GitHub CLI),
-                            gh, device, or token
+      --auth MODE           auto (PRMARMOT_TOKEN, a pasted token, the GitHub
+                            CLI login, then a device-flow sign-in), gh,
+                            device, or token
       --host HOST           github.com (default) or a GitHub Enterprise Server host
 
 Scope (default: --repo/--all-repos > PRMARMOT_REPO/PRMARMOT_SCOPE > config file):
@@ -114,7 +115,8 @@ Exit codes: 0 ok, 1 GitHub, network, or file error, 2 usage error,
 
 Reads ~/.config/prmarmot/config.toml and PR Marmot's watch/snooze state, never
 writes them (except `auth login`/`auth logout`, which write the token store).
-Authentication comes from the GitHub CLI (`gh auth login`) unless you sign in
+Authentication comes from PRMARMOT_TOKEN or a token pasted with `auth login
+--with-token`, else the GitHub CLI login (`gh auth login`), else signing in
 here with `prmarmot-cli auth login`.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,6 +18,9 @@ use super::{GhError, GithubTransport, TokenSource};
 /// blocks every future fetch including the `r` key. Kill and surface it.
 const GRAPHQL_TIMEOUT: Duration = Duration::from_secs(60);
 const QUICK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Checking for a login reads a local file or the keychain; it should never
+/// take long, and a session waits on it before the first fetch.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_DISCOVERED_REPOS: usize = 1_000;
 const REPOS_PER_PAGE: usize = 100;
 
@@ -31,8 +34,18 @@ pub struct RepoDiscovery {
 /// (via `kill -9 <pid>`, no extra deps) if it outlives `timeout`. Output is
 /// still collected by `wait_with_output`, so pipes drain normally.
 fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<Output, GhError> {
+    run_with_timeout(cmd, timeout, Stdio::piped())
+}
+
+/// [`output_with_timeout`] with the child's stdout sent where the caller
+/// says; `Stdio::null()` leaves `Output::stdout` empty.
+fn run_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+    stdout: Stdio,
+) -> Result<Output, GhError> {
     let child = cmd
-        .stdout(Stdio::piped())
+        .stdout(stdout)
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .spawn()
@@ -215,6 +228,19 @@ pub fn detect_repo(dir: &std::path::Path) -> Result<String, GhError> {
         "--jq",
         ".nameWithOwner",
     ]))
+}
+
+/// Whether `gh` holds a login for `host`. `gh auth token` reads it locally, so
+/// this makes no network call, and its output is discarded, so the token never
+/// enters this process. `NotInstalled` when there is no `gh` at all.
+pub fn has_login(host: &str) -> Result<bool, GhError> {
+    let host = super::normalize_host(host);
+    let out = run_with_timeout(
+        Command::new(resolve_gh_path()).args(["auth", "token", "--hostname", &host]),
+        PROBE_TIMEOUT,
+        Stdio::null(),
+    )?;
+    Ok(out.status.success())
 }
 
 /// The authenticated user's login (resolves what the prototype calls `@me`).

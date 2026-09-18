@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use prmarmot_core::github::device_flow::{DeviceFlow, DevicePoll, TokenSet};
 use prmarmot_core::github::{viewer_login, GhError};
 use prmarmot_local::auth::{token_store, StoredAuth, TokenKind};
-use prmarmot_local::config::{self, AuthSettings};
-use prmarmot_local::session;
+use prmarmot_local::config::{self, AuthMode, AuthSettings};
+use prmarmot_local::session::{self, GhLogin, SignIn};
 
 /// What `auth` was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,23 +175,86 @@ fn store(settings: &AuthSettings, stored: &StoredAuth, login: &str, how: &str) -
     }
     println!("Signed in to {} as {login} with {how}.", settings.host);
     println!("Token stored in {}.", store.describe());
+    // A pasted token comes before `gh`; a device-flow token doesn't.
+    if stored.kind == TokenKind::Device
+        && settings.mode == AuthMode::Auto
+        && session::gh_login(&settings.host) == GhLogin::SignedIn
+    {
+        println!(
+            "The GitHub CLI is signed in to {} too, and PR Marmot uses it first. To use this \
+             token instead, set `[auth] mode = \"token\"` or PRMARMOT_AUTH=token.",
+            settings.host
+        );
+    }
     Outcome::Ok
 }
 
 fn status(settings: &AuthSettings, agent: &str) -> Outcome {
     let store = token_store(settings.store);
     println!("{}", settings.host);
-    match store.load(&settings.host) {
-        Err(message) => eprintln!("prmarmot-cli: {message}"),
-        Ok(None) => {}
-        Ok(Some(stored)) => {
+    let stored = store.load(&settings.host).unwrap_or_else(|message| {
+        eprintln!("prmarmot-cli: {message}");
+        None
+    });
+    let supplied = settings.inline_token.as_deref();
+    let kind = stored.as_ref().map(|stored| stored.kind);
+    let gh = match settings.mode {
+        AuthMode::Auto | AuthMode::Gh => session::gh_login(&settings.host),
+        AuthMode::Token | AuthMode::Device => GhLogin::SignedOut,
+    };
+    match session::sign_in_used(settings.mode, gh, kind, supplied.is_some()) {
+        Some(SignIn::Supplied) => {
+            let token = supplied.unwrap_or_default();
+            match viewer_login(&session::probe_transport(&settings.host, token, agent)) {
+                Ok(login) => {
+                    println!(
+                        "  Using the token from PRMARMOT_TOKEN as {login}, for this run only."
+                    );
+                    Outcome::Ok
+                }
+                Err(error @ (GhError::NotAuthenticated | GhError::GraphqlErrors(_))) => {
+                    println!("  PRMARMOT_TOKEN is set, but GitHub did not accept it: {error}.");
+                    Outcome::NotSignedIn
+                }
+                Err(error) => Outcome::Failed(error),
+            }
+        }
+        Some(SignIn::GhCli) => {
+            let login = match prmarmot_core::github::gh_cli::current_login() {
+                Ok(login) => login,
+                Err(error @ (GhError::NotInstalled | GhError::NotAuthenticated)) => {
+                    println!("  Set to use the GitHub CLI, which is not signed in: {error}.");
+                    return Outcome::NotSignedIn;
+                }
+                Err(error) => return Outcome::Failed(error),
+            };
+            println!("  Using the GitHub CLI login as {login}.");
+            if let Some(stored) = stored {
+                let who = stored.login.unwrap_or_else(|| "?".into());
+                println!(
+                    "  A token for {who} is also stored in {}; it is unused while the GitHub CLI is signed in.",
+                    store.describe()
+                );
+                println!("  `prmarmot-cli auth logout` removes it.");
+            }
+            Outcome::Ok
+        }
+        Some(SignIn::Stored) => {
+            let Some(stored) = stored else {
+                return Outcome::NotSignedIn;
+            };
             let how = match stored.kind {
-                TokenKind::Device => "the device flow",
+                TokenKind::Device => "signed in with the device flow",
                 TokenKind::Token => "a personal access token",
             };
             let who = stored.login.clone().unwrap_or_else(|| "?".into());
-            println!("  Signed in as {who} with {how}.");
+            println!("  Using a stored token as {who} ({how}).");
             println!("  Token stored in {}.", store.describe());
+            if settings.mode == AuthMode::Auto && gh == GhLogin::SignedIn {
+                println!(
+                    "  A pasted token comes before the GitHub CLI login, which is signed in too."
+                );
+            }
             let now = chrono::Utc::now().timestamp();
             if let Some(expires) = stored.token.expires_at {
                 println!("  Access token {}.", expiry_phrase(expires, now));
@@ -203,25 +266,21 @@ fn status(settings: &AuthSettings, agent: &str) -> Outcome {
                 println!("  Sign in again: `prmarmot-cli auth login`.");
                 return Outcome::NotSignedIn;
             }
-            return Outcome::Ok;
-        }
-    }
-
-    // Nothing stored: say whether `gh` would carry this machine anyway.
-    match prmarmot_core::github::gh_cli::current_login() {
-        Ok(login) => {
-            println!("  Not signed in directly; using the GitHub CLI as {login}.");
-            let _ = agent;
             Outcome::Ok
         }
-        Err(GhError::NotInstalled) => {
-            println!("  Not signed in, and the GitHub CLI is not installed.");
-            println!("  Run `prmarmot-cli auth login`.");
-            Outcome::NotSignedIn
-        }
-        Err(_) => {
-            println!("  Not signed in, and the GitHub CLI is not signed in either.");
-            println!("  Run `prmarmot-cli auth login`.");
+        None => {
+            match (settings.mode, gh) {
+                (AuthMode::Auto, GhLogin::Missing) => {
+                    println!("  Not signed in, and the GitHub CLI is not installed.");
+                }
+                (AuthMode::Auto, _) => {
+                    println!("  Not signed in, and the GitHub CLI is not signed in for this host either.");
+                }
+                _ => println!("  Not signed in."),
+            }
+            println!(
+                "  Run `prmarmot-cli auth login`, or `gh auth login` if you use the GitHub CLI."
+            );
             Outcome::NotSignedIn
         }
     }

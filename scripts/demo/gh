@@ -839,6 +839,15 @@ def main():
                 print("network unreachable", file=sys.stderr)
                 raise SystemExit(1)
             print("demo-user")
+        elif args[:2] == ["auth", "token"]:
+            # The sign-in probe. It discards the output, so any string will do;
+            # the demo is signed in to github.com and nowhere else.
+            root = Path(os.environ["XDG_CONFIG_HOME"])
+            host = args[args.index("--hostname") + 1] if "--hostname" in args else "github.com"
+            if (root / "unauthenticated").exists() or host != "github.com":
+                print(f"no oauth token found for {host}", file=sys.stderr)
+                raise SystemExit(1)
+            print("demo-token")
         elif len(args) >= 3 and args[:3] == ["api", "--method", "GET"] and "user/repos" in args:
             print(json.dumps([{"full_name": "demo-labs/atlas"},
                               {"full_name": "demo-labs/mobile"}]))

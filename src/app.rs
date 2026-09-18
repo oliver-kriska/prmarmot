@@ -666,7 +666,11 @@ impl RootView {
     }
 
     fn show_config(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = cx.new(|cx| crate::settings::SettingsView::new(window, cx));
+        let live = {
+            let state = self.state.read(cx);
+            state.signed_in_via.zip(state.me.clone())
+        };
+        let settings = cx.new(|cx| crate::settings::SettingsView::new(live, window, cx));
         cx.subscribe_in(
             &settings,
             window,
@@ -2509,7 +2513,8 @@ impl RootView {
         let (title, detail) = match &setup {
             SetupStatus::Checking => (
                 "Checking your GitHub sign-in…".to_owned(),
-                "PR Marmot uses a token you sign in with here, or your existing GitHub CLI session."
+                "PR Marmot uses your GitHub CLI login when you have one, or a token you sign in \
+                 with here."
                     .to_owned(),
             ),
             SetupStatus::MissingGh | SetupStatus::NotAuthenticated => {

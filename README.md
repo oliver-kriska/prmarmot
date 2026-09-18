@@ -44,17 +44,17 @@ pretending GitHub assigned it to you.
 
 ### Requirements
 
-None beyond the app itself. PR Marmot checks for a GitHub sign-in after its
-window opens; if it finds none, the sign-in screen offers **Sign in with
-GitHub** (a one-time code you type at github.com), **Use a token**, and
-**Enterprise host**. See [Signing in](#signing-in).
-
-If you already use the [GitHub CLI](https://cli.github.com), PR Marmot picks up
-its session instead and you can skip signing in:
+None beyond the app itself. If you use the
+[GitHub CLI](https://cli.github.com), PR Marmot uses its login and there is
+nothing to set up:
 
 ```sh
 gh auth login
 ```
+
+Otherwise the sign-in screen appears when the window opens, offering **Sign in
+with GitHub** (a one-time code you type at github.com), **Use a token**, and
+**Enterprise host**. See [Signing in](#signing-in).
 
 Prebuilt releases are signed and notarized for **Apple-silicon macOS**. Linux
 and Intel Mac users build from source for now.
@@ -155,7 +155,20 @@ PR Marmot reads GitHub with your own token and nothing else: there is no PR
 Marmot account, no server of ours in the path, and the token never leaves the
 machine it was stored on.
 
-Three ways in, in the order the sign-in screen offers them:
+**Which sign-in PR Marmot uses.** A token you chose on purpose comes first:
+one set for the run with `PRMARMOT_TOKEN`, then a personal access token you
+pasted (**Use a token**, or `prmarmot-cli auth login --with-token`). Next comes
+your GitHub CLI login: when `gh` is signed in to the host, PR Marmot uses it
+even if you also signed in with GitHub here. The GitHub CLI is an OAuth app
+that organizations' OAuth-app restrictions don't apply to; PR Marmot's own
+sign-in is subject to them, so preferring it would quietly hide repositories
+in organizations that restrict OAuth apps. To use that sign-in anyway, set
+`[auth] mode = "token"` (or `PRMARMOT_AUTH=token`). Settings and
+`prmarmot-cli auth status` say which one is in use, and whether a stored token
+is sitting unused.
+
+Without a GitHub CLI login, there are three ways in, in the order the sign-in
+screen offers them:
 
 - **Sign in with GitHub** — GitHub's OAuth *device flow*, against PR Marmot's
   own registration, so there is nothing to set up. The app shows an
@@ -199,12 +212,13 @@ from the app would need a client secret, and PR Marmot has none by design.
 **Environment overrides**, highest precedence first: `--host` / `--auth` flags
 (CLI), then `PRMARMOT_HOST`, `GH_HOST`, `PRMARMOT_AUTH`, `PRMARMOT_CLIENT_ID`,
 `PRMARMOT_TOKEN`, then the `[auth]` block in the config file.
-`PRMARMOT_AUTH` takes `auto` (a stored token, else the GitHub CLI — the
-default), `gh`, `device`, or `token`. `PRMARMOT_TOKEN` supplies a token for one
-run and is never written to the store, which makes it the right switch for CI:
+`PRMARMOT_AUTH` takes `auto` (the default, in the order above), `gh`, `device`,
+or `token`. `PRMARMOT_TOKEN` supplies a token for one run and is never written
+to the store. It comes before a GitHub CLI login, which CI runners often have
+through `GH_TOKEN`, so it is the right switch for CI:
 
 ```sh
-PRMARMOT_AUTH=token PRMARMOT_TOKEN=$GITHUB_TOKEN prmarmot-cli mine --json
+PRMARMOT_TOKEN=$GITHUB_TOKEN prmarmot-cli mine --json
 ```
 
 ## Configuration
@@ -252,7 +266,7 @@ height = 860
 [auth]
 host = "github.com"                      # or a GitHub Enterprise Server host
 client_id = "Iv1.xxxxxxxxxxxx"           # only for a GHES host; public by design
-mode = "auto"                            # auto | gh | device | token
+mode = "auto"                            # auto (see Signing in) | gh | device | token
 store = "auto"                           # auto (keychain on macOS) | keychain | file
 ```
 
@@ -478,7 +492,10 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   approval or a change request. A later change request or a dismissal does.
   The app's Review column and sections use the same rule.
 
-Within `@1`, fields are only ever added.
+Within `@1`, fields are only ever added, and a field's set of values can grow:
+since v0.9.1, `ci` can be `hidden`, meaning the token may not read checks (a
+fine-grained token never can). Treat a value you don't know as unknown rather
+than as an error.
 
 **JSON Schema.** Both formats are described by JSON Schema (draft 2020-12):
 [`cli/schema/board-v1.schema.json`](cli/schema/board-v1.schema.json) for

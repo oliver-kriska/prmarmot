@@ -53,6 +53,8 @@ pub struct Connection {
     pub transport: Arc<dyn GithubTransport>,
     /// The host the attention state is namespaced by.
     pub host: String,
+    /// Which sign-in `auto` settled on, for Settings to name.
+    pub via: session::Connection,
 }
 
 /// How the app opens that connection. Swappable so tests need no network and
@@ -91,6 +93,7 @@ impl Connector for ConfiguredConnector {
             login,
             transport: session.transport_arc(),
             host: session.host.clone(),
+            via: session.connection,
         })
     }
 
@@ -102,6 +105,8 @@ impl Connector for ConfiguredConnector {
 pub struct AppState {
     pub scope: BoardScope,
     pub me: Option<String>,
+    /// How `me` signed in, once connected.
+    pub signed_in_via: Option<session::Connection>,
     pub setup: SetupStatus,
     pub mode: Mode,
     pub config: BoardConfig,
@@ -213,6 +218,7 @@ impl AppState {
         Self {
             scope,
             me: None,
+            signed_in_via: None,
             setup: SetupStatus::Checking,
             mode,
             config,
@@ -309,6 +315,7 @@ impl AppState {
                         )));
                         state.transport = connection.transport;
                         state.me = Some(connection.login);
+                        state.signed_in_via = Some(connection.via);
                         state.setup = SetupStatus::Ready;
                         state.refresh(cx);
                     }

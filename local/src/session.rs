@@ -10,7 +10,8 @@ use std::sync::Arc;
 use prmarmot_core::github::gh_cli::{self, GhCliTransport, RepoDiscovery};
 use prmarmot_core::github::http::HttpTransport;
 use prmarmot_core::github::{
-    viewer_login, AuthTransport, GhError, GithubTransport, RestTransport, StaticToken, TokenSource,
+    normalize_host, viewer_login, AuthTransport, GhError, GithubTransport, RestTransport,
+    StaticToken, TokenSource,
 };
 
 use crate::auth::{token_store, StoredTokenSource, TokenKind, TokenStore};
@@ -100,26 +101,133 @@ pub fn user_agent(front_end: &str, version: &str) -> String {
     format!("{front_end}/{version}")
 }
 
-/// Open a connection for these settings, resolving `auto`.
+/// What the GitHub CLI can do for one host, checked once when a session opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GhLogin {
+    /// `gh` has a login for the host, and its requests go to that host.
+    SignedIn,
+    /// `gh` is installed but can't carry this host: no login there, or its
+    /// requests go elsewhere (see [`gh_login`]).
+    SignedOut,
+    /// There is no `gh`.
+    Missing,
+    /// `gh` is there but didn't answer (a timeout, a crash). `auto` still
+    /// goes through it, as it did before this check existed, so that `gh`'s
+    /// own requests say what is wrong.
+    Unknown,
+}
+
+/// Probe the GitHub CLI for `host`, without a network call.
 ///
-/// `auto` prefers a token this machine stored (that is what signing in means)
-/// and falls back to `gh`, so an existing install keeps working untouched.
+/// The `gh` transport doesn't pass `--hostname`, so its requests go to
+/// `GH_HOST`, or github.com without one. A login for any other host can't
+/// carry this run, so it reads as signed out rather than sending the board
+/// query to the wrong server.
+pub fn gh_login(host: &str) -> GhLogin {
+    let host = normalize_host(host);
+    let gh_host = normalize_host(&std::env::var("GH_HOST").unwrap_or_default());
+    match gh_cli::has_login(&host) {
+        Ok(true) if gh_host == host => GhLogin::SignedIn,
+        Ok(_) => GhLogin::SignedOut,
+        Err(GhError::NotInstalled) => GhLogin::Missing,
+        Err(_) => GhLogin::Unknown,
+    }
+}
+
+/// Which sign-in a run uses, for status displays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignIn {
+    /// A token supplied for this run (`PRMARMOT_TOKEN`), never stored.
+    Supplied,
+    /// The GitHub CLI's login.
+    GhCli,
+    /// A token stored by signing in here.
+    Stored,
+}
+
+/// The sign-in [`connect`] picks, in the same order, so `auth status` and
+/// Settings can't disagree with a refresh. `stored` is the kind of token
+/// stored for the host, and `supplied` says a `PRMARMOT_TOKEN` is set.
+///
+/// `auto` takes a token someone chose on purpose first: one supplied for this
+/// run, then a personal access token they pasted (**Use a token**, `auth login
+/// --with-token`). Then the GitHub CLI login, then a device-flow token, then
+/// nothing. `gh` comes before the device-flow token because that token belongs
+/// to PR Marmot's own OAuth app, which organizations' OAuth-app restrictions
+/// apply to. The GitHub CLI is a privileged OAuth app they don't apply to, so
+/// preferring the device-flow token would silently hide repositories in
+/// restricting organizations. A pasted token is the user's own choice of
+/// credentials, and on a CI runner, where `gh` is often signed in through
+/// `GH_TOKEN`, it must not be quietly replaced. `[auth] mode = "token"` or
+/// `PRMARMOT_AUTH=token` still picks a stored device-flow token over `gh`.
+pub fn sign_in_used(
+    mode: AuthMode,
+    gh: GhLogin,
+    stored: Option<TokenKind>,
+    supplied: bool,
+) -> Option<SignIn> {
+    match mode {
+        AuthMode::Gh => Some(SignIn::GhCli),
+        AuthMode::Token if supplied => Some(SignIn::Supplied),
+        AuthMode::Token => stored.map(|_| SignIn::Stored),
+        AuthMode::Device => (stored == Some(TokenKind::Device)).then_some(SignIn::Stored),
+        AuthMode::Auto if supplied => Some(SignIn::Supplied),
+        AuthMode::Auto if stored == Some(TokenKind::Token) => Some(SignIn::Stored),
+        AuthMode::Auto if matches!(gh, GhLogin::SignedIn | GhLogin::Unknown) => Some(SignIn::GhCli),
+        AuthMode::Auto => stored.map(|_| SignIn::Stored),
+    }
+}
+
+/// Open a connection for these settings, resolving `auto` in the order
+/// [`sign_in_used`] gives, or failing with the error the front ends show as
+/// the sign-in screen.
 pub fn connect(settings: &AuthSettings, user_agent: &str) -> Result<Session, GhError> {
     let store = token_store(settings.store);
+    connect_with(settings, user_agent, store.as_ref(), || {
+        gh_login(&settings.host)
+    })
+}
+
+/// [`connect`] with the token store and the `gh` probe passed in, so the
+/// order is testable without a keychain or a `gh` binary. The probe runs
+/// only for `auto`.
+fn connect_with(
+    settings: &AuthSettings,
+    user_agent: &str,
+    store: &dyn TokenStore,
+    gh: impl FnOnce() -> GhLogin,
+) -> Result<Session, GhError> {
     match settings.mode {
         AuthMode::Gh => Ok(gh_session(settings)),
-        AuthMode::Token => direct_session(settings, store.as_ref(), user_agent, TokenNeed::Any),
-        AuthMode::Device => direct_session(settings, store.as_ref(), user_agent, TokenNeed::Device),
+        AuthMode::Token => direct_session(settings, store, user_agent, TokenNeed::Any),
+        AuthMode::Device => direct_session(settings, store, user_agent, TokenNeed::Device),
         AuthMode::Auto => {
-            if settings.inline_token.is_some()
-                || store
+            // Only what can change the answer is looked at: the store (a
+            // keychain read) unless a token was supplied, and `gh` unless a
+            // token someone chose already won.
+            let supplied = settings.inline_token.is_some();
+            let stored = if supplied {
+                None
+            } else {
+                store
                     .load(&settings.host)
                     .map_err(GhError::Network)?
-                    .is_some()
-            {
-                direct_session(settings, store.as_ref(), user_agent, TokenNeed::Any)
+                    .map(|auth| auth.kind)
+            };
+            let gh = if supplied || stored == Some(TokenKind::Token) {
+                GhLogin::SignedOut
             } else {
-                Ok(gh_session(settings))
+                gh()
+            };
+            match sign_in_used(AuthMode::Auto, gh, stored, supplied) {
+                Some(SignIn::GhCli) => Ok(gh_session(settings)),
+                Some(SignIn::Supplied | SignIn::Stored) => {
+                    direct_session(settings, store, user_agent, TokenNeed::Any)
+                }
+                None => Err(match gh {
+                    GhLogin::Missing => GhError::NotInstalled,
+                    _ => GhError::NotAuthenticated,
+                }),
             }
         }
     }
@@ -334,11 +442,202 @@ mod tests {
     }
 
     #[test]
-    fn gh_stays_the_fallback_and_is_not_a_direct_connection() {
+    fn a_gh_session_is_not_a_direct_connection() {
         let session = gh_session(&settings(AuthMode::Gh, None));
         assert_eq!(session.connection, Connection::GhCli);
         assert!(!session.connection.is_direct());
         assert_eq!(session.connection.word(), "gh");
+    }
+
+    /// A personal access token someone pasted.
+    fn stored_pat() -> Holds {
+        Holds(StoredAuth::pat("github.com", "ghp_x").with_login("octo"))
+    }
+
+    /// A token from signing in with GitHub (the device flow).
+    fn stored_device() -> Holds {
+        Holds(
+            StoredAuth::device("github.com", "Iv1.abc", TokenSet::from_pat("ghu_x"))
+                .with_login("octo"),
+        )
+    }
+
+    fn auto(inline: Option<&str>, store: &dyn TokenStore, gh: GhLogin) -> Result<Session, GhError> {
+        connect_with(
+            &settings(AuthMode::Auto, inline),
+            "prmarmot-test/0",
+            store,
+            || gh,
+        )
+    }
+
+    /// `auto` with a `gh` that records whether it was asked.
+    fn auto_asking(inline: Option<&str>, store: &dyn TokenStore) -> (Session, bool) {
+        let asked = std::cell::Cell::new(false);
+        let session = connect_with(
+            &settings(AuthMode::Auto, inline),
+            "prmarmot-test/0",
+            store,
+            || {
+                asked.set(true);
+                GhLogin::SignedIn
+            },
+        )
+        .unwrap();
+        (session, asked.get())
+    }
+
+    #[test]
+    fn auto_takes_the_github_cli_login_over_a_device_flow_token() {
+        let session = auto(None, &stored_device(), GhLogin::SignedIn).unwrap();
+        assert_eq!(session.connection, Connection::GhCli);
+    }
+
+    #[test]
+    fn a_token_supplied_for_the_run_beats_the_github_cli_login() {
+        // A CI runner: `gh` is signed in through GH_TOKEN, and the job passed
+        // PRMARMOT_TOKEN. The job's token is used, and neither `gh` nor the
+        // store is consulted.
+        let (session, asked) = auto_asking(Some("ghp_job"), &stored_pat());
+        assert_eq!(session.connection, Connection::Token);
+        assert_eq!(
+            session.stored_login, None,
+            "the supplied token, not the stored one"
+        );
+        assert!(!asked);
+    }
+
+    #[test]
+    fn a_pasted_token_beats_the_github_cli_login() {
+        let (session, asked) = auto_asking(None, &stored_pat());
+        assert_eq!(session.connection, Connection::Token);
+        assert_eq!(session.stored_login.as_deref(), Some("octo"));
+        assert!(!asked);
+    }
+
+    #[test]
+    fn a_gh_that_does_not_answer_is_still_tried_first() {
+        let session = auto(None, &stored_device(), GhLogin::Unknown).unwrap();
+        assert_eq!(session.connection, Connection::GhCli);
+    }
+
+    #[test]
+    fn auto_uses_the_stored_token_when_gh_is_missing_or_signed_out() {
+        for gh in [GhLogin::Missing, GhLogin::SignedOut] {
+            let session = auto(None, &stored_device(), gh).unwrap();
+            assert_eq!(session.connection, Connection::Device, "{gh:?}");
+            assert_eq!(session.stored_login.as_deref(), Some("octo"));
+        }
+    }
+
+    #[test]
+    fn auto_with_neither_is_the_sign_in_screen() {
+        assert_eq!(
+            error_of(auto(None, &Empty, GhLogin::Missing)),
+            Some(GhError::NotInstalled)
+        );
+        assert_eq!(
+            error_of(auto(None, &Empty, GhLogin::SignedOut)),
+            Some(GhError::NotAuthenticated)
+        );
+    }
+
+    #[test]
+    fn status_names_the_same_sign_in_that_connect_uses() {
+        use GhLogin::{Missing, SignedIn, SignedOut, Unknown};
+        let (pat, device) = (stored_pat(), stored_device());
+        for gh in [SignedIn, Unknown, SignedOut, Missing] {
+            for stored in [None, Some(TokenKind::Device), Some(TokenKind::Token)] {
+                for supplied in [false, true] {
+                    let named = sign_in_used(AuthMode::Auto, gh, stored, supplied);
+                    let store: &dyn TokenStore = match stored {
+                        None => &Empty,
+                        Some(TokenKind::Device) => &device,
+                        Some(TokenKind::Token) => &pat,
+                    };
+                    let connected = auto(supplied.then_some("ghp_job"), store, gh)
+                        .ok()
+                        .map(|session| (session.connection, session.stored_login.is_some()));
+                    let expected = match named {
+                        Some(SignIn::Supplied) => Some((Connection::Token, false)),
+                        Some(SignIn::GhCli) => Some((Connection::GhCli, false)),
+                        Some(SignIn::Stored) if stored == Some(TokenKind::Device) => {
+                            Some((Connection::Device, true))
+                        }
+                        Some(SignIn::Stored) => Some((Connection::Token, true)),
+                        None => None,
+                    };
+                    assert_eq!(
+                        connected, expected,
+                        "{gh:?} {stored:?} supplied={supplied}: status {named:?}"
+                    );
+                }
+            }
+        }
+        use SignIn::{GhCli, Stored, Supplied};
+        let (device, pat) = (Some(TokenKind::Device), Some(TokenKind::Token));
+        // The order in `auto`.
+        assert_eq!(
+            sign_in_used(AuthMode::Auto, SignedIn, pat, true),
+            Some(Supplied)
+        );
+        assert_eq!(
+            sign_in_used(AuthMode::Auto, SignedIn, pat, false),
+            Some(Stored)
+        );
+        assert_eq!(
+            sign_in_used(AuthMode::Auto, SignedIn, device, false),
+            Some(GhCli)
+        );
+        assert_eq!(
+            sign_in_used(AuthMode::Auto, Missing, device, false),
+            Some(Stored)
+        );
+        assert_eq!(sign_in_used(AuthMode::Auto, Missing, None, false), None);
+        // The explicit modes.
+        assert_eq!(
+            sign_in_used(AuthMode::Token, SignedIn, device, false),
+            Some(Stored)
+        );
+        assert_eq!(
+            sign_in_used(AuthMode::Token, SignedIn, device, true),
+            Some(Supplied)
+        );
+        assert_eq!(sign_in_used(AuthMode::Device, SignedIn, pat, true), None);
+        assert_eq!(
+            sign_in_used(AuthMode::Device, SignedIn, device, true),
+            Some(Stored)
+        );
+        assert_eq!(sign_in_used(AuthMode::Gh, Missing, pat, true), Some(GhCli));
+    }
+
+    #[test]
+    fn explicit_modes_never_ask_gh() {
+        let asked = std::cell::Cell::new(false);
+        let probe = || {
+            asked.set(true);
+            GhLogin::SignedIn
+        };
+        let token = connect_with(
+            &settings(AuthMode::Token, None),
+            "prmarmot-test/0",
+            &stored_pat(),
+            probe,
+        )
+        .unwrap();
+        assert_eq!(token.connection, Connection::Token);
+        let gh = connect_with(
+            &settings(AuthMode::Gh, None),
+            "prmarmot-test/0",
+            &Empty,
+            || {
+                asked.set(true);
+                GhLogin::Missing
+            },
+        )
+        .unwrap();
+        assert_eq!(gh.connection, Connection::GhCli);
+        assert!(!asked.get(), "an explicit mode probed gh");
     }
 
     #[test]

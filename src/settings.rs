@@ -15,20 +15,72 @@ use prmarmot_core::board::IssueLinkRule;
 
 use prmarmot_local::auth::{token_store, TokenKind};
 use prmarmot_local::config::AuthSettings;
+use prmarmot_local::session::Connection;
 
 use crate::config::{self, SettingsUpdate};
 use crate::theme::ThemePref;
 
-/// "octo, signed in with the device flow. Token in the macOS keychain."
-fn describe_account(auth: &AuthSettings) -> Option<String> {
+/// A token PR Marmot stored on this Mac, in words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredAccount {
+    who: String,
+    /// "signed in with GitHub" or "a personal access token".
+    how: &'static str,
+    /// Where the token lives: "the macOS keychain".
+    place: String,
+}
+
+fn stored_account(auth: &AuthSettings) -> Option<StoredAccount> {
     let store = token_store(auth.store);
     let stored = store.load(&auth.host).ok().flatten()?;
-    let how = match stored.kind {
-        TokenKind::Device => "signed in with GitHub",
-        TokenKind::Token => "using a personal access token",
-    };
-    let who = stored.login.unwrap_or_else(|| "this account".into());
-    Some(format!("{who}, {how}. Token in {}.", store.describe()))
+    Some(StoredAccount {
+        who: stored.login.unwrap_or_else(|| "this account".into()),
+        how: match stored.kind {
+            TokenKind::Device => "signed in with GitHub",
+            TokenKind::Token => "a personal access token",
+        },
+        place: store.describe(),
+    })
+}
+
+/// The Account block's sentence: which sign-in is live, and whether a stored
+/// token sits unused beside the GitHub CLI login. `live` is what the app
+/// connected with; `None` before it has. `inline` is a `PRMARMOT_TOKEN`.
+fn account_detail(
+    live: Option<(Connection, &str)>,
+    stored: Option<&StoredAccount>,
+    inline: bool,
+    host: &str,
+) -> String {
+    match (live, stored) {
+        // PRMARMOT_TOKEN comes before anything stored, so a stored token
+        // beside it isn't the one in use.
+        (Some((Connection::Token, login)), _) if inline => {
+            format!("Using the token from PRMARMOT_TOKEN as {login}.")
+        }
+        (Some((Connection::GhCli, login)), None) => {
+            format!("Using your GitHub CLI login as {login}.")
+        }
+        (Some((Connection::GhCli, login)), Some(stored)) => format!(
+            "Using your GitHub CLI login as {login}. The token for {} stored in {} is unused \
+             while the GitHub CLI is signed in; Disconnect removes it.",
+            stored.who, stored.place
+        ),
+        (Some((_, login)), Some(stored)) => format!(
+            "Using a stored token as {login} ({}). Token in {}.",
+            stored.how, stored.place
+        ),
+        // Disconnected while that token was in use: this session still holds
+        // it, but nothing is stored any more.
+        (Some((_, login)), None) => format!(
+            "Signed out on this Mac; PR Marmot asks {login} to sign in again at the next refresh."
+        ),
+        (None, Some(stored)) => format!(
+            "A token for {} ({}) is stored in {}.",
+            stored.who, stored.how, stored.place
+        ),
+        (None, None) => format!("Not signed in to {host}."),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,14 +141,20 @@ pub struct SettingsView {
     path: String,
     /// The GitHub host and token store this install is configured for.
     auth: AuthSettings,
-    /// The account signed in *here* (not through the `gh` CLI), in words.
-    account: Option<String>,
+    /// A token stored on this Mac, whether or not it is the one in use.
+    account: Option<StoredAccount>,
+    /// The sign-in the app connected with, and its login.
+    live: Option<(Connection, String)>,
     /// What happened after a Disconnect.
     account_message: Option<String>,
 }
 
 impl SettingsView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        live: Option<(Connection, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let file = config::load();
         let env = EnvOverrides::current();
 
@@ -115,7 +173,7 @@ impl SettingsView {
             let mut warnings = Vec::new();
             prmarmot_local::config::auth_settings(&file, None, None, &mut warnings)
         };
-        let account = describe_account(&auth);
+        let account = stored_account(&auth);
         let issue = env.issue_link.clone().or_else(|| {
             file.issue_link
                 .map(|rule| (rule.pattern, rule.url_template))
@@ -150,6 +208,7 @@ impl SettingsView {
             path: config::config_path().display().to_string(),
             auth,
             account,
+            live,
             account_message: None,
         };
         for (input, field) in [
@@ -263,13 +322,14 @@ impl SettingsView {
     /// token lives, and a way to forget it.
     fn render_account(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let detail = match &self.account {
-            Some(account) => account.clone(),
-            None => format!(
-                "Not signed in here; PR Marmot is using the GitHub CLI for {}.",
-                self.auth.host
-            ),
-        };
+        let detail = account_detail(
+            self.live
+                .as_ref()
+                .map(|(via, login)| (*via, login.as_str())),
+            self.account.as_ref(),
+            self.auth.inline_token.is_some(),
+            &self.auth.host,
+        );
         v_flex()
             .gap_1()
             .child(
@@ -301,8 +361,14 @@ impl SettingsView {
         match token_store(self.auth.store).delete(&self.auth.host) {
             Ok(()) => {
                 self.account = None;
+                let what = match self.live {
+                    Some((Connection::GhCli, _)) => {
+                        "Removed the unused token; PR Marmot keeps using your GitHub CLI login."
+                    }
+                    _ => "Signed out on this Mac.",
+                };
                 self.account_message = Some(format!(
-                    "Signed out on this Mac. To revoke PR Marmot's access at GitHub, visit \
+                    "{what} To revoke PR Marmot's access at GitHub, visit \
                      https://{}/settings/applications.",
                     self.auth.host
                 ));
@@ -699,6 +765,47 @@ fn validate_issue_link(pattern: &str, url: &str) -> Result<Option<(String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_block_names_the_live_sign_in_and_an_unused_token() {
+        let stored = StoredAccount {
+            who: "octo".into(),
+            how: "signed in with GitHub",
+            place: "the macOS keychain".into(),
+        };
+        let gh = Some((Connection::GhCli, "octo"));
+        assert_eq!(
+            account_detail(gh, None, false, "github.com"),
+            "Using your GitHub CLI login as octo."
+        );
+        let both = account_detail(gh, Some(&stored), false, "github.com");
+        assert!(
+            both.starts_with("Using your GitHub CLI login as octo."),
+            "{both}"
+        );
+        assert!(both.contains("is unused"), "{both}");
+        assert!(both.contains("Disconnect removes it"), "{both}");
+        assert_eq!(
+            account_detail(
+                Some((Connection::Device, "octo")),
+                Some(&stored),
+                false,
+                "github.com"
+            ),
+            "Using a stored token as octo (signed in with GitHub). Token in the macOS keychain."
+        );
+        assert_eq!(
+            account_detail(None, None, false, "ghe.acme.test"),
+            "Not signed in to ghe.acme.test."
+        );
+        let token = Some((Connection::Token, "octo"));
+        assert!(account_detail(token, None, true, "github.com").contains("PRMARMOT_TOKEN"));
+        assert_eq!(
+            account_detail(token, Some(&stored), true, "github.com"),
+            "Using the token from PRMARMOT_TOKEN as octo."
+        );
+        assert!(account_detail(token, None, false, "github.com").contains("sign in again"));
+    }
 
     #[test]
     fn reviewer_validation_trims_deduplicates_and_checks_logins() {

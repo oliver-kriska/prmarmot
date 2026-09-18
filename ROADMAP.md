@@ -161,7 +161,7 @@ Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Ent
 
 - [x] Direct HTTP `GithubTransport`: same GraphQL document, same bounded paging and rate-limit parsing, host configurable (github.com + GitHub Enterprise).
 - [x] OAuth decided: **Device Flow, no token-exchange server, ever.** Tokens in the OS keychain, never in config files.
-- [x] Desktop transport picker: a token stored by PR Marmot if there is one, else `gh` (zero-config), with in-app Device Flow / token / Enterprise-host onboarding and `prmarmot-cli auth login|status|logout`.
+- [x] Desktop transport picker: a token you set or pasted, else the `gh` login if there is one (it isn't subject to organizations' OAuth-app restrictions), else PR Marmot's own sign-in, with in-app Device Flow / token / Enterprise-host onboarding and `prmarmot-cli auth login|status|logout`.
 - [x] UniFFI bindings for `prmarmot-core`; CI builds an XCFramework published as a Swift package from a tag.
 - [x] Contract tests: the Swift package runs the same golden fixtures through the bindings.
 - [x] One search grammar: `label:` / `author:` / `repo:` / `is:stale` live in `prmarmot-core`, golden-tested, and reach the terminal as `prmarmot-cli --filter`.

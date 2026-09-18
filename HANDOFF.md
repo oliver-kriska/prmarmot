@@ -60,7 +60,12 @@ cannot drift.
 (`--host`, `--auth`) > `PRMARMOT_HOST` / `GH_HOST` / `PRMARMOT_AUTH` /
 `PRMARMOT_CLIENT_ID` / `PRMARMOT_TOKEN` > file. `auto` prefers a token this
 machine stored and falls back to `gh`, so every existing install keeps working
-untouched. The CLI gained `auth login | status | logout` (with `--with-token`
+untouched. (Reversed 2026-09-18 at Oliver's decision: `auto` now takes the
+GitHub CLI login first, because organizations' OAuth-app restrictions don't
+apply to `gh` but do apply to PR Marmot's own app; see `local/src/session.rs`.
+Refined the same day: a token chosen on purpose, `PRMARMOT_TOKEN` or a pasted
+PAT, still comes before `gh`; only the device-flow token, the one those
+restrictions apply to, moved behind it.) The CLI gained `auth login | status | logout` (with `--with-token`
 reading a PAT from stdin) and the desktop gained an in-app sign-in screen
 (`src/onboarding.rs`) with device flow, token paste and an Enterprise-host
 field, plus Settings → **Disconnect**.
