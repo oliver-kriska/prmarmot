@@ -328,10 +328,15 @@ impl RootView {
             true
         });
 
-        // The "synced Xm ago" label renders only on notify — without a slow
-        // tick it can claim "just now" for a whole refresh interval. One
-        // frame a minute; nothing animates.
+        // The "synced Xm ago" label and the wait ages render only on notify —
+        // without a slow tick they can claim "just now" for a whole refresh
+        // interval. The tick runs every 5 s so notification clicks and timed
+        // snoozes are handled promptly, but it repaints only when the synced
+        // label changes (once a minute), while a rate-limit countdown is
+        // showing, or after a platform event. An idle window draws one frame
+        // a minute; nothing animates.
         let ticker = cx.entity().downgrade();
+        let mut shown_sync_label = None;
         cx.spawn_in(window, async move |_this, cx| loop {
             cx.background_executor().timer(Duration::from_secs(5)).await;
             let Some(view) = ticker.upgrade() else { break };
@@ -341,7 +346,16 @@ impl RootView {
                     state.set_focused_selection(selected, window.is_window_active());
                     state.wake_timed_snoozes(cx);
                 });
-                if let Some(event) = this.state.read(cx).take_platform_event() {
+                let state = this.state.read(cx);
+                let sync_label = state.last_synced.map(relative);
+                let counting_down = state.backoff_remaining().is_some();
+                let label_changed = sync_label != shown_sync_label;
+                shown_sync_label = sync_label;
+                let event = state.take_platform_event();
+                if !(label_changed || counting_down || event.is_some()) {
+                    return;
+                }
+                if let Some(event) = event {
                     match event {
                         crate::platform::PlatformEvent::Clicked(pr_id) => {
                             window.activate_window();
