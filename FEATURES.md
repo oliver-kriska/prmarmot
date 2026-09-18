@@ -55,8 +55,8 @@ features get the next free number in their area.
   - whether it is changed, watched, or snoozed.
 
   It makes no extra request, and `Esc` closes it. _since v0.3.0_
-- **F-board-11** Switching queues is instant: each of the two queues keeps its rows, selection, and scroll
-  position, then refreshes in the background. _since v0.2.0_
+- **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
+  background. _since v0.2.0_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you: Needs action (Needs attention in Involving me) in My PRs, and Requested from you
@@ -407,7 +407,7 @@ features get the next free number in their area.
 - Read-only: PR Marmot opens PRs and issues in the browser and copies links. It never merges, assigns reviewers,
   comments, submits or dismisses reviews, or changes anything on GitHub.
 - No Windows build.
-- No PR Marmot account, no server between you and GitHub, and no telemetry.
+- No PR Marmot account and no server between you and GitHub, and the app sends no telemetry.
 - No custom key bindings and no custom shell actions.
 
 ## Planned
