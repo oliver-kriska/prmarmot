@@ -3,7 +3,7 @@
 This is the complete list of what the PR Marmot desktop app and `prmarmot-cli` do. The README summarises it.
 Each id (`F-board-3`) is stable and never reused, so other documents (the site, the iPad app's parity list) can point at one.
 
-Each entry gives the version it first shipped in. `unreleased (0.9.1)` marks work that is on `main` but not yet
+Each entry gives the version it first shipped in. `unreleased (x.y.z)` marks work that is on `main` but not yet
 released. An entry that names no platform works on both macOS and Linux. Limits are the values in the code. New
 features get the next free number in their area.
 
@@ -157,7 +157,7 @@ features get the next free number in their area.
   - **Review again when changed** wakes on a new commit, review, review request, review decision, unresolved-thread
     count, or draft change.
   - **Waiting on** the PR's author wakes when the author submits a newer review. It isn't offered on your own PRs,
-    where it could never wake. _unreleased (0.9.1)_
+    where it could never wake. _since v0.9.1_
 
   A conditional snooze wakes only when PR Marmot sees the PR, and missing data never wakes one. Snoozing again
   replaces a snooze, and **Cancel snooze** ends it. Up to 200 snoozes are kept; a 201st drops the oldest. _since
@@ -172,7 +172,7 @@ features get the next free number in their area.
   the row you have selected, and the first refresh after launch never notify. Clicking a notification selects the
   PR, or opens a watched PR that isn't loaded on GitHub. Notifications and their sound can be turned off, and they
   arrive only while the app runs. _since v0.6.0_ Clicking one for any PR the board isn't showing opens it on GitHub.
-  _unreleased (0.9.1)_
+  _since v0.9.1_
 - **F-track-6** The Dock badge counts, across both views, your PRs that need action plus review requests. It can
   be turned off. _since v0.6.0 · macOS only_
 - **F-track-7** Watches, snoozes, and change history are stored apart from preferences under
@@ -214,7 +214,7 @@ features get the next free number in their area.
 - **F-auth-1** PR Marmot uses your GitHub CLI (`gh`) login when there is one. _since v0.1.0_ In `auto`, the
   default, a token you chose comes first (`PRMARMOT_TOKEN`, then a pasted personal access token), then the `gh`
   login, then a device-flow sign-in, then the sign-in screen. The GitHub CLI is exempt from organizations'
-  OAuth-app restrictions, and PR Marmot's own app isn't. _unreleased (0.9.1)_
+  OAuth-app restrictions, and PR Marmot's own app isn't. _since v0.9.1_
 - **F-auth-2** **Sign in with GitHub** uses GitHub's device flow with PR Marmot's own registration, so there is
   nothing to set up. You type an eight-character code at github.com/login/device. It asks for `repo` and
   `read:org`, and there is no client secret and no server of ours. _since v0.9.0_
@@ -222,18 +222,17 @@ features get the next free number in their area.
   Metadata: read and covers one owner. A classic one with `repo` and `read:org` covers several organizations and
   shows CI. The token is never displayed. _since v0.9.0_
 - **F-auth-4** A fine-grained token still loads the board. CI it may not read shows as "hidden", and one line under
-  the header explains why. _unreleased (0.9.1)_
+  the header explains why. _since v0.9.1_
 - **F-auth-5** GitHub Enterprise Server: set `[auth] host`, `PRMARMOT_HOST`, or `GH_HOST`. Sign in with a token, or
   with the device flow once `[auth] client_id` names that instance's own registration. _since v0.9.0_ A host typed
-  in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _unreleased
-  (0.9.1)_
+  in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _since v0.9.1_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_
 - **F-auth-7** Settings shows the host and the signed-in account. **Disconnect** removes a stored token from this
   machine; revoking the grant at GitHub is a separate step. _since v0.9.0_
 - **F-auth-8** Settings and `prmarmot-cli auth status` name the sign-in in use, including `PRMARMOT_TOKEN`, and
-  point out a stored token that goes unused while the GitHub CLI is signed in. _unreleased (0.9.1)_
+  point out a stored token that goes unused while the GitHub CLI is signed in. _since v0.9.1_
 - **F-auth-9** `[auth] mode` or `PRMARMOT_AUTH` picks `auto`, `gh`, `device`, or `token`. `PRMARMOT_TOKEN` supplies a
   token for one run and is never stored. It comes before a GitHub CLI login, so it suits CI. _since v0.9.0_
 
@@ -277,7 +276,7 @@ features get the next free number in their area.
 - **F-settings-2** Every setting lives in an optional TOML file at `$XDG_CONFIG_HOME/prmarmot/config.toml` or
   `~/.config/prmarmot/config.toml`. The app writes changes back and keeps your comments. A file it can't parse is
   never overwritten, and the app starts with defaults. _since v0.1.0_ A banner says the file was ignored and why,
-  until you dismiss it or a Settings save succeeds. _unreleased (0.9.1)_
+  until you dismiss it or a Settings save succeeds. _since v0.9.1_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_
@@ -307,7 +306,7 @@ features get the next free number in their area.
   It writes a config file only when it can resolve a repository you can reach, and never overwrites an existing
   one. _since v0.1.0_
 - **F-install-5** The GitHub CLI is optional: the cask doesn't depend on it, and without it the installer tells you
-  the app will ask you to sign in. _unreleased (0.9.1)_
+  the app will ask you to sign in. _since v0.9.1_
 - **F-install-6** On launch, and at most once a day after that, the app checks for the latest stable release and
   shows a banner when there is one.
   - For a direct install, the banner opens the release page.
@@ -315,7 +314,7 @@ features get the next free number in their area.
     failure on the next launch.
 
   The check can be turned off. _since v0.6.0_ It asks through the GitHub CLI when that can answer, and otherwise
-  asks GitHub directly without a token. _unreleased (0.9.1)_
+  asks GitHub directly without a token. _since v0.9.1_
 - **F-install-7** The first PR Marmot launch copies the former `prboard` app's config and state once and leaves the
   originals alone. If the copy fails, the app stops with an error instead of starting empty. _since v0.6.0_
 - **F-install-8** Linux and Intel Macs build from source, and `install.sh --from-source` puts the binaries in
