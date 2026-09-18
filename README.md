@@ -649,8 +649,8 @@ layers appear in the same loaded section.
 
 ## Build and develop
 
-The Nix flake supplies Rust, Cargo, rustfmt, Clippy, `gh`, and GPUI's Linux
-libraries. On macOS, the shell uses the active local Xcode for Clang,
+Nix is optional. The Nix flake supplies Rust, Cargo, rustfmt, Clippy, `gh`, and
+GPUI's Linux libraries. On macOS, the shell uses the active local Xcode for Clang,
 the Apple SDK, `libclang`, Metal, and `metallib`.
 The macOS Nix package uses GPUI's runtime shader compilation instead, so
 `nix build` does not need the external Xcode Metal compiler.
@@ -664,6 +664,9 @@ cargo run -p prmarmot -- --repo owner/name
 nix build
 nix run . -- --repo owner/name
 ```
+
+With direnv, `direnv allow` loads the same shell whenever you enter the
+directory.
 
 The workspace contains the GPUI app and three UI-independent crates:
 - `core/` holds GitHub transport, categorization, Notes, board layout, and change

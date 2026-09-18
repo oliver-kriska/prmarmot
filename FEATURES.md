@@ -324,6 +324,9 @@ features get the next free number in their area.
   originals alone. If the copy fails, the app stops with an error instead of starting empty. _since v0.6.0_
 - **F-install-8** Linux and Intel Macs build from source, and `install.sh --from-source` puts the binaries in
   `~/.local/bin`. There are no prebuilt Linux packages yet. _since v0.1.0_
+- **F-install-9** Nix: the repository has a flake. `nix develop`, or direnv, gives the build environment, and
+  `nix build` or `nix run` builds the app from source. Only Apple silicon has been tried; Linux and Intel Macs are
+  untested. _unreleased_
 
 ## Terminal and agent CLI
 
