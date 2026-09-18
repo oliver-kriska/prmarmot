@@ -39,7 +39,7 @@ Two ways to influence it:
 | Rung | Product | How it is built | Price | Role |
 |---|---|---|---|---|
 | 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, reuses your `gh` login, everything stays on your machine | Free, MIT, forever | The product; the open-source brand |
-| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid, one-time unlock on the App Store | First paid product |
+| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid app on the App Store, bought once | First paid product |
 | 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your iPad | Subscription | The only way mobile alerts can be reliable |
 | 4 | Mac App Store copy of rung 1 (optional) | The same open-source app, sandboxed | Paid for convenience | Only if it turns out cheap |
 
@@ -68,7 +68,7 @@ Numbers are targets, revised against reality, never moved to make a gate pass.
 |---|---|---|
 | **G0 memory** | On the shipped cask build, 12–24 h unattended soak: mean physical footprint after hour 1 < 150 MB, linear-fit slope ≤ 2 MB/h, (max − min) after hour 1 ≤ 25 MB, idle CPU ≈ 0 %. Results are published in `benchmarks/`. Until then the README makes no "lightweight" or "low memory" claims. | Launch posts (Phase 3) |
 | **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | iPad app (Phase 5) |
-| **G2 demand** | ≥ 100 paid iPad unlocks **or** ≥ 50 % of iPad reviews and waitlist comments asking for alerts. | Cloud (Phase 6) |
+| **G2 demand** | ≥ 100 paid iPad purchases **or** ≥ 50 % of iPad reviews and waitlist comments asking for alerts. | Cloud (Phase 6) |
 
 ## Phase 0 — Rename to PR Marmot — done
 
@@ -175,7 +175,7 @@ A foreground triage companion: sidebar (My PRs / Review queue / Watched / Snooze
 - [ ] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1.
 - [ ] Platform wins: Home/Lock Screen widget ("N need you"), Shortcuts ("what needs me"), keyboard shortcuts on iPad, Handoff to GitHub.
 - [ ] Best-effort background refresh with local notifications, labelled best-effort in the UI and never in a screenshot.
-- [ ] Free download, one-time unlock; the free tier is one repo, read-only.
+- [ ] Paid app, bought once on the App Store; no free tier, no trial, no in-app purchase (2026-09-18). The free desktop app and the App Store screenshots are the way to try it.
 - [ ] TestFlight invitations go to the waitlist thread first; App Store privacy label "data not collected".
 
 ## Phase 6 — PR Marmot Cloud — after G2
