@@ -43,6 +43,22 @@ pub const REFRESH_SKEW_SECS: i64 = 300;
 /// PR Marmot registered an OAuth App (2026-09-17) for that reason.
 pub const SCOPES: &str = "repo read:org";
 
+/// PR Marmot's own registration on github.com: a classic OAuth App named
+/// "PR Marmot", owned by oliver-kriska, with Device Flow enabled
+/// (registered 2026-09-17). A client ID is public by design — the device
+/// flow has no client secret, and GitHub shows this value to every user who
+/// signs in. There is no secret for this app; never add one.
+///
+/// A GitHub Enterprise Server host needs its own registration, set as
+/// `[auth] client_id` (or `PRMARMOT_CLIENT_ID`).
+pub const GITHUB_COM_CLIENT_ID: &str = "Ov23liJnPBmrUZRLYilH";
+
+/// The registration this build carries for `host`, if any. Only github.com
+/// has a built-in one.
+pub fn default_client_id(host: &str) -> Option<&'static str> {
+    (super::normalize_host(host) == "github.com").then_some(GITHUB_COM_CLIENT_ID)
+}
+
 /// What a build carries when it has no registration to use: no client ID at
 /// all, or a host (a GitHub Enterprise Server instance) the ID it has was not
 /// registered with. Kept obvious on purpose: it appears verbatim in the error

@@ -376,6 +376,9 @@ pub fn auth_settings(
     let client_id = env("PRMARMOT_CLIENT_ID")
         .or_else(|| section.client_id.clone())
         .filter(|id| !id.trim().is_empty())
+        // github.com uses PR Marmot's own registration unless the file names
+        // another; a GHES host has to bring its own.
+        .or_else(|| prmarmot_core::github::device_flow::default_client_id(&host).map(str::to_owned))
         .unwrap_or_else(|| prmarmot_core::github::device_flow::PLACEHOLDER_CLIENT_ID.to_owned());
     let word_mode = |word: Option<String>, source: &str, warnings: &mut Vec<String>| {
         word.and_then(|word| match AuthMode::parse(&word) {
@@ -514,12 +517,30 @@ store = 'vault'",
     }
 
     #[test]
-    fn a_clean_config_still_defaults_to_github_com_with_no_client_id() {
+    fn a_clean_config_signs_in_to_github_com_with_the_built_in_registration() {
         let mut warnings = Vec::new();
         let resolved = auth_settings(&FileConfig::default(), None, None, &mut warnings);
         assert_eq!(resolved.host, "github.com");
         assert_eq!(resolved.mode, AuthMode::Auto);
-        assert!(resolved.client_id_is_placeholder());
+        assert_eq!(
+            resolved.client_id,
+            prmarmot_core::github::device_flow::GITHUB_COM_CLIENT_ID
+        );
+        assert!(!resolved.client_id_is_placeholder());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn an_enterprise_host_has_no_built_in_registration() {
+        let file: FileConfig = toml::from_str("[auth]\nhost = 'github.example.com'").unwrap();
+        let mut warnings = Vec::new();
+        let resolved = auth_settings(&file, None, None, &mut warnings);
+        assert_eq!(resolved.host, "github.example.com");
+        assert!(
+            resolved.client_id_is_placeholder(),
+            "a GHES host must bring its own client_id, got {:?}",
+            resolved.client_id
+        );
         assert!(warnings.is_empty());
     }
 

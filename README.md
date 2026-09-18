@@ -156,18 +156,21 @@ machine it was stored on.
 
 Three ways in, in the order the sign-in screen offers them:
 
-- **Sign in with GitHub** — GitHub's OAuth *device flow*. The app shows an
+- **Sign in with GitHub** — GitHub's OAuth *device flow*, against PR Marmot's
+  own registration, so there is nothing to set up. The app shows an
   eight-character code, you open `https://github.com/login/device` and type it,
   and the app continues on its own. There is no client secret and no callback
-  URL, which is why it works with no server. The access token is refreshed
-  automatically; roughly every six months the refresh token expires and you sign
-  in again.
+  URL, which is why it works with no server. It asks for `repo` and
+  `read:org`, and the token it stores keeps working until you sign out or
+  revoke it at
+  [Authorized OAuth Apps](https://github.com/settings/applications).
 - **Use a token** — paste a personal access token. A *fine-grained* token needs
   **Pull requests: read** and **Metadata: read** and covers one owner; a
   *classic* token with `repo` covers several organizations at once.
 - **Enterprise host** — a GitHub Enterprise Server hostname. GHES supports the
   device flow, but each instance is a separate app registration, so set
-  `client_id` for it (below) or sign in with a token.
+  `client_id` for it (below) or sign in with a token. On github.com you never
+  need a `client_id`: the app carries its own.
 
 The same three paths exist in the terminal:
 
@@ -245,7 +248,7 @@ height = 860
 
 [auth]
 host = "github.com"                      # or a GitHub Enterprise Server host
-client_id = "Iv1.xxxxxxxxxxxx"           # OAuth client ID; public by design
+client_id = "Iv1.xxxxxxxxxxxx"           # only for a GHES host; public by design
 mode = "auto"                            # auto | gh | device | token
 store = "auto"                           # auto (keychain on macOS) | keychain | file
 ```
