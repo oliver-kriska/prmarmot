@@ -166,8 +166,10 @@ Three ways in, in the order the sign-in screen offers them:
   revoke it at
   [Authorized OAuth Apps](https://github.com/settings/applications).
 - **Use a token** — paste a personal access token. A *fine-grained* token needs
-  **Pull requests: read** and **Metadata: read** and covers one owner; a
-  *classic* token with `repo` covers several organizations at once.
+  **Pull requests: read** and **Metadata: read** and covers one owner.
+  Fine-grained tokens can't read check runs, so with one, CI shows as "hidden"
+  and PR Marmot says so in one line. A *classic* token with `repo` and
+  `read:org` covers several organizations at once and shows CI.
 - **Enterprise host** — a GitHub Enterprise Server hostname. GHES supports the
   device flow, but each instance is a separate app registration, so set
   `client_id` for it (below) or sign in with a token. On github.com you never
