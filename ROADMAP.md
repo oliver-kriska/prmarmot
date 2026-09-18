@@ -37,7 +37,7 @@ Two ways to influence it:
 | Rung | Product | How it is built | Price | Role |
 |---|---|---|---|---|
 | 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, reuses your `gh` login, everything stays on your machine | Free, MIT, forever | The product; the open-source brand |
-| 2 | **PR Marmot for iPad (+ iPhone)** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid, one-time unlock on the App Store | First paid product |
+| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid, one-time unlock on the App Store | First paid product |
 | 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your phone | Subscription | The only way mobile alerts can be reliable |
 | 4 | Mac App Store copy of rung 1 (optional) | The same open-source app, sandboxed | Paid for convenience | Only if it turns out cheap |
 
@@ -164,12 +164,12 @@ Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Ent
 - [x] Contract tests: the Swift package runs the same golden fixtures through the bindings.
 - [x] One search grammar: `label:` / `author:` / `repo:` / `is:stale` live in `prmarmot-core`, golden-tested, and reach the terminal as `prmarmot-cli --filter`.
 
-## Phase 5 — PR Marmot for iPad (and iPhone) — after G1
+## Phase 5 — PR Marmot for iPad — after G1
 
 A foreground triage companion: sidebar (My PRs / Review queue / Watched / Snoozed), detail pane
 (Note, checks, reviews, threads, Open in GitHub, Watch, Snooze, Share). No alert promises until Phase 6.
 
-- [ ] SwiftUI app (iPadOS + iOS, Universal Purchase) over `PRMarmotCore`, URLSession transport, Device Flow, Keychain, same refresh floor and rate-limit rules.
+- [ ] SwiftUI app (iPadOS only; no iPhone in v1) over `PRMarmotCore`, URLSession transport, Device Flow, Keychain, same refresh floor and rate-limit rules.
 - [ ] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1.
 - [ ] Platform wins: Home/Lock Screen widget ("N need you"), Shortcuts ("what needs me"), keyboard shortcuts on iPad, Handoff to GitHub.
 - [ ] Best-effort background refresh with local notifications, labelled best-effort in the UI and never in a screenshot.
@@ -178,7 +178,7 @@ A foreground triage companion: sidebar (My PRs / Review queue / Watched / Snooze
 
 ## Phase 6 — PR Marmot Cloud — after G2
 
-The hosted sentinel: computes Note transitions server-side and pushes to iPad/iPhone, optionally Mac.
+The hosted sentinel: computes Note transitions server-side and pushes to iPad, optionally Mac.
 Opt-in; local stays the default and the free path.
 
 - [ ] Ingest by **polling with the user's own OAuth token**, same board query, adaptive interval. GitHub App
