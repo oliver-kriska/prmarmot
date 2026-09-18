@@ -12,15 +12,23 @@ Two ways to influence it:
   [iPad app + Cloud: notify me](https://github.com/oliver-kriska/prmarmot/discussions/8). React or
   comment there. That count is the signal that decides whether those get built (gate G1 below).
 
-## Where things stand — 2026-09-16
+## Where things stand — 2026-09-17
 
-- **v0.7.1** is the current release: Developer-ID-signed and notarized `.app`, Homebrew cask in
-  `oliver-kriska/homebrew-tap`, and `prmarmot-cli` bundled in the app and linked by the cask. Homebrew,
-  the install script and `make install` all use the same `/Applications/prmarmot.app`.
+- **v0.8.1** is the current release: Developer-ID-signed and notarized `.app`, Homebrew cask in
+  `oliver-kriska/homebrew-tap`, and `prmarmot-cli` bundled in the app and linked by the cask, with its
+  shell completions. Homebrew, the install script and `make install` all use the same
+  `/Applications/prmarmot.app`.
 - Shipped: **My PRs | Review queue** for one repository or all repositories, pinned repos, filters,
   Load more, stack grouping, watch/snooze, "changed since you looked" markers with notifications and
   a dock badge, copy-a-group sharing, editable Settings, daily update checks, and the CLI (table,
-  Markdown, stable JSON, a blocking `watch` event stream, and a built-in coding-agent skill).
+  Markdown, stable JSON with a published schema, a blocking `watch` event stream with `--until`, and a
+  built-in coding-agent skill). Since v0.8.0: search chips (`label:` / `author:` / `repo:`), pickup age
+  with `is:stale`, and a Small / Medium / Large size band with a smallest-first sort.
+- **Gate G0 measured (2026-09-17):** an 18 h unattended soak of the installed v0.8.1 went from 99 to 75 MB RSS,
+  never above 99, with no upward drift and about 1.5 % of one core; the maintainer accepted it. It also found
+  that v0.8.1 repaints once every 5 s while idle (about 29 ms of GPU work per minute); the fix, one repaint a
+  minute, landed on main on 2026-09-18 and ships in v0.8.2, when the measurement file also moves to
+  `benchmarks/`.
 - Platforms: macOS (Apple Silicon) binaries. Linux and Intel Macs build from source until the `.deb`
   in Phase 2 ships.
 
