@@ -607,6 +607,17 @@ impl From<core_layout::SectionKind> for SectionKind {
     }
 }
 
+impl From<SectionKind> for core_layout::SectionKind {
+    fn from(kind: SectionKind) -> Self {
+        match kind {
+            SectionKind::Approved => Self::Approved,
+            SectionKind::Category { category } => Self::Category(category.into()),
+            SectionKind::Stack => Self::Stack,
+            SectionKind::Snoozed => Self::Snoozed,
+        }
+    }
+}
+
 /// How rows are ordered inside a section. Section order never changes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, uniffi::Enum)]
 pub enum Sort {
