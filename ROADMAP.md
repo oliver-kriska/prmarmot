@@ -38,7 +38,7 @@ Two ways to influence it:
 |---|---|---|---|---|
 | 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, reuses your `gh` login, everything stays on your machine | Free, MIT, forever | The product; the open-source brand |
 | 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid, one-time unlock on the App Store | First paid product |
-| 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your phone | Subscription | The only way mobile alerts can be reliable |
+| 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your iPad | Subscription | The only way mobile alerts can be reliable |
 | 4 | Mac App Store copy of rung 1 (optional) | The same open-source app, sandboxed | Paid for convenience | Only if it turns out cheap |
 
 Why in this order: nothing above rung 1 is justified until rung 1 has users; rung 2 needs the direct
