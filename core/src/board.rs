@@ -970,11 +970,7 @@ fn classify_other_author(row: &mut BoardRow) {
         facts.push("changes requested".to_owned());
     }
     if row.unresolved > 0 {
-        facts.push(format!(
-            "{} unresolved comment{}",
-            row.unresolved,
-            if row.unresolved == 1 { "" } else { "s" }
-        ));
+        facts.push(unresolved_comments(row.unresolved));
     }
     row.category = if facts.is_empty() {
         Category::Await
@@ -1344,8 +1340,14 @@ fn blocker_note(blocker: &Blocker) -> String {
         Blocker::MergeConflict => "🔴 merge conflict — rebase".to_string(),
         Blocker::CiFailing => "❌ CI failing".to_string(),
         Blocker::ChangesRequested => "✋ changes requested".to_string(),
-        Blocker::UnresolvedComments(n) => format!("🟡 {n} unresolved comments"),
+        Blocker::UnresolvedComments(n) => format!("🟡 {}", unresolved_comments(*n)),
     }
+}
+
+/// "1 unresolved comment", "2 unresolved comments". SKILL.md writes the rule
+/// as "<n> unresolved comments"; the count decides the plural.
+fn unresolved_comments(n: usize) -> String {
+    format!("{n} unresolved comment{}", if n == 1 { "" } else { "s" })
 }
 
 /// Notes keep the prototype's emoji language (the SKILL spec). Surfaces that
@@ -1393,7 +1395,7 @@ fn authored_note(row: &BoardRow) -> String {
             if row.conflict {
                 "🔴 draft · merge conflict".to_string()
             } else if row.unresolved > 0 {
-                format!("🟡 draft · {} unresolved comments", row.unresolved)
+                format!("🟡 draft · {}", unresolved_comments(row.unresolved))
             } else if row.ci == Ci::Fail {
                 "🔴 draft · CI failing".to_string()
             } else {
@@ -1825,6 +1827,16 @@ mod tests {
         assert_eq!(row.category, Category::Action);
         assert_eq!(row.review_state, ReviewState::Approved);
         assert_eq!(row.note, "🟡 2 unresolved comments");
+
+        let mut one = base(5);
+        one["reviews"]["nodes"] = json!([
+            {"author": {"login": "grace"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
+        ]);
+        one["reviewThreads"]["nodes"] = json!([{"isResolved": false}]);
+        assert_eq!(
+            derive_one(one, Mode::Authored).note,
+            "🟡 1 unresolved comment"
+        );
     }
 
     #[test]
@@ -2063,7 +2075,7 @@ mod tests {
         v["reviewThreads"]["nodes"] = json!([{"isResolved": false}]);
         assert_eq!(
             derive_one(v, Mode::Authored).note,
-            "🟡 draft · 1 unresolved comments"
+            "🟡 draft · 1 unresolved comment"
         );
     }
 
