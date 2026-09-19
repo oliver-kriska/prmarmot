@@ -10,7 +10,9 @@ Two ways to influence it:
   upvotes reorder it.
 - **The waitlist** for the iPad app and PR Marmot Cloud is one pinned thread:
   [iPad app + Cloud: notify me](https://github.com/oliver-kriska/prmarmot/discussions/8). React or
-  comment there. That count is the signal that decides whether those get built (gate G1 below).
+  comment there. That count is the signal behind gate G1 below: the iPad app is now in development regardless
+  (Phase 5), and the count decides how much goes into it and whether Cloud follows; TestFlight invitations go to
+  that thread first.
 
 ## Where things stand — 2026-09-17
 
@@ -67,7 +69,7 @@ Numbers are targets, revised against reality, never moved to make a gate pass.
 | Gate | Passes when | Unlocks |
 |---|---|---|
 | **G0 memory** | On the shipped cask build, 12–24 h unattended soak: mean physical footprint after hour 1 < 150 MB, linear-fit slope ≤ 2 MB/h, (max − min) after hour 1 ≤ 25 MB, idle CPU ≈ 0 %. Results are published in `benchmarks/`. Until then the README makes no "lightweight" or "low memory" claims. | Launch posts (Phase 3) |
-| **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | iPad app (Phase 5) |
+| **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | Scope of the iPad app (Phase 5, already in development since 2026-09-17) |
 | **G2 demand** | ≥ 100 paid iPad purchases **or** ≥ 50 % of iPad reviews and waitlist comments asking for alerts. | Cloud (Phase 6) |
 
 ## Phase 0 — Rename to PR Marmot — done
@@ -166,17 +168,20 @@ Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Ent
 - [x] Contract tests: the Swift package runs the same golden fixtures through the bindings.
 - [x] One search grammar: `label:` / `author:` / `repo:` / `is:stale` live in `prmarmot-core`, golden-tested, and reach the terminal as `prmarmot-cli --filter`.
 
-## Phase 5 — PR Marmot for iPad — after G1
+## Phase 5 — PR Marmot for iPad — in development
 
-A foreground triage companion: sidebar (My PRs / Review queue / Watched / Snoozed), detail pane
-(Note, checks, reviews, threads, Open in GitHub, Watch, Snooze, Share). No alert promises until Phase 6.
+**Status (2026-09-19):** in development, started on 2026-09-17 ahead of G1 at the maintainer's decision, in a
+separate closed-source repository over the open-source `prmarmot-core` through `ffi/`. G1 no longer gates the
+build; it still informs how much goes into it. A foreground triage companion that mirrors the desktop: the same
+dense board (sections, stacks, CI, reviews, labels, Note, watch and snooze, changed markers, search chips) and a
+Details inspector. No alert promises until Phase 6.
 
-- [ ] SwiftUI app (iPadOS only; no iPhone in v1) over `PRMarmotCore`, URLSession transport, Device Flow, Keychain, same refresh floor and rate-limit rules.
-- [ ] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1.
-- [ ] Platform wins: Home/Lock Screen widget ("N need you"), Shortcuts ("what needs me"), keyboard shortcuts on iPad, Handoff to GitHub.
+- [x] SwiftUI app (iPadOS only; no iPhone in v1) over `PRMarmotCore`, URLSession transport, Device Flow or a pasted token, Keychain, same refresh floor and rate-limit rules.
+- [x] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1. Every feature is tested against a mocked GitHub API.
+- [x] Platform wins: Shortcuts ("what needs me"), Spotlight, keyboard shortcuts on iPad. Home/Lock Screen widgets are deferred: without a server they can only show the app's last refresh, so they wait for Phase 6.
 - [ ] Best-effort background refresh with local notifications, labelled best-effort in the UI and never in a screenshot.
-- [ ] Paid app, bought once on the App Store; no free tier, no trial, no in-app purchase (2026-09-18). The free desktop app and the App Store screenshots are the way to try it.
-- [ ] TestFlight invitations go to the waitlist thread first; App Store privacy label "data not collected".
+- [x] Paid app, bought once on the App Store; no free tier, no trial, no in-app purchase (2026-09-18). The free desktop app and the App Store screenshots are the way to try it.
+- [ ] TestFlight invitations go to the waitlist thread first; App Store privacy label "data not collected" (the privacy manifest declares no tracking and no collected data).
 
 ## Phase 6 — PR Marmot Cloud — after G2
 
