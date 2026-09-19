@@ -117,18 +117,23 @@ fn mentions_rate_limit(body: &str) -> bool {
     body.contains("rate limit") || body.contains("rate_limited")
 }
 
-/// First line of an error body, bounded — enough to act on, never a wall.
+/// GitHub's own `message` from a JSON error body, first line only and
+/// bounded — enough to act on, never a wall. Anything else, such as the HTML
+/// page a proxy returns with a 502, adds nothing, so the status line stands
+/// alone rather than showing markup to the reader.
 pub fn detail(body: &str) -> String {
     let message = serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|value| {
-            value
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.trim().to_owned());
-    let message: String = message.chars().take(200).collect();
+        .and_then(|value| value.get("message")?.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let message: String = message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
     if message.is_empty() {
         String::new()
     } else {
@@ -246,5 +251,42 @@ mod tests {
         assert_eq!(detail("   "), "");
         let long = format!(r#"{{"message":"{}"}}"#, "x".repeat(500));
         assert_eq!(detail(&long).chars().count(), 202);
+        assert_eq!(
+            detail(r#"{"message":"Server Error\nretry later"}"#),
+            ": Server Error"
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_githubs_json_message_leaves_the_status_line_alone() {
+        let error = classify(meta(502), "<html>upstream is unhappy</html>").unwrap_err();
+        assert_eq!(
+            error,
+            GhError::Network("GitHub is having trouble (502)".into())
+        );
+        let error = classify(meta(503), "Service Unavailable").unwrap_err();
+        assert_eq!(
+            error,
+            GhError::Network("GitHub is having trouble (503)".into())
+        );
+        let error = classify(meta(500), r#"{"documentation_url":"x"}"#).unwrap_err();
+        assert_eq!(
+            error,
+            GhError::Network("GitHub is having trouble (500)".into())
+        );
+    }
+
+    #[test]
+    fn githubs_json_message_follows_the_status_line() {
+        let error = classify(meta(502), r#"{"message":"Server Error"}"#).unwrap_err();
+        assert_eq!(
+            error,
+            GhError::Network("GitHub is having trouble (502): Server Error".into())
+        );
+        let error = classify(meta(404), r#"{"message":"Not Found"}"#).unwrap_err();
+        assert_eq!(
+            error,
+            GhError::Network("GitHub returned 404: Not Found".into())
+        );
     }
 }
