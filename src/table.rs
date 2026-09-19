@@ -356,7 +356,7 @@ pub fn label_chip(theme: &gpui_component::Theme) -> Div {
 /// "Small · 42 changed lines in 3 files (+30 −12)".
 /// The local time zone, as an offset in seconds, for the one line of the
 /// panel that shows a wall clock.
-fn local_offset_secs() -> i32 {
+pub(crate) fn local_offset_secs() -> i32 {
     Local::now().offset().local_minus_utc()
 }
 

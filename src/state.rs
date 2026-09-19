@@ -23,7 +23,7 @@ use prmarmot_local::config::AuthSettings;
 use prmarmot_local::session;
 
 use crate::attention_state::{
-    observation, AttentionState, Snooze, SnoozeCondition, TrackedStatus, MAX_SNOOZES, MAX_WATCHES,
+    observation, AttentionState, SnoozeCondition, TrackedStatus, MAX_SNOOZES, MAX_WATCHES,
 };
 use crate::platform::{Platform, PlatformEvent};
 
@@ -423,7 +423,7 @@ impl AppState {
         self.attention
             .as_ref()?
             .snooze(pr_id)
-            .map(Snooze::description)
+            .map(|snooze| snooze.description(crate::table::local_offset_secs()))
     }
 
     pub fn acknowledge(&mut self, pr_id: &str, cx: &mut Context<Self>) {

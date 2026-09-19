@@ -10,7 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Offset, Utc};
 use prmarmot_core::attention::{Observation, SnapshotNamespace, SnapshotStore};
 use prmarmot_core::board::{BoardRow, Ci};
 use serde::{Deserialize, Serialize};
@@ -130,11 +130,28 @@ impl ReviewRelevant {
 }
 
 impl Snooze {
-    pub fn description(&self) -> String {
+    /// The sentence the desktop and the iPad show for this snooze. A deadline
+    /// reads in the reader's time zone, `tz_offset_secs` east of UTC, like the
+    /// Details panel's "(since …)".
+    pub fn description(&self, tz_offset_secs: i32) -> String {
+        self.describe(|deadline| {
+            let zone = FixedOffset::east_opt(tz_offset_secs).unwrap_or_else(|| Utc.fix());
+            deadline
+                .with_timezone(&zone)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+    }
+
+    /// The same sentence with a deadline in UTC, marked as such, for output
+    /// that may be read on another machine or by a program (`prmarmot-cli`).
+    pub fn description_utc(&self) -> String {
+        self.describe(|deadline| format!("{} UTC", deadline.format("%Y-%m-%d %H:%M")))
+    }
+
+    fn describe(&self, until: impl FnOnce(&DateTime<Utc>) -> String) -> String {
         match &self.condition {
-            SnoozeCondition::Until { deadline } => {
-                format!("Snoozed until {} UTC", deadline.format("%Y-%m-%d %H:%M"))
-            }
+            SnoozeCondition::Until { deadline } => format!("Snoozed until {}", until(deadline)),
             SnoozeCondition::WaitingPerson { login, .. } => format!("Waiting on {login}"),
             SnoozeCondition::WaitingCi { .. } => "Waiting for CI to finish".into(),
             SnoozeCondition::ReviewAgainChanged { .. } => "Review again when changed".into(),
@@ -632,6 +649,36 @@ mod tests {
             AttentionState::waiting_on_author(&own, "me"),
             Some(AttentionState::waiting_person(&own, "bob".into()))
         );
+    }
+
+    #[test]
+    fn a_deadline_reads_in_the_readers_time_zone_and_the_utc_form_says_utc() {
+        let deadline = DateTime::parse_from_rfc3339("2026-07-26T23:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snooze = AttentionState::snooze_for(&row(1), SnoozeCondition::Until { deadline });
+        assert_eq!(snooze.description(0), "Snoozed until 2026-07-26 23:30");
+        assert_eq!(
+            snooze.description(2 * 3600),
+            "Snoozed until 2026-07-27 01:30",
+            "east of UTC, past midnight"
+        );
+        assert_eq!(
+            snooze.description(-(5 * 3600 + 30 * 60)),
+            "Snoozed until 2026-07-26 18:00"
+        );
+        assert_eq!(
+            snooze.description(i32::MAX),
+            "Snoozed until 2026-07-26 23:30",
+            "an impossible offset falls back to UTC"
+        );
+        assert_eq!(
+            snooze.description_utc(),
+            "Snoozed until 2026-07-26 23:30 UTC"
+        );
+
+        let waiting = AttentionState::snooze_for(&row(1), AttentionState::waiting_ci(&row(1)));
+        assert_eq!(waiting.description(3600), waiting.description_utc());
     }
 
     #[test]

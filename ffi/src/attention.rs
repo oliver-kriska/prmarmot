@@ -171,20 +171,21 @@ pub struct SnoozedPr {
     pub number: u64,
     pub title: String,
     pub created_at_epoch: i64,
-    /// The desktop's wording: "Snoozed until 2026-09-18 09:00 UTC", "Waiting
-    /// on alice", "Waiting for CI to finish", "Review again when changed".
+    /// The desktop's wording: "Snoozed until 2026-09-18 11:00" (in the
+    /// reader's time zone), "Waiting on alice", "Waiting for CI to finish",
+    /// "Review again when changed".
     pub description: String,
 }
 
-impl From<&local_attention::Snooze> for SnoozedPr {
-    fn from(snooze: &local_attention::Snooze) -> Self {
+impl SnoozedPr {
+    fn new(snooze: &local_attention::Snooze, tz_offset_secs: i32) -> Self {
         Self {
             pr_id: snooze.pr_id.clone(),
             repo: snooze.repo.clone(),
             number: snooze.number,
             title: snooze.title.clone(),
             created_at_epoch: snooze.created_at.timestamp(),
-            description: snooze.description(),
+            description: snooze.description(tz_offset_secs),
         }
     }
 }
@@ -389,10 +390,12 @@ impl AttentionStore {
     }
 
     /// The sentence for a snoozed PR, or nothing when it is awake.
-    pub fn snooze_description(&self, pr_id: String) -> Option<String> {
+    /// `tz_offset_secs` is the reader's offset from UTC, as for
+    /// `detail_lines`: a deadline reads in their time zone.
+    pub fn snooze_description(&self, pr_id: String, tz_offset_secs: i32) -> Option<String> {
         self.lock()
             .snooze(&pr_id)
-            .map(local_attention::Snooze::description)
+            .map(|snooze| snooze.description(tz_offset_secs))
     }
 
     /// Who "Waiting on …" would wait for: the row's author, or `None` on your
@@ -437,9 +440,14 @@ impl AttentionStore {
         self.lock().cancel_snooze(&pr_id)
     }
 
-    /// Everything snoozed, oldest first.
-    pub fn snoozes(&self) -> Vec<SnoozedPr> {
-        self.lock().snoozes.iter().map(SnoozedPr::from).collect()
+    /// Everything snoozed, oldest first, each described in the reader's time
+    /// zone (`tz_offset_secs` east of UTC).
+    pub fn snoozes(&self, tz_offset_secs: i32) -> Vec<SnoozedPr> {
+        self.lock()
+            .snoozes
+            .iter()
+            .map(|snooze| SnoozedPr::new(snooze, tz_offset_secs))
+            .collect()
     }
 
     /// Wake whatever this refresh's rows say should wake. Returns the PR ids

@@ -248,7 +248,7 @@ pub fn marks_for(
         snoozed: attention
             .snooze(&row.id)
             .filter(|snooze| !snooze.should_wake(Some(row), now))
-            .map(|snooze| snooze.description()),
+            .map(|snooze| snooze.description_utc()),
         changed: snapshot.is_some_and(|s| s.changed_since_acknowledgement),
         changes: snapshot.map(|s| s.change_summary()).unwrap_or_default(),
         stale: false,

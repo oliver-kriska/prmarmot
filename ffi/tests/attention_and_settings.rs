@@ -188,8 +188,8 @@ fn a_timed_snooze_wakes_when_its_hour_is_up_and_not_before() {
     store.snooze(row(1), SnoozeChoice::OneHour, NOW);
     assert!(store.is_snoozed("PR_1".into()));
     assert_eq!(
-        store.snooze_description("PR_1".into()),
-        Some("Snoozed until 2026-07-26 13:00 UTC".into())
+        store.snooze_description("PR_1".into(), 0),
+        Some("Snoozed until 2026-07-26 13:00".into())
     );
 
     assert!(store.wake_due(vec![row(1)], NOW + HOUR - 1).is_empty());
@@ -201,12 +201,27 @@ fn a_timed_snooze_wakes_when_its_hour_is_up_and_not_before() {
 }
 
 #[test]
+fn a_snooze_deadline_reads_in_the_readers_time_zone() {
+    let store = store();
+    store.snooze(row(1), SnoozeChoice::OneHour, NOW);
+    // Bratislava in summer, two hours east of UTC.
+    assert_eq!(
+        store.snooze_description("PR_1".into(), 2 * 3600),
+        Some("Snoozed until 2026-07-26 15:00".into())
+    );
+    // San Francisco in summer, seven hours west: the date moves back too.
+    let listed = store.snoozes(-7 * 3600);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].description, "Snoozed until 2026-07-26 06:00");
+}
+
+#[test]
 fn until_tomorrow_is_a_day_and_the_menu_words_are_the_desktops() {
     let store = store();
     store.snooze(row(1), SnoozeChoice::UntilTomorrow, NOW);
     assert_eq!(
-        store.snooze_description("PR_1".into()),
-        Some("Snoozed until 2026-07-27 12:00 UTC".into())
+        store.snooze_description("PR_1".into(), 0),
+        Some("Snoozed until 2026-07-27 12:00".into())
     );
 
     store.snooze(
@@ -217,19 +232,19 @@ fn until_tomorrow_is_a_day_and_the_menu_words_are_the_desktops() {
         NOW,
     );
     assert_eq!(
-        store.snooze_description("PR_2".into()),
+        store.snooze_description("PR_2".into(), 0),
         Some("Waiting on alice".into())
     );
 
     store.snooze(row(3), SnoozeChoice::WaitingCi, NOW);
     assert_eq!(
-        store.snooze_description("PR_3".into()),
+        store.snooze_description("PR_3".into(), 0),
         Some("Waiting for CI to finish".into())
     );
 
     store.snooze(row(4), SnoozeChoice::ReviewAgainWhenChanged, NOW);
     assert_eq!(
-        store.snooze_description("PR_4".into()),
+        store.snooze_description("PR_4".into(), 0),
         Some("Review again when changed".into())
     );
 }

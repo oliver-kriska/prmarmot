@@ -1430,7 +1430,7 @@ impl RootView {
                                 &row,
                                 waiting.clone(),
                             )
-                            .description(),
+                            .description(crate::table::local_offset_secs()),
                         )
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
