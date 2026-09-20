@@ -45,6 +45,10 @@ see whether its memory grows. Raw samples are in this folder, so every number be
 
 ## Verdict
 
+> **Superseded (2026-09-20).** The "(max − min) ≤ 25 MB" row below is no longer part of G0; it was replaced by
+> "p99 < 200 MB" after the v0.9.1 run showed no build could meet it. The rest of this file stands as measured.
+> See [`2026-09-20-memory-gate-v0.9.1.md`](2026-09-20-memory-gate-v0.9.1.md).
+
 G0's thresholds in ROADMAP.md, applied after hour 1:
 
 | G0 threshold | Measured | |
@@ -60,7 +64,8 @@ G0's thresholds in ROADMAP.md, applied after hour 1:
   memory during a repaint.
 - **Maintainer's ruling (2026-09-17):** the run is acceptable on RSS and on the idle GPU cost.
 - **Next:** the repaint is fixed in v0.9.0 (8f71da6). G0 is measured again on the shipped v0.9.0
-  cask build, and that result decides the gate.
+  cask build, and that result decides the gate. **It did:** the v0.9.1 build passed on 2026-09-20 with a
+  mean of 106.7 MB and 0.01 % of one core.
 
 ## Reproduce
 

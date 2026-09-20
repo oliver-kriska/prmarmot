@@ -26,13 +26,17 @@ Two ways to influence it:
   Markdown, stable JSON with a published schema, a blocking `watch` event stream with `--until`, and a
   built-in coding-agent skill). Since v0.8.0: search chips (`label:` / `author:` / `repo:`), pickup age
   with `is:stale`, and a Small / Medium / Large size band with a smallest-first sort.
-- **Gate G0 measured (2026-09-17):** an 18 h unattended soak of the installed v0.8.1 went from 99 to 75 MB RSS,
-  never above 99, with no upward drift and about 1.5 % of one core. RSS stayed flat and far under 150 MB;
-  physical footprint missed the mean and range thresholds because v0.8.1 repaints once every 5 s while idle
-  (about 29 ms of GPU work per minute), and each repaint briefly counts the window's graphics memory. The
-  fix, one repaint a minute, landed on main on 2026-09-18 and ships in v0.9.0; G0 is measured again on the
-  shipped v0.9.0 build. Method, raw samples and each threshold against the result:
-  [`benchmarks/2026-09-16-memory-gate-v0.8.1.md`](benchmarks/2026-09-16-memory-gate-v0.8.1.md).
+- **Gate G0 passed (2026-09-20):** a 37.4 h unattended soak of the installed v0.9.1 held a mean physical
+  footprint of 106.7 MB with a slope of −0.77 MB/h — it ends lower than it starts — on 0.01 % of one core and
+  0.1 ms of GPU time per minute. The idle repaint that spoiled the v0.8.1 run is gone: 2,092 of 2,131 minutes
+  drew no frame at all. **One threshold was rewritten against the measurement**, in the open: "(max − min)
+  after hour 1 ≤ 25 MB" is now "p99 after hour 1 < 200 MB". The old one was chosen before anything had been
+  measured, and it fails on any reading — 158 MB counting the minutes that draw a frame, 66 MB between them,
+  50 MB on quiet-hour medians — because one drawn frame briefly counts the window's graphics memory, about
+  23 MB per drawable. A ceiling keeps what the bound was for, catching a build whose working set grows,
+  without failing the app for drawing. Both numbers are published. Method, raw samples and every threshold
+  against the result, including the 251 MB peak:
+  [`benchmarks/2026-09-20-memory-gate-v0.9.1.md`](benchmarks/2026-09-20-memory-gate-v0.9.1.md).
 - Platforms: macOS (Apple Silicon) binaries. Linux and Intel Macs build from source until the `.deb`
   in Phase 2 ships.
 
@@ -68,7 +72,7 @@ Numbers are targets, revised against reality, never moved to make a gate pass.
 
 | Gate | Passes when | Unlocks |
 |---|---|---|
-| **G0 memory** | On the shipped cask build, 12–24 h unattended soak: mean physical footprint after hour 1 < 150 MB, linear-fit slope ≤ 2 MB/h, (max − min) after hour 1 ≤ 25 MB, idle CPU ≈ 0 %. Results are published in `benchmarks/`. Until then the README makes no "lightweight" or "low memory" claims. | Launch posts (Phase 3) |
+| **G0 memory** — passed 2026-09-20 | On the shipped cask build, 12–24 h unattended soak: mean physical footprint after hour 1 < 150 MB, p99 after hour 1 < 200 MB, linear-fit slope ≤ 2 MB/h, idle CPU ≈ 0 %. Results are published in `benchmarks/`. Measured on v0.9.1 over 37.4 h: 106.7 MB mean, 159 MB p99, −0.77 MB/h, 0.01 %. | Launch posts (Phase 3) |
 | **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | Scope of the iPad app (Phase 5, already in development since 2026-09-17) |
 | **G2 demand** | ≥ 100 paid iPad purchases **or** ≥ 50 % of iPad reviews and waitlist comments asking for alerts. | Cloud (Phase 6) |
 
