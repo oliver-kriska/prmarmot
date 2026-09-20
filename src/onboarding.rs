@@ -374,10 +374,13 @@ impl Render for OnboardingView {
             Step::Token => body
                 .child(self.heading("Use a personal access token"))
                 .child(self.note(
-                    "A fine-grained token needs Pull requests: read and Metadata: read, and \
-                     covers one owner; a classic token with `repo` covers several organizations. \
-                     The token is stored on this Mac only."
-                        .to_owned(),
+                    format!(
+                        "A classic token needs repo and read:org. {} A fine-grained token needs \
+                         Pull requests: read and Metadata: read, and covers one owner. {} \
+                         The token is stored on this Mac only.",
+                        prmarmot_core::status::classic_reach_note(),
+                        prmarmot_core::status::fine_grained_reach_note()
+                    ),
                     cx,
                 ))
                 .child(div().w(px(420.)).child(Input::new(&self.token_input).small()))

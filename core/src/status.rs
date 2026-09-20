@@ -223,6 +223,37 @@ pub fn access_notice(gaps: &AccessGaps) -> Option<String> {
     Some(format!("This token can't read {what}.{remedy}"))
 }
 
+/// What a fine-grained token reaches, for the sign-in screen and the docs.
+///
+/// A fine-grained token belongs to one owner: yours sees your repositories,
+/// and an organization's private repositories need a token owned by that
+/// organization. Nothing marks their absence, which is the trap.
+///
+/// Its own sentence, not half of a paragraph: a front end that shows the two
+/// kinds of token side by side would read a classic clause here as a mistake.
+pub fn fine_grained_reach_note() -> &'static str {
+    "A token you own cannot see an organization's private repositories — they do not appear, with no \
+     error to explain it. To reach them, the token's owner must be that organization."
+}
+
+/// What a classic token reaches, the companion to [`fine_grained_reach_note`].
+///
+/// The scopes are named by the surrounding screen, so the sentence does not
+/// repeat them. CI is the one capability worth contrasting: the `gh` login and
+/// a device-flow token read it too, so this does not claim to be the only kind
+/// that can.
+pub fn classic_reach_note() -> &'static str {
+    "Reaches every organization you belong to, including their private repositories and ones that \
+     restrict OAuth apps, and reads CI, which a fine-grained token cannot."
+}
+
+/// Shown under the header when a pasted token is carrying the board while the
+/// GitHub CLI is signed in to the same host: the board may be missing an
+/// organization's private repositories and would say nothing.
+pub fn pasted_token_reach_notice() -> &'static str {
+    "Using your pasted token; the gh login on this Mac would also reach organization private repositories."
+}
+
 /// The centered body copy shown before a queue's first rows ever arrive.
 pub fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
     match (mode, all_repos) {
@@ -270,6 +301,29 @@ pub fn queue_sync_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_reach_notes_stand_alone_one_per_kind_of_token() {
+        let fine = fine_grained_reach_note();
+        assert!(fine.contains("no error to explain it"), "{fine}");
+        assert!(
+            !fine.to_lowercase().contains("classic"),
+            "a card for one kind of token must not describe the other: {fine}"
+        );
+        let classic = classic_reach_note();
+        assert!(classic.contains("reads CI"), "{classic}");
+        assert!(
+            !classic.contains("only kind"),
+            "the gh login and a device-flow token read CI too: {classic}"
+        );
+        for note in [fine, classic] {
+            assert!(
+                !note.contains('\n'),
+                "one paragraph, wrapped by the front end"
+            );
+        }
+        assert!(pasted_token_reach_notice().starts_with("Using your pasted token"));
+    }
 
     #[test]
     fn the_organization_approval_note_is_one_plain_sentence_pair() {

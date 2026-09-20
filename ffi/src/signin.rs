@@ -217,6 +217,27 @@ pub fn organization_approval_note() -> String {
     prmarmot_core::status::organization_approval_note().to_owned()
 }
 
+/// What a fine-grained token reaches, and what a classic one reaches: two
+/// sentences so a screen that shows the two kinds side by side can put each
+/// one in its own card.
+#[uniffi::export]
+pub fn fine_grained_reach_note() -> String {
+    prmarmot_core::status::fine_grained_reach_note().to_owned()
+}
+
+/// The companion to [`fine_grained_reach_note`], for the classic-token card.
+#[uniffi::export]
+pub fn classic_reach_note() -> String {
+    prmarmot_core::status::classic_reach_note().to_owned()
+}
+
+/// Shown under the header when a pasted fine-grained token is carrying the
+/// board while the GitHub CLI is signed in to the same host.
+#[uniffi::export]
+pub fn pasted_token_reach_notice() -> String {
+    prmarmot_core::status::pasted_token_reach_notice().to_owned()
+}
+
 /// A pasted personal access token, as a [`Token`] with no expiry.
 #[uniffi::export]
 pub fn token_from_pat(access_token: String) -> Token {

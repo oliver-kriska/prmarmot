@@ -55,6 +55,9 @@ pub struct Connection {
     pub host: String,
     /// Which sign-in `auto` settled on, for Settings to name.
     pub via: session::Connection,
+    /// True when a pasted fine-grained token is carrying the board while `gh`
+    /// is signed in to the same host, for the notice under the header.
+    pub token_reach_hint: bool,
 }
 
 /// How the app opens that connection. Swappable so tests need no network and
@@ -104,11 +107,16 @@ impl Connector for ConfiguredConnector {
     fn connect(&self) -> Result<Connection, GhError> {
         let session = self.open()?;
         let login = session.login()?;
+        // Asked only when it can matter: a fine-grained token reaches one
+        // owner's repositories, and the `gh` probe is a local file read.
+        let token_reach_hint = session.fine_grained_token
+            && matches!(session::gh_login(&session.host), session::GhLogin::SignedIn);
         Ok(Connection {
             login,
             transport: session.transport_arc(),
             host: session.host.clone(),
             via: session.connection,
+            token_reach_hint,
         })
     }
 
@@ -130,6 +138,10 @@ pub struct AppState {
     pub me: Option<String>,
     /// How `me` signed in, once connected.
     pub signed_in_via: Option<session::Connection>,
+    /// A pasted fine-grained token is carrying the board and `gh` has a login
+    /// for the same host, so the board may be missing an organization's
+    /// private repositories. Drives one notice under the header.
+    pub token_reach_hint: bool,
     pub setup: SetupStatus,
     pub mode: Mode,
     pub config: BoardConfig,
@@ -242,6 +254,7 @@ impl AppState {
             scope,
             me: None,
             signed_in_via: None,
+            token_reach_hint: false,
             setup: SetupStatus::Checking,
             mode,
             config,
@@ -339,6 +352,7 @@ impl AppState {
                         state.transport = connection.transport;
                         state.me = Some(connection.login);
                         state.signed_in_via = Some(connection.via);
+                        state.token_reach_hint = connection.token_reach_hint;
                         state.setup = SetupStatus::Ready;
                         state.refresh(cx);
                     }

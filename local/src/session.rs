@@ -53,6 +53,10 @@ pub struct Session {
     /// The login remembered at sign-in, when there is one; `login()` falls
     /// back to asking GitHub.
     pub stored_login: Option<String>,
+    /// True when a pasted fine-grained token is carrying this session. Its
+    /// reach is one owner's repositories, so the board can be missing an
+    /// organization's private repositories with nothing to say so.
+    pub fine_grained_token: bool,
 }
 
 impl Session {
@@ -246,6 +250,7 @@ fn gh_session(settings: &AuthSettings) -> Session {
         connection: Connection::GhCli,
         host: settings.host.clone(),
         stored_login: None,
+        fine_grained_token: false,
     }
 }
 
@@ -300,6 +305,14 @@ fn http_session(
     connection: Connection,
     stored_login: Option<String>,
 ) -> Session {
+    // Only a pasted token is asked about: a device-flow token is never
+    // fine-grained, and reading it here would mean a refresh before the first
+    // request. A store that cannot answer leaves the question open, and the
+    // notice stays off rather than guessing.
+    let fine_grained = matches!(connection, Connection::Token)
+        && source
+            .token()
+            .is_ok_and(|token| crate::auth::is_fine_grained(&token));
     let transport =
         Arc::new(HttpTransport::new(&settings.host, source).with_user_agent(user_agent));
     Session {
@@ -308,6 +321,7 @@ fn http_session(
         connection,
         host: settings.host.clone(),
         stored_login,
+        fine_grained_token: fine_grained,
     }
 }
 
@@ -386,6 +400,24 @@ mod tests {
         .unwrap();
         assert_eq!(session.connection, Connection::Token);
         assert!(session.connection.is_direct());
+        assert!(
+            !session.fine_grained_token,
+            "a classic token reaches every organization"
+        );
+    }
+
+    #[test]
+    fn a_pasted_fine_grained_token_is_marked_as_one() {
+        let session = direct_session(
+            &settings(AuthMode::Token, Some("github_pat_11INLINE")),
+            &Empty,
+            "prmarmot-test/0",
+            TokenNeed::Any,
+        )
+        .unwrap();
+        assert!(session.fine_grained_token);
+        // `gh` carries no token of ours, so the question never arises.
+        assert!(!gh_session(&settings(AuthMode::Gh, None)).fine_grained_token);
     }
 
     #[test]

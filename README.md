@@ -178,11 +178,16 @@ screen offers them:
   `read:org`, and the token it stores keeps working until you sign out or
   revoke it at
   [Authorized OAuth Apps](https://github.com/settings/applications).
-- **Use a token** — paste a personal access token. A *fine-grained* token needs
-  **Pull requests: read** and **Metadata: read** and covers one owner.
-  Fine-grained tokens can't read check runs, so with one, CI shows as "hidden"
-  and PR Marmot says so in one line. A *classic* token with `repo` and
-  `read:org` covers several organizations at once and shows CI.
+- **Use a token** — paste a personal access token. A *classic* token with
+  `repo` and `read:org` reaches every organization you belong to, including
+  their private repositories and ones that restrict OAuth apps, and reads CI,
+  which a fine-grained token cannot. A *fine-grained* token needs **Pull
+  requests: read** and **Metadata: read** and covers one owner: a token you own
+  cannot see an organization's private repositories — they simply do not
+  appear, with no error to explain it. To reach them, the token's owner must be
+  that organization, which an owner approves, and that token in turn leaves out
+  your personal ones. A fine-grained token also never reads check runs, so CI
+  shows as "hidden" and PR Marmot says so in one line.
 - **Enterprise host** — a GitHub Enterprise Server hostname. GHES supports the
   device flow, but each instance is a separate app registration, so set
   `client_id` for it (below) or sign in with a token. On github.com you never

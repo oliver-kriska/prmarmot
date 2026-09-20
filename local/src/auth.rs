@@ -112,6 +112,13 @@ impl StoreKind {
     }
 }
 
+/// True for a fine-grained personal access token, which GitHub prefixes
+/// `github_pat_`. Its reach is one owner's repositories, so a board opened
+/// with one can be missing an organization's private repositories.
+pub fn is_fine_grained(token: &str) -> bool {
+    token.starts_with("github_pat_")
+}
+
 /// The store this platform and configuration ask for. A keychain asked for on
 /// a platform without one falls back to the file store rather than failing:
 /// losing the token store must never make the app unusable.
@@ -364,6 +371,14 @@ impl TokenSource for StoredTokenSource {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_githubs_fine_grained_prefix_counts() {
+        assert!(super::is_fine_grained("github_pat_11ABCDEFG0abcdefg"));
+        assert!(!super::is_fine_grained("ghp_16CharactersOfClassic"));
+        assert!(!super::is_fine_grained("gho_device_flow_token"));
+        assert!(!super::is_fine_grained(""));
+    }
+
     use super::*;
     use prmarmot_core::github::device_flow::REFRESH_SKEW_SECS;
     use serde_json::json;

@@ -220,11 +220,16 @@ values in the code. New features get the next free number in their area.
   `read:org`, and there is no client secret and no server of ours. _since v0.9.0_ The code screen says that an
   organization which restricts OAuth apps hides its repositories until an owner approves PR Marmot, and that
   GitHub offers the request when you authorize. _since v0.10.0_
-- **F-auth-3** **Use a token** takes a personal access token. A fine-grained one needs Pull requests: read and
-  Metadata: read and covers one owner. A classic one with `repo` and `read:org` covers several organizations and
-  shows CI. The token is never displayed. _since v0.9.0_
+- **F-auth-3** **Use a token** takes a personal access token. A classic one with `repo` and `read:org` reaches
+  every organization you belong to and shows CI. A fine-grained one needs Pull requests: read and Metadata: read
+  and covers one owner. The token is never displayed. _since v0.9.0_ The sign-in screen names the classic token
+  first, says what it reaches — every organization, their private repositories, ones that restrict OAuth apps,
+  and CI — and says what a fine-grained one cannot: an organization's private repositories, absent with no
+  error. _unreleased_
 - **F-auth-4** A fine-grained token still loads the board. CI it may not read shows as "hidden", and one line under
-  the header explains why. _since v0.9.1_
+  the header explains why. _since v0.9.1_ When a pasted fine-grained token carries the board and the GitHub CLI is
+  signed in to the same host, a second line says the `gh` login would also reach organization private
+  repositories. _unreleased_
 - **F-auth-5** GitHub Enterprise Server: set `[auth] host`, `PRMARMOT_HOST`, or `GH_HOST`. Sign in with a token, or
   with the device flow once `[auth] client_id` names that instance's own registration. _since v0.9.0_ A host typed
   in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _since v0.9.1_
