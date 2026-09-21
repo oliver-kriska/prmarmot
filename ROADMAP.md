@@ -115,7 +115,8 @@ historical release assets keep their old names.
 
 Launch posts go out only after the memory benchmark is published (G0) and the website is live.
 
-- [ ] **Memory benchmark** in `benchmarks/`: method, raw samples and the verdict, reproducible by anyone.
+- [x] **Memory benchmark** in `benchmarks/`: method, raw samples and the verdict, reproducible by anyone
+      (v0.9.1, 37.4 h, 2026-09-20).
 - [x] Repo hygiene: topics, social preview, homepage, Discussions with the pinned waitlist thread and the Ideas category.
 - [ ] Issue templates that route bugs to Issues and requests to Ideas.
 - [ ] README: hero GIF, install one-liner, the "no account, no server" line, the CLI + agent-skill section, and a

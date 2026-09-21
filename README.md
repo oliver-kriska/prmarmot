@@ -751,9 +751,14 @@ To regenerate the app icons on macOS with `rsvg-convert` (librsvg) installed:
 scripts/generate-icons.sh
 ```
 
-The upgraded GPUI runtime's overnight memory and idle-GPU measurement remains
-pending; no resource-usage guarantee is claimed. Linux is source-only and has
-not been verified in the macOS development environment.
+Memory and idle cost are measured, not assumed. A 37.4-hour unattended run of
+the installed v0.9.1 averaged 106.7 MB of physical footprint (the number
+Activity Monitor shows), with a p99 of 159 MB and a peak of 251 MB in a minute
+that drew a frame. It ended lower than it started, used 0.01 % of one CPU core,
+and drew no frame in 98 % of its minutes. Method, raw samples and the verdict:
+[`benchmarks/2026-09-20-memory-gate-v0.9.1.md`](benchmarks/2026-09-20-memory-gate-v0.9.1.md).
+That run covers Apple-silicon macOS. Linux is source-only and has not been
+verified in the macOS development environment.
 
 ## License
 

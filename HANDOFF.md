@@ -8,6 +8,19 @@
 
 ---
 
+## Current update — 2026-09-20
+
+**FACT: the memory gate G0 is passed.** Every "the memory gate is still not
+satisfied" line further down is a dated record of an earlier state. A 37.4 h
+soak of the Homebrew v0.9.1 build measured a mean physical footprint of
+106.7 MB, a p99 of 159 MB, a slope of −0.77 MB/h and 0.01 % of one core
+(`benchmarks/2026-09-20-memory-gate-v0.9.1.md`). Oliver replaced one threshold
+against the measurement: "(max − min) ≤ 25 MB" became "p99 < 200 MB", since one
+drawn frame holds ~23 MB per drawable and no build could meet the range. The
+251 MB peak is published beside the p99. The gate is re-run on a shipped build
+whenever the framework, the refresh loop or the repaint path changes; the
+procedure is in CLAUDE.md.
+
 ## Current update — 2026-09-17
 
 **FACT: the sentences two front ends must agree on now live in core.** Two new
