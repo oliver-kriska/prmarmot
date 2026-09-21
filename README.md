@@ -8,8 +8,8 @@
 
 **A native desktop dashboard for deciding what to do next on GitHub pull
 requests.** PR Marmot turns CI, review requests, completed reviews, unresolved
-threads, conflicts, labels, linked issues, and GitHub stacks into two focused
-queues with a plain-language **Note** on every row.
+threads, conflicts, labels, linked issues, and GitHub stacks into focused
+views with a plain-language **Note** on every row.
 
 - **Involving me** is the zero-config, all-repositories default. Your own PRs
   keep actionable Notes; other authors' PRs use ownership-aware status Notes.
@@ -17,6 +17,10 @@ queues with a plain-language **Note** on every row.
   authored behavior.
 - **Review queue** separates PRs that request your review from PRs with no
   reviewer requested that are available for someone to pick up.
+- **All open** lists every open PR in one repository, whoever opened it, in
+  the same sections as the other views. A label or author filter goes to
+  GitHub's search, so it covers the whole repository, not just the PRs loaded
+  so far.
 - **Read-only by design:** PR Marmot can open a PR or linked issue and copy its
   URL, but it never assigns reviewers, comments, merges, or changes GitHub.
 - **Signs in with your GitHub account:** it uses your
@@ -246,7 +250,7 @@ repos = ["acme/widgets", "acme/api"]    # extra repo-picker entries
 pinned_repos = ["acme/widgets"]          # toolbar shortcuts, maximum 12
 refresh_secs = 300                       # default 300; hard floor 30
 theme = "system"                         # system | light | dark
-view = "authored"                        # authored | review
+view = "authored"                        # authored | review | all
 notifications = true                    # transition alerts while app runs
 notification_sound = true
 notify_all_needs_action = false         # watched PRs still notify
@@ -317,8 +321,9 @@ Every feature, with its limits and the version it shipped in, is listed in
 - **Shortcuts:** the footer opens the full keyboard reference. Character shortcuts
   work from dashboard controls, but never while typing in search, the repo picker,
   or Settings. Arrow keys, Enter, and Space belong to the focused control.
-- **Queues:** click **Involving me** (or **My PRs**) / **Review queue**,
-  press `1` / `2`, or press `v` to toggle.
+- **Views:** click **Involving me** (or **My PRs**) / **Review queue** /
+  **All open**, press `1` / `2` / `3`, or press `v` to cycle. All open needs one
+  repository, so its tab is disabled while **All repositories** is selected.
 - **Navigate:** `↑` / `↓` selects; `Enter` or `o` opens the PR; `y` copies its
   URL with a brief footer confirmation; double-clicking a row opens it.
 - **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
@@ -342,9 +347,12 @@ Every feature, with its limits and the version it shipped in, is listed in
   review** list the longest wait first. When only a team was asked and nobody
   has reviewed, the Note says "team requested, nobody responded"; with nobody
   asked at all, your PR's Note says "no reviewers".
-- **Size band:** in the **Review queue**, the Note ends with how big the change
-  is: **Small** (at most 100 changed lines and at most 10 files), **Large**
-  (more than 400 lines or more than 30 files), or **Medium** otherwise. Changed
+- **Sections:** hover a section's title (**In progress**, **Needs
+  attention**, …) for one sentence on what puts a PR there.
+- **Size band:** in the **Review queue** and **All open**, the Note ends with
+  how big the change is: **Small** (at most 100 changed lines and at most 10
+  files), **Large** (more than 400 lines or more than 30 files), or **Medium**
+  otherwise. Changed
   lines are additions plus deletions, as GitHub counts them, so lockfiles and
   generated files count too. A PR whose counts GitHub didn't report shows no
   band. Hover the Note or open Details for the line and file counts. The band
@@ -375,7 +383,13 @@ Every feature, with its limits and the version it shipped in, is listed in
   - `label:NAME`, `author:LOGIN`, and `repo:OWNER/NAME` keep PRs whose label,
     author, or repository is exactly that, ignoring case. Quote values with
     spaces: `label:"help wanted"`. After a space or Enter a term becomes a
-    chip, and all chips and words must match.
+    chip. Words, labels, and `is:stale` must all match; several `author:` or
+    `repo:` chips keep PRs matching any one of them, as GitHub does.
+  - In **All open**, `label:` and `author:` chips are sent to GitHub's search
+    (one request, after you stop typing), so `label:bug` finds every open bug
+    PR in the repository and the header says "N match". `author:dependabot`
+    finds the bot's PRs too. Words and `is:stale` still check only the loaded
+    PRs, and while more are left to load a line under the header says so.
   - `is:stale` keeps PRs that have waited `stale_after_days` or longer for a
     reviewer (see **Pickup age**).
   - Click a label (in the table or in Details), an author, or a repository to
@@ -385,10 +399,13 @@ Every feature, with its limits and the version it shipped in, is listed in
     it.
 - **Header:** it shows how many PRs this view has loaded, how many of them
   need you, and how many watched or snoozed PRs were refreshed. "Need you"
-  counts the view on screen, without snoozed PRs: Needs action in My PRs, and
-  Requested from you plus Available to review in the Review queue. The Dock
-  badge is the total across both views: your PRs that need action plus review
-  requests. Hover the header for the explanation.
+  counts the view on screen, without snoozed PRs: Needs action in My PRs,
+  Requested from you plus Available to review in the Review queue, and in
+  All open Requested from you plus your own PRs under Needs attention (never a
+  teammate's). All open also says how many of the
+  repository's open PRs are loaded ("60 of 759 open"). The Dock badge is your
+  PRs that need action plus review requests, whichever view is on screen. Hover
+  the header for the explanation.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.
@@ -421,8 +438,8 @@ opening the panel makes no additional GitHub request.*
 
 ## Terminal and agent CLI
 
-`prmarmot-cli` prints the same **My PRs** and **Review queue** views in a
-terminal, as Markdown, or as JSON for coding agents. It uses the app's GraphQL
+`prmarmot-cli` prints the same **My PRs**, **Review queue**, and **All open**
+views in a terminal, as Markdown, or as JSON for coding agents. It uses the app's GraphQL
 query, categorization, Notes, sections, stack grouping, config file, and
 sign-in — either a token you stored with `prmarmot-cli auth login` or the `gh`
 CLI's, see [Signing in](#signing-in). It has no GPUI dependency, so it builds
@@ -445,6 +462,7 @@ prmarmot-cli mine --changed            # only PRs changed since you last looked,
 prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
 prmarmot-cli review --filter 'label:"help wanted" is:stale'   # the app's search, in the terminal
 prmarmot-cli review --sort smallest    # small changes first, by the app's size band
+prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in one repository
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
@@ -456,12 +474,14 @@ prmarmot-cli auth status               # which account and token this machine us
 Scope follows the app: `--repo owner/name` or `--all-repos`, then
 `PRMARMOT_REPO` / `PRMARMOT_SCOPE`, then `config.toml`. A repository that doesn't
 exist or that your `gh` account can't see is an error (exit 1), not an empty
-list. `--watched` keeps only
+list. `all` lists one repository's open PRs, so without one it exits 2 before
+asking GitHub anything. `--watched` keeps only
 PRs you watch in the app. `--stale` keeps only PRs that have waited
 `stale_after_days` (default 3) or longer for a reviewer, by the app's
 **Pickup age** rule; table and Markdown Notes end with the wait
-(`· waiting 3d`, marked `(stale)`). In `review`, Notes also end with the
-**Size band** (`· Small`), and `--sort smallest` lists the pickup sections the
+(`· waiting 3d`, marked `(stale)`). In `review` and `all`, Notes also end with
+the **Size band** (`· Small`). In `review`, `--sort smallest` lists the pickup
+sections the
 way **Smallest first** does (`--sort wait`, the default, lists the longest wait
 first). `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
@@ -473,7 +493,11 @@ both places. Bare words match the number, repository, title, author, labels,
 linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME` and
 `is:stale` match a whole field; quote a value that has spaces
 (`label:"help wanted"`); every term must match, and matching ignores case.
-`is:stale` uses the same `stale_after_days` as `--stale`. The grammar lives in
+Several `author:` or `repo:` terms keep PRs matching any one of them, as
+GitHub's search does. `is:stale` uses the same `stale_after_days` as `--stale`.
+In `all`, the `label:` and `author:` terms go to GitHub with the search, so
+they cover the whole repository; words and `is:stale` check only the loaded
+PRs, and the footer says so while more are left to load. The grammar lives in
 `prmarmot-core` and is pinned by a golden test, so the desktop app, the CLI and
 future front ends cannot drift on what a query means.
 
@@ -481,11 +505,13 @@ future front ends cannot drift on what a query means.
 piped. `--format markdown` gives one GitHub-flavored table per section with
 linked PRs. `--json` emits `prmarmot-cli/board@1`:
 
-- **Envelope:** `viewer`, `mode`, `scope`, `sort` (`wait` or `smallest`),
-  `count`, `truncated`,
+- **Envelope:** `viewer`, `mode` (`authored`, `review`, or `all`), `scope`,
+  `sort` (`wait` or `smallest`), `count`, `total` (how many PRs GitHub's search
+  found, loaded or not; null for `review`), `truncated`,
   `more_pages_available`, `rate_limit`, and `sections`.
 - **Sections:** each has a stable `key` (`approved`, `action`, `await`, `todo`,
-  `available`, `done`, `draft`, `snoozed`), a `label`, and its `prs` in display
+  `available`, `done`, `draft`, `snoozed`), a `label`, an `explanation` (what
+  puts a PR there, the app's hover text), and its `prs` in display
   order.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
@@ -632,6 +658,16 @@ explicitly requested PRs and 60 other-authored candidates, then keeps available
 candidates only when they have no pending user or team reviewer request. Your
 own PRs are excluded from the review queue. This is based on **review requests**,
 not issue assignees.
+
+All open needs one repository and searches `repo:OWNER/NAME is:pr is:open`,
+most recently updated first, 60 PRs per page, plus any `label:` and `author:`
+chips. The same request asks the Review queue's `review-requested:` search for
+up to 100 PR ids, so **Requested from you** holds the same PRs in both views,
+and costs 4 GraphQL points, like My PRs.
+The header shows GitHub's total, so a filtered or truncated list is never
+passed off as complete. Opening All open doesn't make other people's PRs
+notify you or count on the Dock badge: only PRs you watch, your own, and those
+requesting your review are followed.
 
 A **partial results** notice means GitHub has another page. **Load more** can
 advance each active search to a maximum of five pages: at most 300 authored

@@ -8,8 +8,11 @@ use prmarmot_core::board::{
     strip_note_glyphs, Blocker, BoardRow, BoardScope, Category, Ci, Mode, QueueProvenance,
     ReviewState,
 };
-use prmarmot_core::layout::{LayoutItem, SectionKind, Sort};
+use prmarmot_core::layout::{section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
+use prmarmot_core::status::{
+    all_open_count, all_open_local_filter_notice, all_open_no_match_text, queue_empty_text,
+};
 use serde_json::{json, Value};
 
 use crate::term::{display_width, fit, truncate, Paint, Tone};
@@ -24,6 +27,7 @@ pub fn view_title(mode: Mode, scope: &BoardScope, authored_only: bool) -> &'stat
         Mode::Authored if scope.is_all() && !authored_only => "Involving me",
         Mode::Authored => "My PRs",
         Mode::Review => "Review queue",
+        Mode::AllOpen => "All open",
     }
 }
 
@@ -31,6 +35,7 @@ pub fn mode_key(mode: Mode) -> &'static str {
     match mode {
         Mode::Authored => "authored",
         Mode::Review => "review",
+        Mode::AllOpen => "all",
     }
 }
 
@@ -55,17 +60,36 @@ pub fn scope_json(scope: &BoardScope) -> Value {
     }
 }
 
-fn empty_message(view: &BoardView) -> &'static str {
+fn empty_message(view: &BoardView) -> String {
+    // All open: when GitHub answered the whole filter, or every open PR is
+    // loaded, nothing matching is a fact about the repository.
+    let query = view.filters.query.as_deref().map(str::trim);
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        let flags = view.filters.changed || view.filters.watched || view.filters.stale;
+        if view.mode == Mode::AllOpen
+            && !flags
+            && (!view.truncated || view.local_only_terms().is_empty())
+        {
+            return all_open_no_match_text(query);
+        }
+    }
     if view.filtered_out > 0 {
-        return "No PRs match the filter";
+        return "No PRs match the filter".into();
     }
     match view.mode {
         Mode::Authored if view.all_repos() && !view.authored_only => {
-            "No open pull requests involve you"
+            "No open pull requests involve you".into()
         }
-        Mode::Authored => "You have no open PRs",
-        Mode::Review => "No requested or available reviews in this result set",
+        Mode::Authored => "You have no open PRs".into(),
+        Mode::Review => "No requested or available reviews in this result set".into(),
+        Mode::AllOpen => queue_empty_text(view.mode, view.all_repos()).into(),
     }
+}
+
+/// All open and the review queue name each PR's author in their own column;
+/// All open's Notes never do.
+fn author_column(mode: Mode) -> bool {
+    matches!(mode, Mode::Review | Mode::AllOpen)
 }
 
 // ---- JSON ------------------------------------------------------------------
@@ -175,6 +199,7 @@ pub fn board_json(view: &BoardView) -> Value {
             sections.push(json!({
                 "key": kind.key(),
                 "label": label,
+                "explanation": section_explanation(view.mode, kind, view.all_repos()),
                 "count": count,
                 "prs": members
                     .iter()
@@ -192,6 +217,7 @@ pub fn board_json(view: &BoardView) -> Value {
         "scope": scope_json(&view.scope),
         "sort": sort_key(view.sort),
         "count": view.rows.len(),
+        "total": view.total,
         "filters": {
             "changed": view.filters.changed,
             "watched": view.filters.watched,
@@ -376,7 +402,7 @@ pub fn note(row: &BoardRow) -> Note {
 }
 
 /// The Note plus how long the PR has waited for a reviewer (a stale wait
-/// warns) and, in the review queue, the size band.
+/// warns) and, in the review queue and All open, the size band.
 fn note_for(view: &BoardView, ix: usize) -> Note {
     let row = &view.rows[ix];
     let mut note = note(row);
@@ -390,25 +416,43 @@ fn note_for(view: &BoardView, ix: usize) -> Note {
             }
         }
     }
-    if let Some(size) = row.size.filter(|_| view.mode == Mode::Review) {
+    if let Some(size) = row.size.filter(|_| author_column(view.mode)) {
         note.text.push_str(&format!(" · {}", size.band().label()));
     }
     note
 }
 
+/// All open counts against what GitHub found: "60 of 761 open", or "match"
+/// when a `label:` or `author:` filter went with the search, as the app's
+/// header says it. `None` for the other views, and when GitHub did not say.
+fn found_count(view: &BoardView) -> Option<String> {
+    let total = view.total.filter(|_| view.mode == Mode::AllOpen)?;
+    Some(all_open_count(
+        view.loaded(),
+        total,
+        !view.remote.is_empty(),
+    ))
+}
+
 fn status_line(view: &BoardView) -> String {
-    let mut parts = vec![
-        scope_label(&view.scope),
-        format!(
+    let mut parts = vec![scope_label(&view.scope)];
+    match found_count(view) {
+        // Some loaded PRs didn't pass the filters: how many are listed.
+        Some(found) if view.filtered_out > 0 => {
+            parts.push(found);
+            parts.push(format!("{} shown", view.rows.len()));
+        }
+        Some(found) => parts.push(found),
+        None => parts.push(format!(
             "{} PR{}",
             view.rows.len(),
             if view.rows.len() == 1 { "" } else { "s" }
-        ),
-        format!(
-            "synced {}",
-            view.generated_at.with_timezone(&Local).format("%H:%M")
-        ),
-    ];
+        )),
+    }
+    parts.push(format!(
+        "synced {}",
+        view.generated_at.with_timezone(&Local).format("%H:%M")
+    ));
     if view.sort == Sort::Smallest {
         parts.push("smallest first".into());
     }
@@ -447,6 +491,15 @@ fn footer_lines(view: &BoardView) -> Vec<String> {
         lines.push("More results on GitHub — pass --pages N (up to 5) to load them".into());
     } else if view.truncated {
         lines.push("Results truncated at GitHub's page limit".into());
+    }
+    // The footer already says how to load more, so the notice doesn't.
+    if view.mode == Mode::AllOpen {
+        lines.extend(all_open_local_filter_notice(
+            &view.local_only_terms(),
+            view.loaded(),
+            view.total,
+            false,
+        ));
     }
     if let Some(error) = &view.attention_error {
         lines.push(format!("Watch/snooze state unavailable: {error}"));
@@ -517,7 +570,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
     if view.rows.is_empty() {
         out.push_str(&format!("\n_{}_\n", empty_message(view)));
     }
-    let review_mode = view.mode == Mode::Review;
+    let author_mode = author_column(view.mode);
     let mut table_open = false;
     for (pos, item) in items.iter().enumerate() {
         match item {
@@ -539,7 +592,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                 ..
             } => {
                 out.push_str(&format!("\n## {label} ({count})\n\n"));
-                out.push_str(if review_mode {
+                out.push_str(if author_mode {
                     "| PR | Title | Author | CI | Note |\n| --- | --- | --- | --- | --- |\n"
                 } else {
                     "| PR | Title | CI | Review | Note |\n| --- | --- | --- | --- | --- |\n"
@@ -560,7 +613,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                     note_text = format!("{note_text} · {attention}");
                 }
                 let title = title_text(row, stack_branch(view, &items, pos));
-                let middle = if review_mode {
+                let middle = if author_mode {
                     format!(
                         "{} | {}",
                         md_cell(row.author.as_deref().unwrap_or("?")),
@@ -606,7 +659,7 @@ struct Widths {
 /// narrow one the Note wins width over Title (DESIGN.md): Review/Author gives
 /// way first, then Title down to about a third, and the Note last.
 fn widths(view: &BoardView, items: &[LayoutItem], total: usize) -> Widths {
-    let review_mode = view.mode == Mode::Review;
+    let author_mode = author_column(view.mode);
     let (mut pr, mut title_need, mut middle_need, mut note_need) = (4, 12, 8, 12);
     for (pos, item) in items.iter().enumerate() {
         let LayoutItem::Row(ix) = item else {
@@ -618,7 +671,7 @@ fn widths(view: &BoardView, items: &[LayoutItem], total: usize) -> Widths {
             row,
             stack_branch(view, items, pos),
         )));
-        middle_need = middle_need.max(if review_mode {
+        middle_need = middle_need.max(if author_mode {
             display_width(row.author.as_deref().unwrap_or("?"))
         } else {
             display_width(&review_text(row))
@@ -683,10 +736,10 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
     if view.rows.is_empty() {
         out.push_str(&format!(
             "\n{}\n",
-            paint.tone(Tone::Muted, empty_message(view))
+            paint.tone(Tone::Muted, &empty_message(view))
         ));
     }
-    let review_mode = view.mode == Mode::Review;
+    let author_mode = author_column(view.mode);
     let items = view.layout(show_snoozed);
     let w = widths(view, &items, width);
     for (pos, item) in items.iter().enumerate() {
@@ -743,7 +796,7 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
                     paint.tone(ci_tone, "●"),
                     fit(ci_word, CI_WIDTH - 2)
                 );
-                let middle = if review_mode {
+                let middle = if author_mode {
                     fit(row.author.as_deref().unwrap_or("?"), w.middle)
                 } else {
                     let text = fit(&review_text(row), w.middle);
@@ -870,10 +923,203 @@ mod tests {
         )
     }
 
+    /// All open for acme/widgets: a review asked of you (by bob), someone
+    /// else's ready PR (carol's, with a size), and a draft; GitHub found
+    /// `total` open PRs and more pages exist.
+    fn all_open_view(query: Option<&str>, total: Option<u64>) -> BoardView {
+        let mut requested = row(21, Category::Todo);
+        requested.author = Some("bob".into());
+        requested.title = "Fix login redirect".into();
+        requested.note = "🔵 needs your review".into();
+        requested.labels = vec!["bug".into()];
+        let mut open = row(22, Category::Await);
+        open.author = Some("carol".into());
+        open.note = "🟡 waiting on dave".into();
+        open.size = Some(ChangeSize {
+            additions: 40,
+            deletions: 2,
+            changed_files: 2,
+        });
+        let mut draft = row(23, Category::Draft);
+        draft.author = Some("erin".into());
+        draft.note = "draft".into();
+        let mut fetch = fetch_of(vec![requested, open, draft]);
+        fetch.total = total;
+        fetch.truncated = total.is_some_and(|total| total > 3);
+        build(
+            fetch,
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::AllOpen,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters {
+                query: query.map(str::to_owned),
+                ..Filters::default()
+            },
+            Utc.with_ymd_and_hms(2026, 9, 21, 9, 0, 0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn all_open_names_each_author_and_counts_against_what_github_found() {
+        let view = all_open_view(None, Some(761));
+        let md = markdown(&view, false);
+        assert!(md.starts_with("# All open · acme/widgets\n\n"), "{md}");
+        assert!(
+            md.contains("acme/widgets · 3 of 761 open · synced "),
+            "{md}"
+        );
+        assert!(md.contains("## Requested from you (1)"), "{md}");
+        assert!(md.contains("## In progress (1)"), "{md}");
+        assert!(md.contains("## Drafts (1)"), "{md}");
+        assert!(md.contains("| PR | Title | Author | CI | Note |"), "{md}");
+        assert!(!md.contains("| Review |"), "{md}");
+        // The Note never names the author; the column does. The size band
+        // shows as in the review queue.
+        assert!(
+            md.contains("| Fix login redirect | bob | pass | needs your review"),
+            "{md}"
+        );
+        assert!(
+            md.contains("| carol | pass | waiting on dave · Small |"),
+            "{md}"
+        );
+        // Nothing was filtered, so no notice.
+        assert!(!md.contains("Only the"), "{md}");
+
+        let text = table(&view, 120, Paint::new(false), false);
+        assert!(
+            text.starts_with("All open · acme/widgets · 3 of 761 open · synced "),
+            "{text}"
+        );
+        assert!(text.lines().any(|line| line.contains("#22")
+            && line.contains("carol")
+            && line.contains("waiting on dave · Small")));
+
+        let value = board_json(&view);
+        assert_eq!(value["mode"], "all");
+        assert_eq!(value["view"], "All open");
+        assert_eq!(value["total"], 761);
+        let keys: Vec<&str> = value["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(keys, ["todo", "await", "draft"]);
+        // Each section says what puts a PR there, as the app's hover does.
+        assert!(value["sections"][1]["explanation"]
+            .as_str()
+            .unwrap()
+            .starts_with("Nothing blocks it"));
+        assert_eq!(value["sections"][1]["prs"][0]["author"], "carol");
+
+        // Everything loaded: the count is just what is open.
+        assert!(status_line(&all_open_view(None, Some(3))).contains(" · 3 open · "));
+        // GitHub didn't say: count the rows, as the other views do.
+        assert!(status_line(&all_open_view(None, None)).contains(" · 3 PRs · "));
+        assert_eq!(board_json(&all_open_view(None, None))["total"], Value::Null);
+    }
+
+    #[test]
+    fn all_open_says_when_part_of_the_filter_only_checked_the_loaded_prs() {
+        let view = all_open_view(Some("login is:stale"), Some(761));
+        assert_eq!(view.rows.len(), 0);
+        assert_eq!(view.filtered_out, 3);
+        let notice = "Only the 3 loaded PRs of 761 are checked for is:stale and “login”.";
+        let md = markdown(&view, false);
+        assert!(md.contains(&format!("_{notice}_")), "{md}");
+        assert!(md.contains("3 of 761 open · 0 shown"), "{md}");
+        // Not the repository's answer: the notice says why.
+        assert!(md.contains("_No PRs match the filter_"), "{md}");
+        let text = table(&view, 120, Paint::new(false), false);
+        assert!(text.contains(notice), "{text}");
+
+        // A word that matches: the notice still says what wasn't checked.
+        let view = all_open_view(Some("login"), Some(761));
+        assert_eq!(view.rows.len(), 1);
+        assert!(status_line(&view).contains("3 of 761 open · 1 shown"));
+        assert_eq!(
+            footer_lines(&view).last().map(String::as_str),
+            Some("Only the 3 loaded PRs of 761 are checked for “login”.")
+        );
+
+        // `--stale` is `is:stale`.
+        let mut view = all_open_view(None, Some(761));
+        view.filters.stale = true;
+        assert!(footer_lines(&view)
+            .iter()
+            .any(|line| line == "Only the 3 loaded PRs of 761 are checked for is:stale."));
+
+        // Every open PR is loaded: the local filter's answer is exact.
+        let view = all_open_view(Some("nothing-like-this"), Some(3));
+        assert!(!footer_lines(&view).iter().any(|l| l.starts_with("Only")));
+        assert!(markdown(&view, false)
+            .contains("_No open PRs in this repository match nothing-like-this._"));
+    }
+
+    #[test]
+    fn all_open_filters_github_answered_count_matches_and_say_so_when_empty() {
+        // label: and author: went to GitHub, so the count is of matches and
+        // nothing was checked only locally.
+        let view = all_open_view(Some("label:bug author:bob"), Some(40));
+        assert!(!view.remote.is_empty());
+        assert!(view.local_only_terms().is_empty());
+        assert_eq!(view.rows.len(), 1);
+        assert!(
+            status_line(&view).starts_with("acme/widgets · 3 of 40 match · 1 shown · "),
+            "{}",
+            status_line(&view)
+        );
+        assert!(!footer_lines(&view).iter().any(|l| l.starts_with("Only")));
+        // repo: stays local, so it is named.
+        let view = all_open_view(Some("author:bob repo:acme/widgets"), Some(40));
+        assert_eq!(view.local_only_terms(), ["repo:acme/widgets"]);
+
+        let mut fetch = fetch_of(Vec::new());
+        fetch.total = Some(0);
+        let empty = build(
+            fetch,
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::AllOpen,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters {
+                query: Some("label:\"area:editor\"".into()),
+                ..Filters::default()
+            },
+            Utc::now(),
+        );
+        assert_eq!(board_json(&empty)["total"], 0);
+        assert!(
+            markdown(&empty, false)
+                .contains("_No open PRs in this repository match label:\"area:editor\"._"),
+            "{}",
+            markdown(&empty, false)
+        );
+        assert!(table(&empty, 80, Paint::new(false), false)
+            .contains("No open PRs in this repository match label:\"area:editor\"."));
+
+        let mut fetch = fetch_of(Vec::new());
+        fetch.total = Some(0);
+        let unfiltered = build(
+            fetch,
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::AllOpen,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters::default(),
+            Utc::now(),
+        );
+        assert!(markdown(&unfiltered, false).contains("_No open PRs in this repository_"));
+    }
+
     #[test]
     fn json_matches_the_published_schema() {
         use crate::schema_check::{assert_conforms, Schema};
         use prmarmot_core::github::rate_limit::RateLimitInfo;
+        assert_conforms(Schema::Board, &board_json(&all_open_view(None, Some(761))));
+        assert_conforms(Schema::Board, &board_json(&all_open_view(None, None)));
         for mode in [Mode::Authored, Mode::Review] {
             let mut view = sample_view(mode);
             assert_conforms(Schema::Board, &board_json(&view));

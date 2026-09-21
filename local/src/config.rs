@@ -32,7 +32,8 @@ pub struct FileConfig {
     /// `system` | `light` | `dark`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    /// `authored` | `review` — the view to open with.
+    /// `authored` | `review` | `all` — the view to open with. `all` (All open)
+    /// needs a repository; with all repositories the app opens on `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -749,6 +749,7 @@ fn fetch_pull_request(
         pagination: BoardPagination::default(),
         tracked: Vec::new(),
         access: fetched.access,
+        total: None,
     };
     Ok((board, gone))
 }
@@ -841,6 +842,8 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
                 &session.scope,
                 &session.viewer,
                 &session.board,
+                // Watch follows My PRs or the review queue, never All open.
+                &Default::default(),
                 1,
             )
             .map(|fetch| (fetch, None)),

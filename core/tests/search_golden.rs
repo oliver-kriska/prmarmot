@@ -14,7 +14,10 @@
 use chrono::{DateTime, Utc};
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;
-use prmarmot_core::search::{matches_filter, take_filter_chips, with_filter, StaleRule};
+use prmarmot_core::search::{
+    matches_filter, matches_search, take_filter_chips, with_filter, FilterChip, Qualifier,
+    RemoteFilter, StaleRule,
+};
 use serde_json::{json, Map, Value};
 
 const REPO: &str = "acme/widgets";
@@ -60,6 +63,10 @@ const QUERIES: &[&str] = &[
     "is:",
     "label:bug is:stale",
     "author:alice repo:acme/widgets",
+    "author:alice author:bob",
+    "author:alice author:bob label:bug",
+    "label:bug label:\"help wanted\"",
+    "repo:acme/widgets repo:acme/other",
     "importer label:bug",
     "reviewer:alice",
     "\"label:bug\"",
@@ -179,5 +186,45 @@ fn the_matrix_actually_discriminates() {
     assert!(
         counts.iter().any(|&n| n > 0 && n < total),
         "no query matches a strict subset"
+    );
+}
+
+/// All open sends `label:` and `author:` chips to GitHub and still filters
+/// the rows it gets back locally, so the two readings must be one: the same
+/// chips must find the same PRs in My PRs and in All open. GitHub's reading
+/// is written out here independently — every label, any one author, case
+/// ignored — and checked row by row against the local grammar on both
+/// fixtures, next to the exact qualifiers sent.
+#[test]
+fn a_chip_set_means_what_all_open_asks_github_for() {
+    let chips = [
+        FilterChip::new(Qualifier::Label, "Bug"),
+        FilterChip::new(Qualifier::Author, "ALICE"),
+        FilterChip::new(Qualifier::Author, "bob"),
+    ];
+    assert_eq!(
+        RemoteFilter::from_chips(&chips).qualifiers(),
+        r#" label:"bug" author:alice author:app/alice author:bob author:app/bob"#
+    );
+    let github = |row: &BoardRow| {
+        let label = row.labels.iter().any(|l| l.eq_ignore_ascii_case("bug"));
+        let author = row
+            .author
+            .as_deref()
+            .is_some_and(|a| ["alice", "bob"].iter().any(|b| a.eq_ignore_ascii_case(b)));
+        label && author
+    };
+    let mut rows = rows_of("tests/fixtures/authored_response.json", Mode::Authored);
+    rows.extend(rows_of("tests/fixtures/review_response.json", Mode::Review));
+    let mut matched = 0;
+    for row in &rows {
+        let local = matches_search(row, "", &chips, stale_rule());
+        assert_eq!(local, github(row), "#{} reads differently", row.number);
+        matched += usize::from(local);
+    }
+    assert!(
+        matched > 0 && matched < rows.len(),
+        "the fixture must tell the readings apart: {matched} of {}",
+        rows.len()
     );
 }

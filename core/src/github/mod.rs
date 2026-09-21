@@ -30,6 +30,8 @@ pub enum GhError {
     RepositoryNotFound(String),
     /// `owner/name#number` does not exist or the `gh` account cannot see it.
     PullRequestNotFound(String),
+    /// All open was asked for across all repositories; it covers one.
+    NeedsRepository,
     /// Subprocess / network-level failure (non-zero exit without a parseable body).
     Network(String),
     /// Response body did not match the expected shape.
@@ -66,6 +68,9 @@ impl fmt::Display for GhError {
                 f,
                 "pull request {pr} not found, or the gh account can't access it"
             ),
+            GhError::NeedsRepository => {
+                write!(f, "{}", crate::status::all_open_needs_repository())
+            }
             // Neutral wording: this variant now also carries direct-HTTP
             // failures, where naming `gh` would send people the wrong way.
             GhError::Network(msg) => write!(f, "{msg}"),

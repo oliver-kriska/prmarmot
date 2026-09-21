@@ -316,6 +316,50 @@ fn the_search_grammar_is_the_same_one_the_desktop_uses() {
 }
 
 #[test]
+fn all_open_sends_label_and_author_chips_to_github_and_needs_one_repository() {
+    let transport = Offline::fixture("authored_response.json");
+    let client = client(transport.clone());
+    let chips =
+        prmarmot_ffi::take_filter_chips("label:\"Help Wanted\" author:alice fix".into(), true);
+    let board = futures::executor::block_on(client.fetch_all_open(
+        "acme/widgets".into(),
+        chips.chips.clone(),
+        settings(),
+        NOW,
+        Vec::new(),
+    ))
+    .unwrap()
+    .board;
+    assert_eq!(board.mode, Mode::AllOpen);
+    assert!(!board.rows.is_empty());
+    let body: serde_json::Value = serde_json::from_str(&transport.requests()[0].body).unwrap();
+    assert_eq!(
+        body["variables"]["q"],
+        "repo:acme/widgets is:pr is:open sort:updated-desc label:\"help wanted\" \
+         author:alice author:app/alice"
+    );
+    assert!(client.has_more(Mode::AllOpen) == board.more_pages_available);
+    assert_eq!(
+        prmarmot_ffi::local_only_terms(chips.rest, chips.chips),
+        ["“fix”"]
+    );
+
+    let error = futures::executor::block_on(client.fetch_board(
+        Mode::AllOpen,
+        BoardScope::AllRepositories,
+        settings(),
+        NOW,
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        FfiError::Invalid {
+            message: prmarmot_ffi::all_open_needs_repository()
+        }
+    );
+}
+
+#[test]
 fn a_board_lays_out_into_sections_and_shares_as_text() {
     let board = futures::executor::block_on(client(Offline::review_fixture()).fetch_board(
         Mode::Review,
@@ -513,6 +557,34 @@ impl GithubTransport for Held {
 /// 2026-09-21).
 #[test]
 fn a_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
+    outlives_a_reset(Mode::Authored, |client| {
+        futures::executor::block_on(client.fetch_board(
+            Mode::Authored,
+            BoardScope::AllRepositories,
+            settings(),
+            NOW,
+        ))
+        .map(drop)
+    });
+}
+
+/// All open keeps its search for Load more the same way, so a reset drops
+/// it the same way.
+#[test]
+fn an_all_open_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
+    outlives_a_reset(Mode::AllOpen, |client| {
+        futures::executor::block_on(client.fetch_all_open(
+            "acme/widgets".into(),
+            Vec::new(),
+            settings(),
+            NOW,
+            Vec::new(),
+        ))
+        .map(drop)
+    });
+}
+
+fn outlives_a_reset(mode: Mode, fetch_once: fn(Arc<BoardClient>) -> Result<(), FfiError>) {
     let (sent, on_sent) = async_channel::unbounded();
     let (let_go, release) = async_channel::unbounded();
     let transport = Arc::new(Held {
@@ -530,25 +602,13 @@ fn a_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
         transport.clone(),
         Arc::new(Token),
     );
-    let fetch = |client: Arc<BoardClient>| {
-        std::thread::spawn(move || {
-            futures::executor::block_on(client.fetch_board(
-                Mode::Authored,
-                BoardScope::AllRepositories,
-                settings(),
-                NOW,
-            ))
-        })
-    };
+    let fetch = |client: Arc<BoardClient>| std::thread::spawn(move || fetch_once(client));
 
     // A fetch that lands with no reset in between is remembered.
     fetch(client.clone()).join().unwrap().unwrap();
-    assert!(
-        client.has_more(Mode::Authored),
-        "the fixture has a next page"
-    );
+    assert!(client.has_more(mode), "the fixture has a next page");
     client.reset();
-    assert!(!client.has_more(Mode::Authored));
+    assert!(!client.has_more(mode));
 
     transport
         .hold
@@ -559,7 +619,7 @@ fn a_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
     futures::executor::block_on(let_go.send(())).unwrap();
     held.join().unwrap().unwrap();
     assert!(
-        !client.has_more(Mode::Authored),
+        !client.has_more(mode),
         "the fetch that outlived the reset left its cursor behind"
     );
 
@@ -568,7 +628,7 @@ fn a_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
     futures::executor::block_on(on_sent.recv()).unwrap();
     futures::executor::block_on(let_go.send(())).unwrap();
     next.join().unwrap().unwrap();
-    assert!(client.has_more(Mode::Authored));
+    assert!(client.has_more(mode));
 }
 
 /// The cycle rule, from the Rust side.

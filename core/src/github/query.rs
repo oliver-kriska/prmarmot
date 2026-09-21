@@ -1,8 +1,9 @@
 //! Bounded GraphQL board queries and the raw response model.
 //!
-//! Never fan out per-PR REST calls. Authored mode uses one search; review mode
-//! combines requested and unrequested candidates in one operation. Both return
-//! `rateLimit{}` so the UI reports the actual shared budget.
+//! Never fan out per-PR REST calls. Authored mode and All open each use one
+//! search; review mode combines requested and unrequested candidates in one
+//! operation. All return `rateLimit{}` so the UI reports the actual shared
+//! budget.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,7 +19,17 @@ pub fn search_string(mode: crate::board::Mode, repo: &str, who: &str) -> String 
         crate::board::Mode::Review => {
             format!("repo:{repo} is:pr is:open review-requested:{who} -author:{who}")
         }
+        crate::board::Mode::AllOpen => all_open_search_string(repo, ""),
     }
+}
+
+/// Every open PR in one repository, most recently updated first, so the first
+/// page is the live end of the list and Load more walks back in time.
+/// `qualifiers` is [`crate::search::RemoteFilter::qualifiers`]: the labels and
+/// authors GitHub can match exactly, so a filtered view counts and pages over
+/// the whole repository instead of the rows already loaded.
+pub fn all_open_search_string(repo: &str, qualifiers: &str) -> String {
+    format!("repo:{repo} is:pr is:open sort:updated-desc{qualifiers}")
 }
 
 /// Broad review-queue candidates. GitHub search has no working
@@ -32,7 +43,12 @@ pub fn available_search_string(repo: &str, who: &str) -> String {
 /// GitHub's GraphQL search does not expand `@me` consistently.
 pub fn global_search_string(mode: crate::board::Mode, who: &str) -> String {
     match mode {
-        crate::board::Mode::Authored => format!("is:pr is:open involves:{who}"),
+        // All open covers one repository, and the fetch refuses it across all
+        // of them; were it ever asked here, it must stay scoped to the viewer
+        // rather than become a search of every open PR on GitHub.
+        crate::board::Mode::Authored | crate::board::Mode::AllOpen => {
+            format!("is:pr is:open involves:{who}")
+        }
         crate::board::Mode::Review => {
             format!("is:pr is:open review-requested:{who} -author:{who}")
         }
@@ -88,10 +104,12 @@ macro_rules! review_queue_fragment {
 }
 
 /// Prototype authored query extended with native stacks, request totals,
-/// pagination visibility, and the live rate-limit budget.
+/// pagination visibility, and the live rate-limit budget. `issueCount` is how
+/// many PRs the search matched in all, loaded or not; it costs nothing.
 pub const PR_SEARCH_QUERY: &str = concat!(
     r#"query($q:String!,$who:String!){
   search(query:$q, type:ISSUE, first:60){
+    issueCount
     pageInfo{ hasNextPage endCursor }
     nodes{ ... on PullRequest {
       "#,
@@ -106,6 +124,7 @@ pub const PR_SEARCH_QUERY: &str = concat!(
 pub const PR_SEARCH_PAGE_QUERY: &str = concat!(
     r#"query($q:String!,$after:String!,$who:String!){
   search(query:$q, type:ISSUE, first:60, after:$after){
+    issueCount
     pageInfo{ hasNextPage endCursor }
     nodes{ ... on PullRequest {
       "#,
@@ -238,6 +257,35 @@ pub fn parse_pull_request_id(body: &Value, repo: &str, number: u64) -> Result<St
 pub fn parse_tracked_response(body: &Value) -> Result<Option<RateLimitInfo>, GhError> {
     check_graphql_errors(body)?;
     Ok(parse_rate(body))
+}
+
+/// Most review requests All open reads per refresh; more than this many open
+/// requests to one person in one repository is not a queue anyone works.
+pub const MAX_ALL_OPEN_REQUESTED: usize = 100;
+
+/// All open asks, in the same operation, which of the repository's open PRs
+/// request your review — the review queue's own search (`$requested`), team
+/// requests included — so "Requested from you" is the same set in both views.
+/// Ids only: the rows come from the main search.
+pub fn with_requested_ids(query: &str) -> Result<String, GhError> {
+    extend_operation(
+        query,
+        ",$requested:String!",
+        "  requested: search(query:$requested, type:ISSUE, first:100){ nodes{ ... on PullRequest { id } } }\n",
+    )
+}
+
+/// The ids [`with_requested_ids`] returned, at most
+/// [`MAX_ALL_OPEN_REQUESTED`].
+pub fn requested_ids(body: &Value) -> Vec<String> {
+    body.pointer("/data/requested/nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get("id").and_then(Value::as_str))
+        .take(MAX_ALL_OPEN_REQUESTED)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Alias holding the scoped repository in an initial refresh operation.
@@ -531,6 +579,12 @@ pub fn page_info(body: &Value, path: &str) -> PageInfo {
             .and_then(Value::as_str)
             .map(str::to_owned),
     }
+}
+
+/// How many PRs a search alias matched in all, loaded or not.
+pub fn issue_count(body: &Value, path: &str) -> Option<u64> {
+    body.pointer(&format!("/data/{path}/issueCount"))
+        .and_then(Value::as_u64)
 }
 
 pub fn parse_review_response(body: &Value) -> Result<ReviewSearchResult, GhError> {

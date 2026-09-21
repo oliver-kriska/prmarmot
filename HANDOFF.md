@@ -10,6 +10,51 @@
 
 ## Current update — 2026-09-21
 
+**FACT: View 1 of the original spec, "All open PRs", exists now as a third
+view, All open (`Mode::AllOpen`, key `3`, `prmarmot-cli all`); unreleased.**
+It was decided v1 scope on 2026-07-24 and never built; Oliver asked for it
+again on 2026-09-21. Design and measurements:
+`.claude/research/2026-09-21-all-open-prs-view.md` (local-only).
+
+- **One repository only.** `repo:X is:pr is:open sort:updated-desc`, 60 per
+  page, Load more up to five pages (300 rows), `issueCount` for the header
+  ("60 of 759 open"). With All repositories the tab is disabled and says why;
+  core returns `GhError::NeedsRepository` rather than searching everything.
+- **Filters go to GitHub.** FACT (zed-industries/zed, 2026-09-21): filtering
+  the 60 loaded rows by `label:"area:editor"` showed 7 PRs while GitHub has 40.
+  So in this view `label:` and `author:` chips are pushed into the search
+  string (`core::search::RemoteFilter`, at most 8 of each, labels quoted,
+  authors sent as `author:x author:app/x` because a bot's login only matches
+  as `app/x`), debounced 400 ms, one request per change. Words, `is:stale`
+  and anything past the cap stay local, and a line under the header says
+  they only checked the loaded rows. The local grammar changed with it:
+  several `author:` / `repo:` terms now match any one (GitHub's reading),
+  labels and words still all; one test runs one chip set through both paths.
+- **Sections:** Approved, Requested from you, Needs attention, In progress,
+  Drafts — Involving me's, anyone's PRs in each. Oliver chose sections over
+  the first build's flat list after trying it on his team's repository. "Requested
+  from you" is a second alias running the Review queue's own
+  `review-requested:` search (ids only, first 100), so it is the same set in
+  both views, team requests included. Notes on other people's PRs drop the
+  "alice's PR ·" prefix because the Author column says it; share text says
+  "by alice · approved".
+- **Calm:** "need you" counts Requested from you plus your own PRs under
+  Needs attention (`status::row_needs_you`: your rows are the ones with
+  blockers), never a teammate's conflict; the view never adds to the Dock
+  badge, and changed markers and
+  notifications only cover PRs you watch, your own, those requesting you,
+  and ones another view already follows. Load more says how many PRs joined
+  (`status::loaded_more_text`).
+- **Every section header explains itself** (all three views, Oliver's ask:
+  "what means In progress?"): `layout::section_explanation(mode, kind,
+  all_repos)` is one sentence per section, written against `board.rs`'s
+  derivation and tested there; the desktop shows it on hovering the title,
+  ffi exports it, and CLI JSON carries it as each section's `explanation`.
+- ASSESSMENT — G0: no repaint or refresh-timer change; the per-view cache
+  holds three entries of at most 300/600 rows (bound written next to
+  `MAX_CACHED_QUEUES`). Not a re-run trigger as written; a non-blocking soak
+  with All open selected is Oliver's call.
+
 **FACT: the iPad's snooze menu, size band, "unresolved" fact and Details panel
 kinds now come from core.** The desktop's words moved into constants
 (`local/src/attention_state.rs`: `SNOOZE_ONE_HOUR` … `SNOOZE_CANCEL`,

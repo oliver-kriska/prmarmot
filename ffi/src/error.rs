@@ -64,6 +64,9 @@ impl From<GhError> for FfiError {
             },
             GhError::Parse(message) => Self::Parse { message },
             GhError::Network(message) => Self::Network { message },
+            GhError::NeedsRepository => Self::Invalid {
+                message: GhError::NeedsRepository.to_string(),
+            },
         }
     }
 }

@@ -22,6 +22,8 @@ Usage:
                                          every open PR involving you (Involving me)
                                          unless --authored
   prmarmot-cli review [options]          PRs waiting for your review (Review queue)
+  prmarmot-cli all    [options]          Every open PR in one repository (All open);
+                                         needs --repo
   prmarmot-cli watch  [mine|review] [options]
                                          Poll and print what changes, one event per line
   prmarmot-cli watch --pr OWNER/NAME#N   Follow one pull request until it merges or closes
@@ -58,7 +60,10 @@ View options:
                             number, repository, title, author, labels, linked issue
                             and Note; label:NAME, author:LOGIN, repo:OWNER/NAME and
                             is:stale match a whole field; quote a value that has
-                            spaces; every term must match
+                            spaces; every term must match, except that one of
+                            several author: or repo: terms is enough. With `all`,
+                            GitHub matches label: and author: across the whole
+                            repository; other terms check only the loaded PRs
       --snoozed             Show snoozed PRs instead of collapsing them
       --sort ORDER          review: wait (default: longest wait first) or smallest
                             (Small, then Medium, then Large changes; see the
@@ -144,7 +149,8 @@ pub struct ViewArgs {
     pub watched: bool,
     pub stale: bool,
     pub snoozed: bool,
-    /// `--filter`: the app's search grammar over the loaded rows.
+    /// `--filter`: the app's search grammar over the loaded rows; All open
+    /// also sends its `label:` and `author:` terms to GitHub.
     pub filter: Option<String>,
     /// `--sort`: the order inside the review queue's pickup sections.
     pub sort: Sort,
@@ -237,6 +243,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         match tokens.peek().map(String::as_str) {
             Some(word) if !word.starts_with('-') => {
                 let mode = parse_mode(word)?;
+                if mode == Mode::AllOpen {
+                    return Err(format!(
+                        "watch follows `mine` or `review`, not `{word}`: every open PR in a \
+                         repository would be a stream of notifications. Use `watch --pr \
+                         OWNER/NAME#N` to follow one PR"
+                    ));
+                }
                 tokens.next();
                 mode
             }
@@ -271,7 +284,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--repo" => scope = Some(BoardScope::Repository(parse_repo(&value("--repo")?)?)),
             "--all-repos" => scope = Some(BoardScope::AllRepositories),
             "--authored" if mode == Mode::Authored => authored = true,
-            "--authored" => return Err("--authored applies to `mine`, not `review`".into()),
+            "--authored" => {
+                return Err(format!(
+                    "--authored applies to `mine`, not `{}`",
+                    command_name(mode)
+                ))
+            }
             "-f" | "--format" => format = Some(value("--format")?),
             "--json" => format = Some("json".into()),
             "--watched" => watched = true,
@@ -290,7 +308,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
             "--sort" if watch => return Err("--sort applies to `review`, not `watch`".into()),
             "--sort" if mode == Mode::Review => sort = parse_sort(&value("--sort")?)?,
-            "--sort" => return Err("--sort applies to `review`, not `mine`".into()),
+            "--sort" => {
+                return Err(format!(
+                    "--sort applies to `review`, not `{}`",
+                    command_name(mode)
+                ))
+            }
             "--interval" if watch => interval_secs = Some(parse_interval(&value("--interval")?)?),
             "--events" if watch => max_events = Some(parse_events(&value("--events")?)?),
             "--pr" if watch => pr = Some(parse_pr(&value("--pr")?)?),
@@ -316,7 +339,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "--changed" | "--stale" | "--pages" | "--filter" => {
                 return Err(format!(
-                    "{flag} applies to `mine` and `review`, not `watch`"
+                    "{flag} applies to `mine`, `review`, and `all`, not `watch`"
                 ))
             }
             "--interval" | "--events" => {
@@ -492,9 +515,19 @@ fn parse_mode(word: &str) -> Result<Mode, String> {
     match word {
         "mine" | "authored" => Ok(Mode::Authored),
         "review" | "reviews" => Ok(Mode::Review),
+        "all" | "all-open" => Ok(Mode::AllOpen),
         other => Err(format!(
-            "unknown command: {other} (use mine, review, watch, skill, or completions)"
+            "unknown command: {other} (use mine, review, all, watch, skill, or completions)"
         )),
+    }
+}
+
+/// The command a view is asked for by, for messages about it.
+fn command_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Authored => "mine",
+        Mode::Review => "review",
+        Mode::AllOpen => "all",
     }
 }
 
@@ -601,6 +634,7 @@ mod tests {
         assert_eq!(args.pages, 1);
         assert_eq!(view("review").mode, Mode::Review);
         assert_eq!(view("authored").mode, Mode::Authored);
+        assert_eq!(view("all").mode, Mode::AllOpen);
     }
 
     #[test]
@@ -654,6 +688,66 @@ mod tests {
         assert_eq!(
             parse_str("watch review --sort smallest").unwrap_err(),
             "--sort applies to `review`, not `watch`"
+        );
+    }
+
+    #[test]
+    fn all_lists_one_repository_and_names_itself_in_errors() {
+        let args = match argv(&[
+            "all",
+            "--repo",
+            "acme/api",
+            "--filter",
+            "label:\"help wanted\" login",
+            "--pages",
+            "2",
+            "--json",
+        ])
+        .unwrap()
+        {
+            Command::View(args) => args,
+            other => panic!("expected a view, got {other:?}"),
+        };
+        assert_eq!(args.mode, Mode::AllOpen);
+        assert_eq!(args.scope, Some(BoardScope::Repository("acme/api".into())));
+        assert_eq!(args.filter.as_deref(), Some("label:\"help wanted\" login"));
+        assert_eq!(args.pages, 2);
+        assert_eq!(args.format, Some(Format::Json));
+        assert_eq!(view("all-open --stale --changed").mode, Mode::AllOpen);
+        // The scope is checked once it is resolved (config and environment
+        // count), not here.
+        assert_eq!(
+            view("all --all-repos").scope,
+            Some(BoardScope::AllRepositories)
+        );
+        assert_eq!(
+            parse_str("all --authored").unwrap_err(),
+            "--authored applies to `mine`, not `all`"
+        );
+        assert_eq!(
+            parse_str("all --sort smallest").unwrap_err(),
+            "--sort applies to `review`, not `all`"
+        );
+        assert_eq!(
+            parse_str("all --interval 60").unwrap_err(),
+            "--interval applies to `watch`"
+        );
+    }
+
+    #[test]
+    fn watch_refuses_all_and_points_at_one_pr() {
+        for line in ["watch all", "watch all-open --repo acme/api"] {
+            let error = parse_str(line).unwrap_err();
+            assert!(
+                error.starts_with("watch follows `mine` or `review`, not `all"),
+                "{line}: {error}"
+            );
+            assert!(error.contains("`watch --pr OWNER/NAME#N`"), "{error}");
+        }
+        let error = parse_str("watch --stale").unwrap_err();
+        assert_eq!(
+            error,
+            "--stale applies to `mine`, `review`, and `all`, not `watch`"
         );
     }
 

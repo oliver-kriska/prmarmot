@@ -1,12 +1,12 @@
 ---
 name: prmarmot-cli
-description: Read the user's GitHub pull-request dashboard with `prmarmot-cli` — their own PRs and what blocks them (CI, conflicts, reviews, unresolved comments, missing reviewers), their review queue, what changed since they last looked, and a blocking watch that waits for a PR event such as CI passing or a review arriving. Use it whenever the user asks "what's the status of my PRs", "what needs my attention", "what should I review", "anything waiting on me", "did CI pass", "tell me when this PR is approved/merged", or wants a PR summary for standup or a report. Prefer it over hand-written `gh pr list` or `gh api` loops, because it applies PR Marmot's categorization and costs one GraphQL request per view. Read-only: it cannot comment, approve, merge, watch, or snooze.
+description: Read the user's GitHub pull-request dashboard with `prmarmot-cli` — their own PRs and what blocks them (CI, conflicts, reviews, unresolved comments, missing reviewers), their review queue, every open PR in one repository, what changed since they last looked, and a blocking watch that waits for a PR event such as CI passing or a review arriving. Use it whenever the user asks "what's the status of my PRs", "what needs my attention", "what should I review", "anything waiting on me", "did CI pass", "tell me when this PR is approved/merged", or wants a PR summary for standup or a report. Prefer it over hand-written `gh pr list` or `gh api` loops, because it applies PR Marmot's categorization and costs one GraphQL request per view. Read-only: it cannot comment, approve, merge, watch, or snooze.
 ---
 
 # prmarmot-cli
 
-`prmarmot-cli` prints PR Marmot's two views, **My PRs** and the **Review queue**.
-It uses the same GitHub query, categories, Notes, and sections as the desktop
+`prmarmot-cli` prints PR Marmot's views: **My PRs**, the **Review queue**, and
+**All open** (every open PR in one repository, whoever wrote it). It uses the same GitHub query, categories, Notes, and sections as the desktop
 app. Authentication comes from `gh`.
 
 ## Before the first call
@@ -31,18 +31,28 @@ prmarmot-cli mine   --repo owner/name --json   # PRs the user authored in one re
 prmarmot-cli mine   --all-repos --authored --json   # PRs the user authored, any repo
 prmarmot-cli mine   --all-repos --json         # every open PR involving the user
 prmarmot-cli review --all-repos --json         # PRs waiting for the user's review
+prmarmot-cli all    --repo owner/name --json   # every open PR in one repo, anyone's
 ```
+
+`all` needs one repository and exits 2 without one. It lists the repository's
+open PRs in the same sections as `mine --all-repos`, with `todo` for reviews
+requested from the user. In `--filter`, `label:` and `author:`
+are matched by GitHub across the whole repository; other terms check only the
+loaded PRs. `total` says how many are open (or match those two terms): when it
+is larger than `count + filters.filtered_out`, not every PR was checked.
 
 **Structure:**
 - The top level has `sections[]`, in the app's display order.
-- Each section has a stable `key`, a `label`, and `prs[]`.
+- Each section has a stable `key`, a `label`, an `explanation` (one sentence on
+  what puts a PR there; quote it when the user asks what a section means), and
+  `prs[]`.
 - Section keys:
 
 | Key | Meaning |
 | --- | --- |
-| `approved` | the user's PRs that are approved and waiting to merge |
-| `action` | the user's PRs blocked on the user; see `blockers` |
-| `await` | the user's PRs waiting on others |
+| `approved` | approved and waiting to merge |
+| `action` | the user's PRs blocked on the user (see `blockers`); in `mine --all-repos` and `all`, also others' PRs with a conflict, failing CI, requested changes, or unresolved comments |
+| `await` | waiting on reviewers |
 | `todo` | review requested from the user |
 | `available` | nobody requested yet |
 | `done` | already reviewed |
@@ -205,7 +215,7 @@ Keep polling cheap:
 | --- | --- | --- |
 | `0` | ok | continue |
 | `1` | GitHub or network error, or `--repo` not found / not accessible | read stderr; fix the repo name, or retry once later |
-| `2` | bad arguments | read `prmarmot-cli --help` |
+| `2` | bad arguments, or `all` without a repository | read `prmarmot-cli --help`; pass `--repo` to `all` |
 | `3` | `gh` missing or not signed in | ask the user to run `gh auth login`; never handle credentials yourself |
 | `4` | rate limited | stop and report; don't retry in a loop |
 | `5` | `watch --until`: the condition can no longer be met (CI failed, changes requested, closed without merging, inaccessible) | report the `reasons` from the `until` line; don't restart the wait |

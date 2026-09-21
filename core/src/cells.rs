@@ -384,6 +384,49 @@ pub fn stack_branch(position: Option<u64>, size: u64, last_in_group: bool) -> St
     format!("{branch} {position}/{size}")
 }
 
+/// Fewer rows than this and no label counts as common: in a short list every
+/// label still tells one row from another.
+const COMMON_LABEL_MIN_ROWS: usize = 10;
+
+/// The labels more than half of `rows` carry, once there are at least ten
+/// rows. On a busy repository a label such as `cla-signed` sits on nearly
+/// every PR and says nothing about any one of them, yet it would take the one
+/// chip slot a narrow Labels column has. Counted over the rows on screen, so a
+/// label the list is already filtered by counts as common too. At most 40 can
+/// qualify, since a row carries at most 20 labels.
+pub fn common_labels(rows: &[BoardRow]) -> Vec<String> {
+    if rows.len() < COMMON_LABEL_MIN_ROWS {
+        return Vec::new();
+    }
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for row in rows {
+        for label in &row.labels {
+            match counts.iter_mut().find(|(name, _)| *name == label.as_str()) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((label.as_str(), 1)),
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|&(_, count)| count * 2 > rows.len())
+        .map(|(name, _)| name.to_owned())
+        .collect()
+}
+
+/// The order a row's label chips are drawn in, so the chips that fit say the
+/// most: `bug` first, then the row's other labels as GitHub lists them, then
+/// the `common` ones. Whatever doesn't fit goes behind "+n".
+pub fn label_order(labels: &[String], common: &[String]) -> Vec<String> {
+    let mut ordered = labels.to_vec();
+    ordered.sort_by_key(|label| match label.as_str() {
+        "bug" => 0,
+        _ if common.contains(label) => 2,
+        _ => 1,
+    });
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +635,43 @@ mod tests {
         assert_eq!(stack_branch(None, 3, true), "└─ ?/3");
         assert!(stack_layer_hover(11776, Some(2), 3, "main")
             .starts_with("Stack #11776 · layer 2/3 · base main."));
+    }
+
+    fn labelled(labels: &[&str]) -> BoardRow {
+        BoardRow {
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            ..row()
+        }
+    }
+
+    #[test]
+    fn a_label_on_most_rows_gives_its_chip_to_one_that_tells_rows_apart() {
+        let mut rows = vec![labelled(&["cla-signed", "area:editor"])];
+        rows.extend((0..5).map(|_| labelled(&["cla-signed", "bug"])));
+        rows.extend((0..4).map(|_| labelled(&["area:vim"])));
+        // cla-signed is on 6 of 10 rows, bug on 5 (not more than half).
+        assert_eq!(common_labels(&rows), vec!["cla-signed".to_string()]);
+        let common = common_labels(&rows);
+        assert_eq!(
+            label_order(&rows[0].labels, &common),
+            vec!["area:editor", "cla-signed"]
+        );
+        // bug still leads, common or not.
+        assert_eq!(
+            label_order(&rows[1].labels, &common),
+            vec!["bug", "cla-signed"]
+        );
+        assert_eq!(
+            label_order(&labelled(&["bug", "x"]).labels, &["bug".to_string()]),
+            vec!["bug", "x"]
+        );
+    }
+
+    #[test]
+    fn a_short_list_keeps_github_order_apart_from_bug() {
+        let rows: Vec<BoardRow> = (0..9).map(|_| labelled(&["cla-signed", "bug"])).collect();
+        assert!(common_labels(&rows).is_empty());
+        assert_eq!(label_order(&rows[0].labels, &[]), vec!["bug", "cla-signed"]);
     }
 }
 

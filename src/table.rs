@@ -24,8 +24,10 @@ use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
 use prmarmot_core::board::{BoardRow, Ci, Mode};
-use prmarmot_core::cells::{note_presentation, review_cell, NotePresentation, ReviewCell, Tone};
-use prmarmot_core::layout::{layout, LayoutItem, SectionKind, Sort};
+use prmarmot_core::cells::{
+    common_labels, label_order, note_presentation, review_cell, NotePresentation, ReviewCell, Tone,
+};
+use prmarmot_core::layout::{layout, section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use prmarmot_core::size::ChangeSize;
@@ -43,6 +45,9 @@ enum DisplayRow {
         label: String,
         count: Option<usize>,
         detail: Option<String>,
+        /// What puts a PR in this section, shown on hover over the title.
+        /// `None` for stack sub-headers.
+        explanation: Option<SharedString>,
         /// PRs in a top-level group, in display order (indices into `rows`),
         /// kept even while the group is collapsed. Empty for stack sub-headers.
         members: Vec<usize>,
@@ -52,7 +57,7 @@ enum DisplayRow {
 
 /// Viewport-width buckets that drive the responsive column layout. Kept a
 /// small closed set (not raw pixels) so the per-(mode, class) manual-resize
-/// overrides in `app.rs` stay bounded (2 modes × 3 classes = 6).
+/// overrides in `app.rs` stay bounded (3 modes × 3 classes × 2 scopes = 18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TableWidthClass {
     Compact,
@@ -86,6 +91,9 @@ const LABELS_W: f32 = 96.0;
 const LABELS_W_WIDE: f32 = 120.0;
 const REVIEW_W_COMPACT: f32 = 160.0;
 const REVIEW_W: f32 = 190.0;
+/// All open's Review column on a wide window: reviewer logins run long
+/// ("copilot-pull-request-reviewer") while its Notes are short status phrases.
+const REVIEW_W_ALL_OPEN_MAX: f32 = 320.0;
 const AUTHOR_W_COMPACT: f32 = 96.0;
 const AUTHOR_W: f32 = 116.0;
 const REPO_W_COMPACT: f32 = 120.0;
@@ -258,6 +266,14 @@ pub fn columns_for(
         TableWidthClass::Medium => LABELS_W,
         TableWidthClass::Wide => LABELS_W_WIDE,
     };
+    // All open carries Author and Review side by side, so Review narrows at
+    // medium widths and folds into the Note (which states the review) when
+    // compact.
+    let mut all_open_review_w = match class {
+        TableWidthClass::Compact => 0.0,
+        TableWidthClass::Medium => REVIEW_W_COMPACT,
+        TableWidthClass::Wide => REVIEW_W,
+    };
     let repo_w = if all_repos {
         if compact {
             REPO_W_COMPACT
@@ -271,6 +287,7 @@ pub fn columns_for(
     let fixed_sum = match mode {
         Mode::Authored => PR_W + CI_W + review_w + labels_w + repo_w,
         Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w + repo_w,
+        Mode::AllOpen => PR_W + CI_W + author_w + all_open_review_w + labels_w + repo_w,
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
     let title_min = if all_repos && compact {
@@ -286,10 +303,20 @@ pub fn columns_for(
     };
     let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(title_min + note_min);
     let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM).max(title_min);
-    let note_w = (flexible - title_w).max(note_min);
+    let mut note_w = (flexible - title_w).max(note_min);
     if note_w < title_w {
         // Never let Title out-grow Note — Note is the product.
         title_w = note_w;
+    }
+    // All open on a wide window: Review takes what the Note has beyond the
+    // Title's width, never the Title's share, so a long reviewer login stops
+    // being cut off beside a Note column that is mostly empty.
+    if mode == Mode::AllOpen && class == TableWidthClass::Wide {
+        let spare = note_w - title_w.max(note_min);
+        let target = (REVIEW_W + spare.max(0.0)).min(REVIEW_W_ALL_OPEN_MAX);
+        let review_w = ((target / QUANTUM).floor() * QUANTUM).max(REVIEW_W);
+        note_w -= review_w - all_open_review_w;
+        all_open_review_w = review_w;
     }
 
     let col = |key: &'static str, name: &'static str, w: f32| Column::new(key, name).width(px(w));
@@ -327,6 +354,24 @@ pub fn columns_for(
             cols.push(col("note", "Note", note_w));
             cols
         }
+        // Everyone's PRs: who wrote it, and where its review stands. The
+        // author and label cells filter the whole repository when clicked.
+        Mode::AllOpen => {
+            let mut cols = vec![
+                col("pr", "PR", PR_W),
+                col("title", "Title", title_w),
+                col("ci", "CI", CI_W),
+                col("author", "Author", author_w),
+            ];
+            if !compact {
+                cols.push(col("review", "Review", all_open_review_w));
+            }
+            if show_labels {
+                cols.push(col("labels", "Labels", labels_w));
+            }
+            cols.push(col("note", "Note", note_w));
+            cols
+        }
     }
 }
 
@@ -334,7 +379,7 @@ pub fn columns_for(
 // cannot drift on what `label:"help wanted"` means. Only the drawing stays
 // here.
 pub use prmarmot_core::search::{
-    matches_filter, take_filter_chips, with_filter, FilterChip, Qualifier, StaleRule,
+    matches_search, take_filter_chips, with_filter, FilterChip, Qualifier, StaleRule,
 };
 
 /// One neutral chip style for labels (spec §7): GitHub's arbitrary label
@@ -426,6 +471,9 @@ pub struct BoardTableDelegate {
     stale_after_days: u64,
     /// The order inside the review queue's pickup sections.
     sort: Sort,
+    /// All open only: labels most rows on screen carry, drawn after the
+    /// ones that tell rows apart. Empty in the other views.
+    common_labels: Vec<String>,
     pub on_row_action: Option<RowActionHandler>,
     pub on_group_copy: Option<GroupCopyHandler>,
     /// A label, author, or repository was clicked: add it to the search.
@@ -454,6 +502,7 @@ impl BoardTableDelegate {
             show_snoozed: false,
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             sort: Sort::Wait,
+            common_labels: Vec::new(),
             on_row_action: None,
             on_group_copy: None,
             on_filter_click: None,
@@ -531,6 +580,11 @@ impl BoardTableDelegate {
     /// split, stacks, Snoozed), adding the window's own Snoozed wording.
     fn rebuild_display(&mut self) {
         let show_snoozed = self.show_snoozed;
+        self.common_labels = if self.mode == Mode::AllOpen {
+            common_labels(&self.rows)
+        } else {
+            Vec::new()
+        };
         self.display = layout(
             &self.rows,
             self.mode,
@@ -551,6 +605,7 @@ impl BoardTableDelegate {
             } => DisplayRow::Header {
                 label,
                 count,
+                explanation: section_explanation(self.mode, kind, self.all_repos).map(Into::into),
                 detail: if kind == SectionKind::Snoozed {
                     Some(if show_snoozed {
                         "shown · use Snoozed to collapse".into()
@@ -841,6 +896,7 @@ impl TableDelegate for BoardTableDelegate {
                 label,
                 count,
                 detail,
+                explanation,
                 members,
             }) => tr
                 .relative()
@@ -866,10 +922,24 @@ impl TableDelegate for BoardTableDelegate {
                         .gap_1p5()
                         .child(
                             div()
+                                .id(("section-title", row_ix))
                                 .text_size(px(if count.is_some() { 12. } else { 11. }))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.secondary_foreground)
-                                .child(label.clone()),
+                                .child(label.clone())
+                                // What puts a PR here, on hover over the title
+                                // only, so it never covers the Copy menu. The text
+                                // is capped so it wraps rather than runs off a
+                                // narrow window (a cap on the tooltip box doesn't wrap).
+                                .when_some(explanation.clone(), |title, text| {
+                                    title.tooltip(move |window, cx| {
+                                        let text = text.clone();
+                                        Tooltip::element(move |_, _| {
+                                            div().max_w(px(460.)).child(text.clone())
+                                        })
+                                        .build(window, cx)
+                                    })
+                                }),
                         )
                         .when_some(*count, |header, count| {
                             header.child(
@@ -1064,9 +1134,9 @@ impl TableDelegate for BoardTableDelegate {
                     // drawn — each is a click target — and the rest fold into
                     // "+n". The tooltip carries the full list.
                     let full = row.labels.join(", ");
-                    // "bug" must never hide behind the +n overflow.
-                    let mut ordered: Vec<String> = row.labels.clone();
-                    ordered.sort_by_key(|l| l != "bug");
+                    // "bug" must never hide behind the +n overflow, and in
+                    // All open a label nearly every row carries goes last.
+                    let ordered = label_order(&row.labels, &self.common_labels);
                     // 🐛 is the single permitted emoji: semantic, not decorative.
                     let texts: Vec<String> = ordered
                         .iter()
@@ -1100,7 +1170,7 @@ impl TableDelegate for BoardTableDelegate {
                         }
                     }
                     let hidden = texts.len() - visible.len();
-                    let mut chips = h_flex().gap_1().overflow_hidden();
+                    let mut chips = h_flex().gap_1().flex_shrink_0();
                     let (hover_border, hover_text) = (muted, theme.foreground);
                     for (ix, text) in visible {
                         let label = &ordered[ix];
@@ -1132,9 +1202,21 @@ impl TableDelegate for BoardTableDelegate {
                             None => chip.into_any_element(),
                         });
                     }
+                    // "+n" sits outside the chips' tooltip, which would
+                    // otherwise open over the menu it drops down.
+                    let mut cell = h_flex().gap_1().overflow_hidden();
+                    let tip: SharedString = if self.on_filter_click.is_some() {
+                        format!("{full}\nClick a label to search for label:<name>").into()
+                    } else {
+                        full.into()
+                    };
+                    cell =
+                        cell.child(chips.id(("labels", row_ix)).tooltip(move |window, cx| {
+                            Tooltip::new(tip.clone()).build(window, cx)
+                        }));
                     if hidden > 0 {
                         let more = format!("+{hidden}");
-                        chips = chips.child(match self.on_filter_click.clone() {
+                        cell = cell.child(match self.on_filter_click.clone() {
                             // "+n" opens the hidden labels, each a filter.
                             Some(handler) => {
                                 let rest = ordered[ordered.len() - hidden..].to_vec();
@@ -1191,15 +1273,7 @@ impl TableDelegate for BoardTableDelegate {
                                 .into_any_element(),
                         });
                     }
-                    let tip: SharedString = if self.on_filter_click.is_some() {
-                        format!("{full}\nClick a label to search for label:<name>").into()
-                    } else {
-                        full.into()
-                    };
-                    return chips
-                        .id(("labels", row_ix))
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .into_any_element();
+                    return cell.into_any_element();
                 }
             }
             // The calm rule (spec §8): bad states get colored text, good
@@ -1447,8 +1521,11 @@ impl TableDelegate for BoardTableDelegate {
                         if *stale { " (stale)" } else { "" }
                     ));
                 }
-                // In the review queue the size band trails last, muted.
-                let size = row.size.filter(|_| self.mode == Mode::Review);
+                // In the review queue and All open the size band trails
+                // last, muted: both are lists to pick a review from.
+                let size = row
+                    .size
+                    .filter(|_| matches!(self.mode, Mode::Review | Mode::AllOpen));
                 if let Some(size) = size {
                     tooltip.push_str(&format!("\nSize: {}", size_text(size)));
                 }
@@ -1571,6 +1648,7 @@ mod tests {
     use super::*;
     use prmarmot_core::board::{Blocker, Category, ReviewState};
     use prmarmot_core::layout::group_label;
+    use prmarmot_core::search::matches_filter;
 
     fn rule() -> StaleRule {
         StaleRule {
@@ -2357,9 +2435,9 @@ mod tests {
 
     #[test]
     fn columns_fit_within_viewport_budgets() {
-        for &w in &[900.0_f32, 1100.0, 1440.0, 1920.0] {
+        for &w in &[900.0_f32, 1100.0, 1120.0, 1360.0, 1440.0, 1920.0] {
             let class = TableWidthClass::from_width(w);
-            for mode in [Mode::Authored, Mode::Review] {
+            for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
                 let cols = columns_for(mode, class, w, false);
                 // Column widths + scrollbar margin must stay within the viewport;
                 // Note is last, so overflow would push it offscreen.
@@ -2392,7 +2470,7 @@ mod tests {
 
     #[test]
     fn wide_windows_give_labels_more_room() {
-        for mode in [Mode::Authored, Mode::Review] {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for all_repos in [false, true] {
                 let medium = columns_for(mode, TableWidthClass::Medium, 1200.0, all_repos);
                 let wide = columns_for(mode, TableWidthClass::Wide, 1360.0, all_repos);
@@ -2410,8 +2488,37 @@ mod tests {
     }
 
     #[test]
+    fn all_open_gives_review_the_notes_spare_room_on_wide_windows() {
+        let wide = |w| columns_for(Mode::AllOpen, TableWidthClass::Wide, w, false);
+        let review = |w| width_of(&wide(w), "review").unwrap();
+        let title = |w| width_of(&wide(w), "title").unwrap();
+        let note = |w| width_of(&wide(w), "note").unwrap();
+        // The window in Oliver's screenshot: Review grows to its cap, and the
+        // Title keeps the width it had before.
+        assert_eq!(review(1780.0), 304.0);
+        assert_eq!(title(1780.0), 512.0);
+        assert!(review(1360.0) > REVIEW_W);
+        assert_eq!(review(2400.0), REVIEW_W_ALL_OPEN_MAX);
+        for w in [1360.0_f32, 1500.0, 1780.0, 2400.0] {
+            assert!(
+                note(w) >= title(w),
+                "at {w}px the Note narrows below the Title"
+            );
+            assert!(total_width(&wide(w)) + SCROLLBAR_MARGIN <= w + 1.0);
+        }
+        // The other views keep their Review width.
+        assert_eq!(
+            width_of(
+                &columns_for(Mode::Authored, TableWidthClass::Wide, 1780.0, false),
+                "review"
+            ),
+            Some(REVIEW_W)
+        );
+    }
+
+    #[test]
     fn labels_present_except_in_compact() {
-        for mode in [Mode::Authored, Mode::Review] {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             assert!(
                 width_of(
                     &columns_for(mode, TableWidthClass::Compact, 1000.0, false),
@@ -2439,10 +2546,12 @@ mod tests {
             match mode {
                 Mode::Authored => &["pr", "title", "ci", "review", "note"],
                 Mode::Review => &["pr", "title", "ci", "author", "unresolved", "note"],
+                // Review folds into the Note at compact widths.
+                Mode::AllOpen => &["pr", "title", "ci", "author", "note"],
             }
         };
         for &class in &ALL_CLASSES {
-            for mode in [Mode::Authored, Mode::Review] {
+            for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
                 let cols = columns_for(mode, class, 900.0, false);
                 for key in required(mode) {
                     assert!(
@@ -2458,7 +2567,7 @@ mod tests {
     fn title_and_note_respect_minimums_and_note_priority() {
         for &w in &[900.0_f32, 1000.0, 1120.0, 1200.0, 1360.0, 1440.0, 1920.0] {
             let class = TableWidthClass::from_width(w);
-            for mode in [Mode::Authored, Mode::Review] {
+            for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
                 let cols = columns_for(mode, class, w, false);
                 let title = width_of(&cols, "title").unwrap();
                 let note = width_of(&cols, "note").unwrap();
@@ -2496,6 +2605,7 @@ mod tests {
 
     #[test]
     fn all_repositories_adds_repo_without_hiding_note_at_minimum_width() {
+        // All open is one repository's view; it never shows a Repo column.
         for mode in [Mode::Authored, Mode::Review] {
             let cols = columns_for(mode, TableWidthClass::Compact, 900.0, true);
             assert!(width_of(&cols, "repo").is_some());
@@ -2508,7 +2618,7 @@ mod tests {
     fn override_storage_is_bounded_and_independent() {
         use std::collections::HashMap;
         let mut overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>> = HashMap::new();
-        for mode in [Mode::Authored, Mode::Review] {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for &class in &ALL_CLASSES {
                 for all_repos in [false, true] {
                     overrides.insert(
@@ -2518,10 +2628,10 @@ mod tests {
                 }
             }
         }
-        // 2 modes × 3 classes × 2 scopes — the map can never hold more.
-        assert_eq!(overrides.len(), 12);
+        // 3 modes × 3 classes × 2 scopes — the map can never hold more.
+        assert_eq!(overrides.len(), 18);
         overrides.insert((Mode::Authored, TableWidthClass::Wide, true), vec![px(9.0)]);
-        assert_eq!(overrides.len(), 12);
+        assert_eq!(overrides.len(), 18);
         // Each (mode, class, scope) layout is stored independently.
         assert_ne!(
             overrides[&(Mode::Authored, TableWidthClass::Compact, false)],
@@ -2611,9 +2721,7 @@ mod tests {
                 let started = Instant::now();
                 let matching: Vec<BoardRow> = rows
                     .iter()
-                    .filter(|row| {
-                        filtered(row, query) && chips.iter().all(|chip| chip.matches(row, rule()))
-                    })
+                    .filter(|row| matches_search(row, query, chips, rule()))
                     .cloned()
                     .collect();
                 let watched: HashSet<String> = matching

@@ -8,17 +8,35 @@
 //!
 //! Nothing here reads a clock. Elapsed seconds arrive as a parameter.
 
-use crate::board::{Category, Mode};
+use crate::board::{BoardRow, Category, Mode};
 use crate::github::access::AccessGaps;
 use crate::layout::group_label;
 
-/// Whether a row of this view counts toward the header's "need you": My PRs'
-/// Needs action section, or the review queue's Requested from you and
-/// Available to review sections.
+/// Whether a row of this category counts toward the header's "need you":
+/// My PRs' Needs action section, or the review queue's Requested from you and
+/// Available to review sections. All open needs the row itself
+/// ([`row_needs_you`]); from the category alone it counts only Requested from
+/// you.
 pub fn needs_you_here(mode: Mode, category: Category) -> bool {
     match mode {
         Mode::Authored => category == Category::Action,
         Mode::Review => matches!(category, Category::Todo | Category::Available),
+        Mode::AllOpen => category == Category::Todo,
+    }
+}
+
+/// Whether this row counts toward the header's "need you". In All open,
+/// Needs attention holds anyone's PRs, and a teammate's merge conflict is not
+/// yours to act on: only your own PRs there count, plus Requested from you.
+/// Your own are the rows with blockers, because someone else's PR carries
+/// facts and never blockers. Every other view goes by the category.
+pub fn row_needs_you(mode: Mode, row: &BoardRow) -> bool {
+    match mode {
+        Mode::AllOpen => {
+            row.category == Category::Todo
+                || (row.category == Category::Action && !row.blockers.is_empty())
+        }
+        _ => needs_you_here(mode, row.category),
     }
 }
 
@@ -32,13 +50,19 @@ pub struct HeaderCounts {
     /// Rows of this view that need you ([`needs_you_here`]), snoozed ones
     /// excluded.
     pub need_you: usize,
-    /// The badge, across both views: your PRs that need action plus reviews
-    /// requested from you, snoozed ones excluded.
+    /// The badge, across My PRs and the review queue: your PRs that need
+    /// action plus reviews requested from you, snoozed ones excluded.
     pub badge: usize,
     /// Both views have loaded, so `badge` is the whole count.
     pub badge_complete: bool,
     pub tracked_loaded: usize,
     pub tracked_total: usize,
+    /// How many open PRs GitHub's search found, when the view asked (All
+    /// open does; the other views count what they load).
+    pub total: Option<u64>,
+    /// A `label:` or `author:` filter went to GitHub with the search, so
+    /// `total` counts the matches rather than every open PR.
+    pub filtered: bool,
 }
 
 /// What the badge is called where the reader is looking: the desktop has a
@@ -58,6 +82,18 @@ impl BadgeName {
     }
 }
 
+/// All open's count against what GitHub's search found: "60 of 759 open", or
+/// "40 match" when a `label:` or `author:` filter went with the search. The
+/// app's header and the CLI's status line both start with it.
+pub fn all_open_count(loaded: usize, total: u64, filtered: bool) -> String {
+    let found = if filtered { "match" } else { "open" };
+    if loaded as u64 >= total {
+        format!("{total} {found}")
+    } else {
+        format!("{loaded} of {total} {found}")
+    }
+}
+
 /// The header's count line and the explanation behind it.
 pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String) {
     let need_you = match c.need_you {
@@ -65,8 +101,12 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
         1 => "1 needs you".to_owned(),
         n => format!("{n} need you"),
     };
-    let mut line = format!("{} loaded", c.loaded);
-    if c.truncated {
+    let total = c.total.filter(|_| c.mode == Mode::AllOpen);
+    let mut line = match total {
+        Some(total) => all_open_count(c.loaded, total, c.filtered),
+        None => format!("{} loaded", c.loaded),
+    };
+    if c.truncated && total.is_none() {
         line.push_str(" · partial results");
     }
     line.push_str(&format!(" · {need_you}"));
@@ -79,11 +119,21 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
         line.push_str(&format!(" · {tracked}"));
     }
 
-    let mut tip = format!("{} PRs loaded in this view", c.loaded);
-    tip.push_str(if c.truncated {
-        "; GitHub has more (Load more)."
-    } else {
-        "."
+    let mut tip = match total {
+        Some(total) => {
+            let which = if c.filtered {
+                "match the filter"
+            } else {
+                "are open in this repository"
+            };
+            format!("{} of the {total} PRs that {which} are loaded", c.loaded)
+        }
+        None => format!("{} PRs loaded in this view", c.loaded),
+    };
+    tip.push_str(match (c.truncated, total) {
+        (true, Some(_)) => "; Load more fetches the next ones.",
+        (true, None) => "; GitHub has more (Load more).",
+        (false, _) => ".",
     });
     let sections = match c.mode {
         Mode::Authored => group_label(Mode::Authored, Category::Action, c.all_repos).to_owned(),
@@ -91,14 +141,19 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
             "{} and Available to review",
             group_label(Mode::Review, Category::Todo, c.all_repos)
         ),
+        Mode::AllOpen => format!(
+            "{} and your own PRs under {}",
+            group_label(Mode::AllOpen, Category::Todo, c.all_repos),
+            group_label(Mode::AllOpen, Category::Action, c.all_repos)
+        ),
     };
     tip.push_str(&format!(
         "\n{}: the PRs under {sections}, not counting snoozed ones.",
         upper_first(&need_you)
     ));
     tip.push_str(&format!(
-        "\n{} shows {} across both views: your PRs that need action plus \
-         reviews requested from you, not counting snoozed ones.",
+        "\n{} shows {}: your PRs that need action plus reviews requested from \
+         you, not counting snoozed ones.",
         badge_name.words(),
         c.badge
     ));
@@ -270,12 +325,57 @@ pub fn pasted_token_reach_notice() -> &'static str {
     "Using your pasted token; the gh login on this Mac would also reach organization private repositories."
 }
 
+/// What Load more added, once it lands. New rows join their sections rather
+/// than the bottom of the list, so without this sentence nothing on screen
+/// says where they went, or that a page brought none.
+pub fn loaded_more_text(added: usize) -> String {
+    match added {
+        0 => "The next page added no PRs to this view".to_owned(),
+        1 => "1 more PR loaded, sorted into its section".to_owned(),
+        n => format!("{n} more PRs loaded, sorted into their sections"),
+    }
+}
+
+/// Why All open cannot show while All repositories is selected: the view is
+/// one repository's open PRs, and every repository's would be most of GitHub.
+/// The desktop's disabled tab and the error both say it.
+pub fn all_open_needs_repository() -> &'static str {
+    "Pick a repository to see all of its open PRs."
+}
+
+/// All open's line under the filter when part of the filter could not go to
+/// GitHub — free words, `is:stale`, `repo:` — and GitHub has more open PRs
+/// than are loaded: those parts were checked against the loaded PRs only, so
+/// an empty or short result is not the repository's answer. `None` when
+/// every loaded PR is every PR, or the whole filter went to GitHub.
+pub fn all_open_local_filter_notice(
+    local_terms: &[String],
+    loaded: usize,
+    total: Option<u64>,
+    can_load_more: bool,
+) -> Option<String> {
+    let total = total.filter(|&total| (loaded as u64) < total)?;
+    let (last, rest) = local_terms.split_last()?;
+    let terms = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let mut notice = format!("Only the {loaded} loaded PRs of {total} are checked for {terms}.");
+    if can_load_more {
+        notice.push_str(" Load more to check more.");
+    }
+    Some(notice)
+}
+
 /// The centered body copy shown before a queue's first rows ever arrive.
 pub fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
     match (mode, all_repos) {
         (Mode::Authored, true) => "Loading pull requests involving you…",
         (Mode::Authored, false) => "Loading your open PRs…",
         (Mode::Review, _) => "Loading review queue…",
+        (Mode::AllOpen, true) => all_open_needs_repository(),
+        (Mode::AllOpen, false) => "Loading open PRs…",
     }
 }
 
@@ -288,7 +388,17 @@ pub fn queue_empty_text(mode: Mode, all_repos: bool) -> &'static str {
         (Mode::Authored, true) => "No open pull requests involve you",
         (Mode::Authored, false) => "You have no open PRs",
         (Mode::Review, _) => "No requested or available reviews in this result set",
+        (Mode::AllOpen, true) => all_open_needs_repository(),
+        (Mode::AllOpen, false) => "No open PRs in this repository",
     }
+}
+
+/// All open's empty body when GitHub answered the whole filter, or every open
+/// PR is loaded, and nothing matched: a statement about the repository, not
+/// about what happens to be loaded. `filter` is the search as the reader
+/// wrote it.
+pub fn all_open_no_match_text(filter: &str) -> String {
+    format!("No open PRs in this repository match {filter}.")
 }
 
 /// The status line specific to the active queue. Keeps the "synced Xm ago"
@@ -307,6 +417,7 @@ pub fn queue_sync_text(
                 (Mode::Authored, true) => "Updating involving PRs…",
                 (Mode::Authored, false) => "Updating your PRs…",
                 (Mode::Review, _) => "Updating review queue…",
+                (Mode::AllOpen, _) => "Updating open PRs…",
             };
             format!("{verb} · synced {}", relative(secs))
         }
@@ -385,6 +496,8 @@ mod tests {
             badge_complete: complete,
             tracked_loaded: tracked.0,
             tracked_total: tracked.1,
+            total: None,
+            filtered: false,
         }
     }
 
@@ -408,8 +521,8 @@ mod tests {
             tip,
             "56 PRs loaded in this view; GitHub has more (Load more).\n\
              3 need you: the PRs under Needs action, not counting snoozed ones.\n\
-             The Dock badge shows 3 across both views: your PRs that need action plus \
-             reviews requested from you, not counting snoozed ones. Only the views loaded \
+             The Dock badge shows 3: your PRs that need action plus reviews requested \
+             from you, not counting snoozed ones. Only the views loaded \
              since launch are counted so far.\n\
              2 watched/snoozed: watched and snoozed PRs, refreshed with this view (up to 50 \
              each time)."
@@ -456,6 +569,8 @@ mod tests {
             badge_complete: true,
             tracked_loaded: 0,
             tracked_total: 0,
+            total: None,
+            filtered: false,
         };
         let (line, tip) = header_counts(&both_loaded(Mode::Review, review), BadgeName::Dock);
         assert_eq!(line, "5 loaded · 3 need you");
@@ -464,21 +579,95 @@ mod tests {
             "5 PRs loaded in this view.\n\
              3 need you: the PRs under Requested from you and Available to review, not \
              counting snoozed ones.\n\
-             The Dock badge shows 3 across both views: your PRs that need action plus \
-             reviews requested from you, not counting snoozed ones."
+             The Dock badge shows 3: your PRs that need action plus reviews requested \
+             from you, not counting snoozed ones."
         );
         let (line, tip) = header_counts(&both_loaded(Mode::Authored, mine), BadgeName::Dock);
         assert_eq!(line, "5 loaded · 2 need you");
         assert!(tip.contains("2 need you: the PRs under Needs attention, not counting"));
-        assert!(tip.contains("The Dock badge shows 3 across both views"));
+        assert!(tip.contains("The Dock badge shows 3: your PRs"));
         assert!(!tip.contains("so far"));
+    }
+
+    #[test]
+    fn all_open_counts_against_what_github_found() {
+        let all_open = |loaded, total, filtered, truncated| HeaderCounts {
+            loaded,
+            truncated,
+            mode: Mode::AllOpen,
+            all_repos: false,
+            need_you: 1,
+            badge: 4,
+            badge_complete: true,
+            tracked_loaded: 0,
+            tracked_total: 0,
+            total: Some(total),
+            filtered,
+        };
+        let (line, tip) = header_counts(&all_open(60, 759, false, true), BadgeName::Dock);
+        assert_eq!(line, "60 of 759 open · 1 needs you");
+        assert_eq!(
+            tip,
+            "60 of the 759 PRs that are open in this repository are loaded; Load more \
+             fetches the next ones.\n\
+             1 needs you: the PRs under Requested from you and your own PRs under Needs attention, \
+             not counting snoozed ones.\n\
+             The Dock badge shows 4: your PRs that need action plus reviews requested \
+             from you, not counting snoozed ones."
+        );
+        let (line, tip) = header_counts(&all_open(12, 12, true, false), BadgeName::Dock);
+        assert_eq!(line, "12 match · 1 needs you");
+        assert!(tip.starts_with("12 of the 12 PRs that match the filter are loaded."));
+        let mine = HeaderCounts {
+            mode: Mode::Authored,
+            ..all_open(60, 759, false, true)
+        };
+        assert_eq!(
+            header_counts(&mine, BadgeName::Dock).0,
+            "60 loaded · partial results · 1 needs you",
+            "My PRs keeps its own line"
+        );
+    }
+
+    #[test]
+    fn load_more_says_how_many_joined_their_sections() {
+        assert_eq!(
+            loaded_more_text(60),
+            "60 more PRs loaded, sorted into their sections"
+        );
+        assert_eq!(
+            loaded_more_text(1),
+            "1 more PR loaded, sorted into its section"
+        );
+        assert_eq!(
+            loaded_more_text(0),
+            "The next page added no PRs to this view"
+        );
+    }
+
+    #[test]
+    fn all_open_says_when_a_filter_only_looked_at_the_loaded_prs() {
+        let terms = ["“login”".to_owned(), "is:stale".to_owned()];
+        assert_eq!(
+            all_open_local_filter_notice(&terms, 60, Some(759), true).as_deref(),
+            Some("Only the 60 loaded PRs of 759 are checked for “login” and is:stale. Load more to check more.")
+        );
+        assert_eq!(
+            all_open_local_filter_notice(&terms[..1], 300, Some(759), false).as_deref(),
+            Some("Only the 300 loaded PRs of 759 are checked for “login”.")
+        );
+        assert_eq!(
+            all_open_local_filter_notice(&terms, 59, Some(59), false),
+            None
+        );
+        assert_eq!(all_open_local_filter_notice(&[], 60, Some(759), true), None);
     }
 
     #[test]
     fn the_ipad_says_app_icon_where_the_desktop_says_dock() {
         let (_, tip) = header_counts(&counts(3, true, (0, 0)), BadgeName::AppIcon);
         assert!(
-            tip.contains("The app icon badge shows 3 across both views"),
+            tip.contains("The app icon badge shows 3: your PRs"),
             "{tip}"
         );
         assert!(!tip.contains("Dock"));

@@ -63,6 +63,8 @@ mod tests {
             for word in [
                 "mine",
                 "review",
+                "all",
+                "all-open",
                 "watch",
                 "auth",
                 "login",
@@ -145,10 +147,22 @@ mod tests {
 
     #[test]
     fn bash_offers_what_each_position_accepts() {
-        let cases: [(&[&str], &str); 18] = [
+        let cases: [(&[&str], &str); 22] = [
             (&["prmarmot-cli", "wa"], "watch"),
             (&["prmarmot-cli", "--v"], "--version"),
             (&["prmarmot-cli", "watch", ""], "mine review"),
+            // Watch follows My PRs or the review queue, never All open.
+            (&["prmarmot-cli", "watch", "a"], ""),
+            (&["prmarmot-cli", "al"], "all"),
+            (
+                &["prmarmot-cli", "all", "--"],
+                concat!(
+                    "--repo --format --json --watched --snoozed --no-color --help ",
+                    "--host --auth --changed --stale --filter --pages"
+                ),
+            ),
+            // One repository, and neither --authored nor --sort.
+            (&["prmarmot-cli", "all-open", "--a"], "--auth"),
             (
                 &["prmarmot-cli", "watch", "--pr", "o/n#1", "--un"],
                 "--until",
@@ -208,6 +222,21 @@ mod tests {
         };
         assert_eq!(commands, ["watch"]);
         assert_eq!(offers("prmarmot-cli watch ").unwrap(), ["mine", "review"]);
+        assert_eq!(offers("prmarmot-cli al").unwrap(), ["all"]);
+        let all = offers("prmarmot-cli all --").unwrap();
+        for flag in ["--repo", "--filter", "--pages", "--stale"] {
+            assert!(all.contains(&flag.to_owned()), "all lacks {flag}: {all:?}");
+        }
+        for flag in ["--all-repos", "--authored", "--sort", "--interval"] {
+            assert!(
+                !all.contains(&flag.to_owned()),
+                "all offers {flag}: {all:?}"
+            );
+        }
+        // `all` as a flag's value is not the command.
+        assert!(!offers("prmarmot-cli skill install --agent all --")
+            .unwrap()
+            .contains(&"--repo".to_owned()));
         assert_eq!(
             offers("prmarmot-cli watch --until ci-pass,ap").unwrap(),
             ["ci-pass,approved"]

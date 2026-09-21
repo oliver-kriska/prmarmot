@@ -102,7 +102,7 @@ _prmarmot_cli() {
             if [[ $cur == -* ]]; then
                 words="--help --version"
             else
-                words="mine review watch auth skill completions help"
+                words="mine review all watch auth skill completions help"
             fi
             ;;
         mine | authored)
@@ -110,6 +110,10 @@ _prmarmot_cli() {
             ;;
         review | reviews)
             words="$view --changed --stale --filter --sort --pages"
+            ;;
+        all | all-open)
+            # One repository only, so no --all-repos.
+            words="${view/ --all-repos/} --changed --stale --filter --pages"
             ;;
         watch)
             # A view word only right after `watch`.

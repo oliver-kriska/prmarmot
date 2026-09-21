@@ -153,8 +153,10 @@ reorder this list.
 | 13 | **`prmarmot-cli report --since`** standup Markdown (merged / opened / still blocked) | CLI | S | Nearly free on the existing formatter |
 | 14 | Up to **three saved views** (capped) | app | L | Reserve; only if Ideas votes demand it |
 | 15 | **Released in v0.8.0:** JSON Schema for `board@1` and `event@1` (`cli/schema/`) + `prmarmot-cli completions bash\|zsh\|fish` | CLI | S | Hygiene, with a CLI release |
+| 16 | **On main, not yet released:** **All open**, every open PR in one repository. `label:` and `author:` chips go to GitHub's search, so a filter covers the whole repository and the count is GitHub's; the other views' sections, with Requested from you; other people's PRs never notify or badge; `prmarmot-cli all` | core → app + CLI, iPad next | M | View 1 of the original spec, asked for again on 2026-09-21; what it adds over GitHub's list is what the other views add: the Note, CI and review state, size band and stacks in one row |
 
-**Not on the list, on purpose:** filtered lists and saved-view systems (GitHub does that, free); stack
+**Not on the list, on purpose:** saved-view systems and a filter language of our own (GitHub's filtered
+lists do that, free; All open is one fixed view, and its chips are GitHub's own `label:` and `author:`); stack
 creation, rebasing, merging (GitHub, 2026-07-30); AI review, summaries or estimates (Copilot approves
 PRs since 2026-09-01; PR Marmot stays no-AI); write actions such as comment/approve/merge (never the
 top ask in any dashboard tracker; revisit only if Ideas votes overwhelm); an MCP server (independent

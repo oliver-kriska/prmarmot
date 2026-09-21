@@ -12,13 +12,15 @@ use prmarmot_core::attention::{
     semantic_needs_action, semantic_notice, ObservationKind, SnapshotNamespace, MAX_SNAPSHOTS,
 };
 use prmarmot_core::board::{
-    carry_forward_conflicts, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
-    BoardFetch, BoardPagination, BoardRow, BoardScope, Mode, TrackedPr, TrackedPrStatus,
+    carry_forward_conflicts, fetch_all_open, fetch_board_scoped_with_tracked,
+    fetch_more_board_scoped, BoardConfig, BoardFetch, BoardPagination, BoardRow, BoardScope,
+    Category, Mode, TrackedPr, TrackedPrStatus,
 };
 use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
 use prmarmot_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
+use prmarmot_core::search::RemoteFilter;
 use prmarmot_local::config::AuthSettings;
 use prmarmot_local::session;
 
@@ -153,6 +155,18 @@ pub struct AppState {
     pub error: Option<String>,
     pub rate: Option<RateLimitInfo>,
     pub truncated: bool,
+    /// How many PRs the search found in all, loaded or not ("60 of 759
+    /// open"), when the view's search said.
+    pub total: Option<u64>,
+    /// All open's `label:`/`author:` chips as GitHub should answer them. The
+    /// search box sets it; only All open sends it.
+    remote_filter: RemoteFilter,
+    /// The filter GitHub answered for the rows on screen. Differs from
+    /// `remote_filter` while a changed filter waits for its request.
+    pub rows_filter: RemoteFilter,
+    /// The pending request for a changed filter; replacing it cancels the
+    /// previous one, so quick successive chips cost one request.
+    filter_task: Option<gpui::Task<()>>,
     /// What the token was not allowed to read on the last fetch (a
     /// fine-grained token cannot read checks), for the one-line notice under
     /// the header. Empty for a `gh` token.
@@ -162,6 +176,9 @@ pub struct AppState {
     /// without diffing (and to gate their reactions — the PRFlow observer-loop
     /// lesson).
     pub generation: u64,
+    /// The generation a Load more produced and how many rows it added, so the
+    /// window can say so once.
+    pub loaded_more: Option<(u64, usize)>,
     /// Do not fetch before this epoch second (set after a rate-limit hit,
     /// always clamped 60..900s ahead).
     backoff_until: Option<u64>,
@@ -202,11 +219,20 @@ struct CachedQueue {
     last_synced: Option<DateTime<Local>>,
     truncated: bool,
     pagination: BoardPagination,
+    total: Option<u64>,
+    rows_filter: RemoteFilter,
 }
 
-/// One cache entry per queue; there are exactly two queues today. Kept explicit
-/// so the bound survives a third view (roadmap "All open PRs").
-const MAX_CACHED_QUEUES: usize = 2;
+/// One cache entry per view: My PRs, Review queue, All open. Deliberately
+/// bounded on both axes: three entries, and each holds what its view can load
+/// — 60 rows a page and at most five Load more pages, so 300 rows for My PRs
+/// and All open and 600 for the review queue's two searches (core's
+/// `MAX_BOARD_ROWS × MAX_PAGES_PER_ALIAS`). All open is the new worst case:
+/// a busy repository, fully loaded, left selected.
+const MAX_CACHED_QUEUES: usize = 3;
+/// How long a changed All open filter waits before its request, so chips
+/// clicked in quick succession cost one search.
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(400);
 const MAX_PROCESS_BASELINES: usize = MAX_SNAPSHOTS;
 const MAX_STATUS_BASELINES: usize = MAX_WATCHES + MAX_SNOOZES;
 
@@ -250,6 +276,13 @@ impl AppState {
         connector: Arc<dyn Connector>,
         attention_preferences: AttentionPreferences,
     ) -> Self {
+        // All open is one repository's view; with all repositories the app
+        // opens on My PRs instead of on a view that cannot load.
+        let mode = if mode == Mode::AllOpen && scope.is_all() {
+            Mode::Authored
+        } else {
+            mode
+        };
         Self {
             scope,
             me: None,
@@ -266,9 +299,14 @@ impl AppState {
             error: None,
             rate: None,
             truncated: false,
+            total: None,
+            remote_filter: RemoteFilter::default(),
+            rows_filter: RemoteFilter::default(),
+            filter_task: None,
             access: AccessGaps::default(),
             pagination: BoardPagination::default(),
             generation: 0,
+            loaded_more: None,
             backoff_until: None,
             epoch: 0,
             setup_epoch: 0,
@@ -310,6 +348,8 @@ impl AppState {
                 last_synced: self.last_synced,
                 truncated: self.truncated,
                 pagination: self.pagination.clone(),
+                total: self.total,
+                rows_filter: self.rows_filter.clone(),
             },
         );
     }
@@ -323,7 +363,38 @@ impl AppState {
         }
         self.scope = scope;
         self.cache.clear();
+        if self.mode == Mode::AllOpen && self.scope.is_all() {
+            // The segment is disabled there; land on My PRs, not a dead view.
+            self.mode = Mode::Authored;
+        }
         self.reset_and_refetch(cx);
+    }
+
+    /// The search box's chips changed. All open asks GitHub again, once,
+    /// after [`FILTER_DEBOUNCE`], if what GitHub is asked changed; the other
+    /// views filter what they loaded and never send it.
+    pub fn set_remote_filter(&mut self, filter: RemoteFilter, cx: &mut Context<Self>) {
+        if filter == self.remote_filter {
+            return;
+        }
+        self.remote_filter = filter;
+        if self.mode != Mode::AllOpen {
+            return;
+        }
+        self.filter_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FILTER_DEBOUNCE).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.mode != Mode::AllOpen || state.rows_filter == state.remote_filter {
+                    return;
+                }
+                // A new search: the in-flight one and its cursors are for
+                // the old filter.
+                state.epoch += 1;
+                state.syncing = false;
+                state.pagination = BoardPagination::default();
+                state.refresh(cx);
+            });
+        }));
     }
 
     pub fn validate_setup(&mut self, cx: &mut Context<Self>) {
@@ -534,12 +605,16 @@ impl AppState {
                 self.last_synced = cached.last_synced;
                 self.truncated = cached.truncated;
                 self.pagination = cached.pagination.clone();
+                self.total = cached.total;
+                self.rows_filter = cached.rows_filter.clone();
             }
             None => {
                 self.rows.clear();
                 self.last_synced = None;
                 self.truncated = false;
                 self.pagination = BoardPagination::default();
+                self.total = None;
+                self.rows_filter = RemoteFilter::default();
             }
         }
         self.generation += 1; // observers push the restored (or empty) rows
@@ -552,6 +627,8 @@ impl AppState {
         self.last_synced = None;
         self.error = None;
         self.truncated = false;
+        self.total = None;
+        self.rows_filter = RemoteFilter::default();
         self.access = AccessGaps::default();
         self.pagination = BoardPagination::default();
         self.generation += 1; // observers push the (empty) rows to the table
@@ -577,6 +654,9 @@ impl AppState {
         }
         if self.syncing {
             return;
+        }
+        if self.mode == Mode::AllOpen && self.scope.is_all() {
+            return; // unreachable from the UI; the body says to pick one
         }
         let now = Local::now().timestamp().max(0) as u64;
         if let Some(until) = self.backoff_until {
@@ -613,6 +693,12 @@ impl AppState {
         let mode = self.mode;
         let config = self.config.clone();
         let epoch = self.epoch;
+        let filter = if mode == Mode::AllOpen {
+            self.remote_filter.clone()
+        } else {
+            RemoteFilter::default()
+        };
+        let sent_filter = filter.clone();
         const MAX_TRACKED_PER_REFRESH: usize = 50;
         let (tracked_ids, tracked_total) = self
             .attention
@@ -630,14 +716,24 @@ impl AppState {
                 .spawn(async move {
                     // The `gh` subprocess blocks; that is fine on the
                     // background pool for a call made every few minutes.
-                    fetch_board_scoped_with_tracked(
-                        transport.as_ref(),
-                        mode,
-                        &scope,
-                        &me,
-                        &config,
-                        &tracked_ids,
-                    )
+                    match (mode, scope.repository()) {
+                        (Mode::AllOpen, Some(repo)) => fetch_all_open(
+                            transport.as_ref(),
+                            repo,
+                            &me,
+                            &config,
+                            &filter,
+                            &tracked_ids,
+                        ),
+                        _ => fetch_board_scoped_with_tracked(
+                            transport.as_ref(),
+                            mode,
+                            &scope,
+                            &me,
+                            &config,
+                            &tracked_ids,
+                        ),
+                    }
                 })
                 .await;
 
@@ -669,10 +765,12 @@ impl AppState {
                                 }
                             }
                         }
-                        state.process_accepted_rows(&observed_rows, cx);
+                        state.process_accepted_rows(&observed_rows, mode, cx);
                         state.rows = board.rows;
                         state.rate = board.rate;
                         state.truncated = board.truncated;
+                        state.total = board.total;
+                        state.rows_filter = sent_filter;
                         state.access = board.access;
                         // A deliberate refresh starts again at page one; load-more
                         // cursors are only preserved by queue cache restoration.
@@ -704,6 +802,12 @@ impl AppState {
         !self.syncing
             && self.backoff_remaining().is_none()
             && self.pagination.can_load_more(self.mode)
+    }
+
+    /// Whether GitHub has another page for this view, whether or not a
+    /// fetch is running right now.
+    pub fn pagination_can_load_more(&self) -> bool {
+        self.pagination.can_load_more(self.mode)
     }
 
     pub fn page_limit_reached(&self) -> bool {
@@ -753,6 +857,7 @@ impl AppState {
             pagination: self.pagination.clone(),
             tracked: Vec::new(),
             access: self.access,
+            total: self.total,
         };
         cx.spawn(async move |this, cx| {
             let fetched = cx
@@ -776,15 +881,18 @@ impl AppState {
                 match fetched {
                     Ok(mut board) => {
                         state.keep_known_conflicts(&mut board.rows, mode);
-                        state.process_accepted_rows(&board.rows, cx);
+                        state.process_accepted_rows(&board.rows, mode, cx);
+                        let added = board.rows.len().saturating_sub(state.rows.len());
                         state.rows = board.rows;
                         state.rate = board.rate;
                         state.truncated = board.truncated;
+                        state.total = board.total;
                         state.access = board.access;
                         state.pagination = board.pagination;
                         // Loading older pages does not refresh the earlier rows.
                         // Keep their original sync timestamp honest.
                         state.generation += 1;
+                        state.loaded_more = Some((state.generation, added));
                         state.update_badge();
                     }
                     Err(GhError::RateLimited { reset_epoch }) => {
@@ -884,10 +992,24 @@ impl AppState {
         }
     }
 
-    fn process_accepted_rows(&mut self, rows: &[BoardRow], cx: &mut Context<Self>) {
+    fn process_accepted_rows(&mut self, rows: &[BoardRow], mode: Mode, cx: &mut Context<Self>) {
         let Some(attention) = self.attention.as_mut() else {
             return;
         };
+        // All open lists everyone's work. Remembering all of it would push
+        // the snapshots of your own PRs out of their bounded store, so it
+        // records only PRs that already have one or that involve you.
+        let me = self.me.as_deref();
+        let observed: Vec<&BoardRow> = rows
+            .iter()
+            .filter(|row| {
+                mode != Mode::AllOpen
+                    || attention.snapshots.snapshot(&row.id).is_some()
+                    || attention.is_watched(&row.id)
+                    || row.category == Category::Todo
+                    || (me.is_some() && row.author.as_deref() == me)
+            })
+            .collect();
         if !self.demo_seeded && std::env::var_os("PRMARMOT_DEMO_ATTENTION").is_some() {
             if let Some(row) = rows.first() {
                 let mut before = observation(row);
@@ -915,7 +1037,7 @@ impl AppState {
         let woke = attention.wake_due(rows, Utc::now());
         let mut dirty = !woke.is_empty();
         let mut notices = Vec::new();
-        for row in rows {
+        for row in observed {
             let previous = attention
                 .snapshots
                 .snapshot(&row.id)
@@ -988,6 +1110,7 @@ impl AppState {
             match mode {
                 Mode::Authored => authored_loaded = true,
                 Mode::Review => review_loaded = true,
+                Mode::AllOpen => return,
             }
             for row in rows {
                 let counts = match mode {
@@ -1000,6 +1123,7 @@ impl AppState {
                             == Some(prmarmot_core::board::QueueProvenance::Requested)
                             && row.category == prmarmot_core::board::Category::Todo
                     }
+                    Mode::AllOpen => false,
                 };
                 if counts && !snoozed(&row.id) {
                     ids.insert(row.id.clone());
@@ -1113,12 +1237,14 @@ fn loaded_badge_sources<'a>(
     active_loaded: bool,
     cache: &'a HashMap<Mode, CachedQueue>,
 ) -> Vec<(Mode, &'a [BoardRow])> {
+    // All open adds nothing: the badge counts your PRs and reviews asked of
+    // you, which My PRs and the review queue already hold, not everyone's.
     let mut sources = Vec::with_capacity(MAX_CACHED_QUEUES);
-    if active_loaded {
+    if active_loaded && active_mode != Mode::AllOpen {
         sources.push((active_mode, active_rows));
     }
     sources.extend(cache.iter().filter_map(|(mode, cached)| {
-        (*mode != active_mode && cached.last_synced.is_some())
+        (*mode != active_mode && *mode != Mode::AllOpen && cached.last_synced.is_some())
             .then_some((*mode, cached.rows.as_slice()))
     }));
     sources
@@ -1191,7 +1317,7 @@ mod tests {
     #[test]
     fn badge_sources_skip_stale_cache_for_active_mode() {
         let mut cache = HashMap::new();
-        for mode in [Mode::Authored, Mode::Review] {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             cache.insert(
                 mode,
                 CachedQueue {
@@ -1199,15 +1325,23 @@ mod tests {
                     last_synced: Some(Local::now()),
                     truncated: false,
                     pagination: BoardPagination::default(),
+                    total: None,
+                    rows_filter: RemoteFilter::default(),
                 },
             );
         }
+        assert_eq!(cache.len(), MAX_CACHED_QUEUES);
 
         let active_rows = Vec::new();
         let sources = loaded_badge_sources(Mode::Authored, &active_rows, true, &cache);
         assert_eq!(
             sources.iter().map(|(mode, _)| *mode).collect::<Vec<_>>(),
-            vec![Mode::Authored, Mode::Review]
+            vec![Mode::Authored, Mode::Review],
+            "All open adds nothing to the badge"
         );
+        let sources = loaded_badge_sources(Mode::AllOpen, &active_rows, true, &cache);
+        let mut modes = sources.iter().map(|(mode, _)| *mode).collect::<Vec<_>>();
+        modes.sort_by_key(|mode| *mode as u8);
+        assert_eq!(modes, vec![Mode::Authored, Mode::Review]);
     }
 }

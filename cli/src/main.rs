@@ -1,6 +1,6 @@
-//! `prmarmot-cli`: PR Marmot's My PRs and Review queue for terminals and
-//! coding agents. Same query, categorization, sections, and watch/snooze
-//! state as the desktop app; no GPUI, no runtime, read-only.
+//! `prmarmot-cli`: PR Marmot's My PRs, Review queue, and All open for
+//! terminals and coding agents. Same query, categorization, sections, and
+//! watch/snooze state as the desktop app; no GPUI, no runtime, read-only.
 
 mod args;
 mod auth;
@@ -21,7 +21,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use chrono::Utc;
-use prmarmot_core::board::carry_forward_conflicts;
+use prmarmot_core::board::{carry_forward_conflicts, Mode};
 use prmarmot_core::github::GhError;
 use prmarmot_local::config;
 use prmarmot_local::session::Session;
@@ -129,6 +129,7 @@ fn print(text: &str) -> ExitCode {
 fn exit_code_for(error: &GhError) -> u8 {
     match error {
         GhError::NotInstalled | GhError::NotAuthenticated => EXIT_AUTH,
+        GhError::NeedsRepository => EXIT_USAGE,
         GhError::RateLimited { .. } => EXIT_RATE_LIMITED,
         _ => EXIT_GITHUB,
     }
@@ -139,33 +140,60 @@ fn fail(error: &GhError) -> ExitCode {
     ExitCode::from(exit_code_for(error))
 }
 
+fn setup(
+    cli_scope: Option<prmarmot_core::board::BoardScope>,
+    cli_host: Option<&str>,
+    cli_auth: Option<config::AuthMode>,
+) -> view::Setup {
+    let setup = view::setup(cli_scope, cli_host, cli_auth);
+    for warning in &setup.warnings {
+        eprintln!("prmarmot-cli: {warning}");
+    }
+    setup
+}
+
+fn connect(setup: &view::Setup) -> Result<(Session, String), GhError> {
+    let session = view::connect(setup)?;
+    let login = session.login()?;
+    Ok((session, login))
+}
+
 fn resolve(
     cli_scope: Option<prmarmot_core::board::BoardScope>,
     cli_host: Option<&str>,
     cli_auth: Option<config::AuthMode>,
 ) -> Result<(view::Setup, Session, String), GhError> {
-    let setup = view::setup(cli_scope, cli_host, cli_auth);
-    for warning in &setup.warnings {
-        eprintln!("prmarmot-cli: {warning}");
-    }
-    let session = view::connect(&setup)?;
-    let login = session.login()?;
+    let setup = setup(cli_scope, cli_host, cli_auth);
+    let (session, login) = connect(&setup)?;
     Ok((setup, session, login))
 }
 
 fn run_view(args: ViewArgs) -> ExitCode {
-    let (mut setup, session, login) =
-        match resolve(args.scope.clone(), args.host.as_deref(), args.auth) {
-            Ok(resolved) => resolved,
-            Err(error) => return fail(&error),
-        };
+    let mut setup = setup(args.scope.clone(), args.host.as_deref(), args.auth);
+    // All open is one repository's PRs; say so before asking GitHub anything.
+    if args.mode == Mode::AllOpen && setup.scope.is_all() {
+        eprintln!("prmarmot-cli: {}", view::all_open_needs_repository());
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let (session, login) = match connect(&setup) {
+        Ok(connected) => connected,
+        Err(error) => return fail(&error),
+    };
     setup.board.authored_only = args.authored;
+    let filters = Filters {
+        changed: args.changed,
+        watched: args.watched,
+        stale: args.stale,
+        stale_after_days: setup.board.stale_after_days,
+        query: args.filter.clone(),
+    };
     let mut fetch = match view::fetch(
         session.transport(),
         args.mode,
         &setup.scope,
         &login,
         &setup.board,
+        &filters.remote(args.mode),
         args.pages,
     ) {
         Ok(fetch) => fetch,
@@ -187,13 +215,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
         args.mode,
         setup.scope,
         login,
-        Filters {
-            changed: args.changed,
-            watched: args.watched,
-            stale: args.stale,
-            stale_after_days: setup.board.stale_after_days,
-            query: args.filter.clone(),
-        },
+        filters,
         Utc::now(),
     );
     board.authored_only = setup.board.authored_only;
@@ -242,7 +264,7 @@ fn run_watch(args: WatchArgs) -> ExitCode {
         viewer: login,
         // A followed PR is classified as in Involving me, whatever the mode word.
         mode: if args.pr.is_some() {
-            prmarmot_core::board::Mode::Authored
+            Mode::Authored
         } else {
             args.mode
         },
@@ -305,6 +327,7 @@ mod tests {
             exit_code_for(&GhError::Network("timeout".into())),
             EXIT_GITHUB
         );
+        assert_eq!(exit_code_for(&GhError::NeedsRepository), EXIT_USAGE);
         assert!(args::USAGE.contains("0 ok, 1 GitHub, network, or file error, 2 usage error"));
     }
 

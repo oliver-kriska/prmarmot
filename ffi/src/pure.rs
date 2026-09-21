@@ -108,6 +108,13 @@ pub fn with_filter(query: String, qualifier: FilterQualifier, value: String) -> 
     core_search::with_filter(&query, &chip)
 }
 
+/// What puts a PR in a section, in one sentence: the desktop's hover on a
+/// section header, for the iPad's long-press. `None` for a stack sub-header.
+#[uniffi::export]
+pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Option<String> {
+    core_layout::section_explanation(mode.into(), kind.into(), all_repos)
+}
+
 /// Seconds this PR has been waiting for a reviewer, or `None` when it is not
 /// waiting on anyone.
 #[uniffi::export]
@@ -180,13 +187,22 @@ pub struct HeaderCounts {
     pub all_repos: bool,
     /// Rows of this view that need you, snoozed ones excluded.
     pub need_you: u32,
-    /// Across both views: your PRs that need action plus reviews requested
-    /// from you, snoozed ones excluded. This is the icon badge.
+    /// Across My PRs and the review queue: your PRs that need action plus
+    /// reviews requested from you, snoozed ones excluded. This is the icon
+    /// badge; All open adds nothing to it.
     pub badge: u32,
     /// Both views have loaded, so `badge` is the whole count.
     pub badge_complete: bool,
     pub tracked_loaded: u32,
     pub tracked_total: u32,
+    /// `Board.total`: how many PRs GitHub's search found. All open's line
+    /// reads "60 of 759 open" from it; the other views ignore it.
+    #[uniffi(default = None)]
+    pub total: Option<u64>,
+    /// A `label:` or `author:` chip went to GitHub with All open's search, so
+    /// `total` counts matches: "12 match".
+    #[uniffi(default = false)]
+    pub filtered: bool,
 }
 
 /// The header sentence and the explanation behind it.
@@ -212,16 +228,34 @@ pub fn header_summary(counts: HeaderCounts) -> HeaderSummary {
             badge_complete: counts.badge_complete,
             tracked_loaded: counts.tracked_loaded as usize,
             tracked_total: counts.tracked_total as usize,
+            total: counts.total,
+            filtered: counts.filtered,
         },
         core_status::BadgeName::AppIcon,
     );
     HeaderSummary { line, explanation }
 }
 
-/// Whether a row of this view counts toward "need you".
+/// Whether a row of this view counts toward "need you". All open needs the
+/// row itself: use `row_needs_you` there.
 #[uniffi::export]
 pub fn needs_you_here(mode: Mode, category: crate::types::Category) -> bool {
     core_status::needs_you_here(mode.into(), category.into())
+}
+
+/// Whether this row counts toward "need you", in any view. In All open that
+/// is Requested from you plus your own PRs under Needs attention, never a
+/// teammate's.
+#[uniffi::export]
+pub fn row_needs_you(mode: Mode, row: PullRequest) -> bool {
+    core_status::row_needs_you(mode.into(), &row.into_row())
+}
+
+/// What Load more added, said once it lands: its rows join their sections
+/// rather than the bottom of the list.
+#[uniffi::export]
+pub fn loaded_more_text(added: u32) -> String {
+    core_status::loaded_more_text(added as usize)
 }
 
 /// What the Changed toggle says it will do.
@@ -275,6 +309,45 @@ pub fn queue_loading_text(mode: Mode, all_repos: bool) -> String {
 #[uniffi::export]
 pub fn queue_empty_text(mode: Mode, all_repos: bool) -> String {
     core_status::queue_empty_text(mode.into(), all_repos).to_owned()
+}
+
+/// Why All open is unavailable with all repositories selected — for the
+/// disabled tab and the error alike.
+#[uniffi::export]
+pub fn all_open_needs_repository() -> String {
+    core_status::all_open_needs_repository().to_owned()
+}
+
+/// All open's empty body when GitHub answered the whole filter (or every
+/// open PR is loaded) and nothing matched. `filter` is the search as shown.
+#[uniffi::export]
+pub fn all_open_no_match_text(filter: String) -> String {
+    core_status::all_open_no_match_text(&filter)
+}
+
+/// The terms of a search that All open checks only against the loaded rows —
+/// free words (in quotes) and the chips GitHub is not sent — as the reader
+/// would recognise them.
+#[uniffi::export]
+pub fn local_only_terms(query: String, chips: Vec<FilterChip>) -> Vec<String> {
+    let chips: Vec<core_search::FilterChip> = chips
+        .iter()
+        .map(|chip| core_search::FilterChip::new(chip.qualifier.into(), &chip.value))
+        .collect();
+    let remote = core_search::RemoteFilter::from_chips(&chips);
+    core_search::local_only_terms(&query, &chips, &remote)
+}
+
+/// The line under All open's filter when part of it only looked at the
+/// loaded PRs and GitHub has more. `None` when nothing needs saying.
+#[uniffi::export]
+pub fn all_open_local_filter_notice(
+    local_terms: Vec<String>,
+    loaded: u32,
+    total: Option<u64>,
+    can_load_more: bool,
+) -> Option<String> {
+    core_status::all_open_local_filter_notice(&local_terms, loaded as usize, total, can_load_more)
 }
 
 /// One entry of the Details panel's Copy menu.
@@ -441,6 +514,21 @@ pub fn ci_cell(ci: Ci) -> CiCell {
         text: text.to_owned(),
         tone: tone.into(),
     }
+}
+
+/// All open only: the labels more than half of the rows on screen carry (at
+/// least ten rows), which a row's chips draw last. Other views pass none.
+#[uniffi::export]
+pub fn common_labels(rows: Vec<PullRequest>) -> Vec<String> {
+    core_cells::common_labels(&into_rows(rows))
+}
+
+/// The order a row's label chips are drawn in: `bug` first, then the rest as
+/// GitHub lists them, then the `common` ones, so the chips that fit say the
+/// most.
+#[uniffi::export]
+pub fn label_order(labels: Vec<String>, common: Vec<String>) -> Vec<String> {
+    core_cells::label_order(&labels, &common)
 }
 
 /// How alarming a section is, so that a front end can decorate its heading

@@ -10,7 +10,8 @@ values in the code. New features get the next free number in their area.
 ## Board and queues
 
 - **F-board-1** Two queues, switched from the title bar, with `1` / `2`, or with `v`: **Involving me** (**My PRs**
-  when one repository is selected) and **Review queue**. _since v0.1.0_
+  when one repository is selected) and **Review queue**. _since v0.1.0_ A third, **All open** (`3`), lists every open
+  PR in the selected repository (F-board-14); `v` skips it while All repositories is selected. _unreleased_
 - **F-board-2** **Involving me** is the zero-config default: open PRs involving your GitHub login across all
   repositories. Your own PRs get actionable Notes, and other people's get status Notes ("alice's PR · approved").
   It never widens to PRs that don't involve you. _since v0.6.0_
@@ -23,9 +24,11 @@ values in the code. New features get the next free number in their area.
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
   - Involving me: Approved, Needs attention, In progress, Drafts.
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
+  - All open: Approved, Requested from you, Needs attention, In progress, Drafts. _unreleased_
 
   Snoozed PRs follow in their own group. Within Needs action, approved PRs come first. _since v0.2.0; Approved since
-  v0.5.1_
+  v0.5.1_ Hover a section's title for one sentence on what puts a PR there; the CLI's JSON carries the same sentence
+  as each section's `explanation`. _unreleased_
 - **F-board-6** GitHub's native stacks are grouped inside each section and ordered by layer from the base up.
   - Each row carries a layer marker (`├─ 2/3`, `└─ 3/3`).
   - The stack header reads "3 layers", or "2 of 3 layers shown" when part of the stack is elsewhere.
@@ -64,9 +67,27 @@ values in the code. New features get the next free number in their area.
   - How many watched or snoozed PRs were refreshed.
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
-  _since v0.8.1_
+  _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
+  match" while a label or author filter narrows the search. Its "need you" counts Requested from you and your own
+  PRs under Needs attention, never someone else's. _unreleased_
 - **F-board-13** Draft rows are dimmed. Statuses show as coloured dots with text, never emoji; the one exception is
   🐛 on a `bug` label. _since v0.1.0_
+- **F-board-14** **All open** lists every open PR in one repository, whoever opened it.
+  - It needs one repository: with All repositories selected its tab is disabled and says why.
+  - Its sections are Involving me's, anyone's PRs in each (F-board-5), plus **Requested from you**, which holds the
+    same PRs as the Review queue's section of that name, team requests included.
+  - Your own PRs keep their My PRs Note, a PR asking for your review gets its Review queue Note, and anyone else's
+    gets a status Note ("approved", "merge conflict · CI failing"). The Author column says whose it is, and copied
+    text reads "by alice · approved".
+  - The Note ends with the size band (F-note-7). The Review column is hidden below 1,120 px. From 1,360 px it widens
+    to at most 320 px, taking room the Note doesn't need and never the Title's.
+  - A label more than half of at least ten rows carry, such as `cla-signed`, is drawn after the row's other labels,
+    so the chip that fits tells rows apart. **+n** still lists every hidden label as a filter.
+  - It loads 60 PRs per page, and **Load more** fetches up to five pages, like the other views.
+  - Other people's PRs stay quiet: changed markers and notifications cover only PRs you watch, your own, those
+    asking for your review, and ones another view already follows, and the Dock badge never counts this view.
+
+  _unreleased_
 
 ## Categorization and notes
 
@@ -124,7 +145,9 @@ values in the code. New features get the next free number in their area.
   _since v0.3.0; `⌘F` and Edit → Find since v0.8.0_
 - **F-search-2** `label:NAME`, `author:LOGIN`, and `repo:OWNER/NAME` keep PRs whose label, author, or repository is
   exactly that, ignoring case. Quote a value with spaces (`label:"help wanted"`). A term becomes a chip after a
-  space or `Enter`; the box holds up to 8 chips, and all of them must match. _since v0.8.0_
+  space or `Enter`; the box holds up to 8 chips, and all of them must match. _since v0.8.0_ Several `author:` or
+  `repo:` chips keep PRs matching any one of them, as GitHub's search does; words, labels, and `is:stale` must all
+  match. _unreleased_
 - **F-search-3** `is:stale` keeps PRs that have waited `stale_after_days` or longer for a reviewer. `stale` is the
   only `is:` value. _since v0.8.0_
 - **F-search-4** Clicking a label, author, or repository in the table or in Details adds it as a chip. _since
@@ -133,6 +156,15 @@ values in the code. New features get the next free number in their area.
   clears the search, and an empty search closes when you leave it. _since v0.8.0_
 - **F-search-6** The desktop search box and `prmarmot-cli --filter` share one grammar, pinned by a golden test, so
   a saved query means the same in both. _since v0.9.0_
+- **F-search-7** In All open, `label:` and `author:` chips are sent to GitHub's search, so they filter every open PR
+  in the repository, not only the loaded ones.
+  - A test pins that GitHub's reading and the local one keep the same PRs.
+  - `author:dependabot` also finds the bot's PRs (`author:app/dependabot`).
+  - A changed filter costs one request, sent after typing pauses; refresh timing is unchanged.
+  - Words, `is:stale`, and anything past 8 labels or 8 authors check only the loaded PRs. While more are left to
+    load, a line under the header names those terms and offers Load more.
+
+  _unreleased_
 
 ## Change tracking
 
@@ -256,10 +288,12 @@ values in the code. New features get the next free number in their area.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
   - Nothing is fetched separately for each PR.
 
-  _since v0.1.0_
+  _since v0.1.0_ All open returns up to 60 PRs plus the ids of up to 100 that request your review, and costs about
+  4 points. _unreleased_
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
-  page one, and a failed page keeps what's already loaded. _since v0.3.0_
+  page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
+  footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _unreleased_
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_
@@ -402,6 +436,14 @@ values in the code. New features get the next free number in their area.
 - **F-cli-15** `prmarmot-cli completions bash|zsh|fish` prints a completion script for commands, flags, and flag
   values. The cask installs all three. `install.sh` and `make install` link the bash or fish script for your login
   shell and print the zsh line. _since v0.8.0_
+- **F-cli-16** `prmarmot-cli all --repo owner/name` prints All open (F-board-14) with an Author column.
+  - `--filter` sends its `label:` and `author:` terms to GitHub like the app does, and the status line reads "60 of
+    762 open" or "40 match". A footer names the terms that checked only the loaded PRs.
+  - `--json` adds `total` and `mode: "all"`.
+  - Without a repository it exits 2 before any request. `watch` doesn't take `all`, and `--sort` and `--authored`
+    don't apply.
+
+  _unreleased_
 
 ## Platform notes
 

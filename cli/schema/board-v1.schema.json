@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/board-v1.schema.json",
   "title": "prmarmot-cli board@1",
-  "description": "What `prmarmot-cli mine --json` and `prmarmot-cli review --json` print: one view with its PRs in display order. Within board@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
+  "description": "What `prmarmot-cli mine --json`, `prmarmot-cli review --json`, and `prmarmot-cli all --json` print: one view with its PRs in display order. Within board@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
   "type": "object",
   "required": [
     "schema",
@@ -26,15 +26,20 @@
     "viewer": { "type": "string", "description": "The GitHub login the board was built for." },
     "mode": { "$ref": "#/$defs/mode" },
     "view": {
-      "enum": ["My PRs", "Involving me", "Review queue"],
-      "description": "The app's name for the view. \"Involving me\" is My PRs across all repositories without `--authored`."
+      "enum": ["My PRs", "Involving me", "Review queue", "All open"],
+      "description": "The app's name for the view. \"Involving me\" is My PRs across all repositories without `--authored`. \"All open\" is every open PR in one repository (`all`)."
     },
     "scope": { "$ref": "#/$defs/scope" },
     "sort": {
       "enum": ["wait", "smallest"],
       "description": "Order inside Requested from you and Available to review: `wait` (longest wait first) or `smallest` (`review --sort smallest`: size band, then changed lines, then wait; PRs without a size last). Section order never changes."
     },
-    "count": { "type": "integer", "minimum": 0, "description": "PRs loaded before filters." },
+    "count": { "type": "integer", "minimum": 0, "description": "PRs listed, after filters; `count + filters.filtered_out` were loaded." },
+    "total": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "How many PRs GitHub's search matched, loaded or not. In `all`, every open PR in the repository, or with `label:` or `author:` in `--filter` the open PRs matching them (GitHub matches those two across the whole repository; other terms check only the loaded PRs). Also set for `mine`. Null for `review`, whose two searches overlap, and when GitHub did not say."
+    },
     "filters": {
       "type": "object",
       "required": ["changed", "watched", "stale", "stale_after_days", "filtered_out"],
@@ -64,7 +69,10 @@
     }
   },
   "$defs": {
-    "mode": { "enum": ["authored", "review"] },
+    "mode": {
+      "enum": ["authored", "review", "all"],
+      "description": "authored: My PRs (`mine`). review: the Review queue. all: All open, every open PR in one repository; `watch` never follows it."
+    },
     "scope": {
       "oneOf": [
         {
@@ -100,9 +108,13 @@
       "properties": {
         "key": {
           "enum": ["approved", "action", "await", "todo", "available", "done", "draft", "snoozed"],
-          "description": "Stable key. approved: yours, approved and waiting to merge. action: yours, blocked on you (see `blockers`). await: yours, waiting on others. todo: your review is requested. available: nobody is requested yet. done: you already reviewed. draft: drafts. snoozed: snoozed in the app."
+          "description": "Stable key. approved: approved and waiting to merge. action: needs action: yours blocked on you (see `blockers`), or, in Involving me and `all`, someone else's with a conflict, failing CI, requested changes or unresolved comments. await: waiting on reviewers. todo: your review is requested. available: nobody is requested yet. done: you already reviewed. draft: drafts. snoozed: snoozed in the app. In Involving me and `all`, approved, action, await and draft hold anyone's PRs; `author` says whose."
         },
         "label": { "type": "string", "description": "The app's section title; wording may change." },
+        "explanation": {
+          "type": ["string", "null"],
+          "description": "What puts a PR in this section, in one sentence: the app's hover text on the section header. Wording may change."
+        },
         "count": { "type": "integer", "minimum": 0 },
         "prs": { "type": "array", "items": { "$ref": "#/$defs/pr" } }
       }
@@ -151,7 +163,7 @@
         "category": { "enum": ["action", "await", "todo", "available", "done", "draft"] },
         "queue": {
           "enum": ["requested", "available", null],
-          "description": "Review queue only: whether your review was requested. Null in My PRs."
+          "description": "Review queue, and All open's `todo`: whether your review was requested. Null in My PRs."
         },
         "ci": { "enum": ["pass", "fail", "running", "none", "hidden"], "description": "The head commit's check rollup; none when it has no checks, hidden when the token may not read them (a fine-grained token never can)." },
         "conflict": { "type": "boolean" },

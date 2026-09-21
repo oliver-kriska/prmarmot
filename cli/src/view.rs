@@ -6,14 +6,17 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use prmarmot_core::attention::{Observation, SnapshotNamespace};
 use prmarmot_core::board::{
-    fetch_board_scoped, fetch_more_board_scoped, BoardConfig, BoardFetch, BoardRow, BoardScope,
-    Mode,
+    fetch_all_open, fetch_board_scoped, fetch_more_board_scoped, BoardConfig, BoardFetch, BoardRow,
+    BoardScope, Mode,
 };
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::layout::{layout, LayoutItem, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
-use prmarmot_core::search::{matches_filter, StaleRule};
+use prmarmot_core::search::{
+    local_only_terms, matches_filter, take_filter_chips, FilterChip, Qualifier, RemoteFilter,
+    StaleRule,
+};
 use prmarmot_local::attention_state::AttentionState;
 use prmarmot_local::config::{self, AuthMode, AuthSettings, FileConfig};
 use prmarmot_local::session::{self, Session};
@@ -78,8 +81,23 @@ pub struct Filters {
     /// What stale means, also for each PR's `stale` mark.
     pub stale_after_days: u64,
     /// `--filter`: the app's search grammar, from `prmarmot_core::search`.
-    /// Free words plus `label:`, `author:`, `repo:` and `is:stale`, ANDed.
+    /// Free words plus `label:`, `author:`, `repo:` and `is:stale`, ANDed,
+    /// except that one of several `author:` or `repo:` terms is enough.
     pub query: Option<String>,
+}
+
+impl Filters {
+    /// What of `--filter` GitHub answers itself, for All open: its `label:`
+    /// and `author:` terms, which then cover the whole repository. The other
+    /// views load everything they show, so nothing goes to GitHub for them.
+    pub fn remote(&self, mode: Mode) -> RemoteFilter {
+        match (mode, self.query.as_deref()) {
+            (Mode::AllOpen, Some(query)) => {
+                RemoteFilter::from_chips(&take_filter_chips(query, true).0)
+            }
+            _ => RemoteFilter::default(),
+        }
+    }
 }
 
 impl Default for Filters {
@@ -127,11 +145,39 @@ pub struct BoardView {
     /// The order inside the review queue's pickup sections (`--sort`); set by
     /// the caller.
     pub sort: Sort,
+    /// How many PRs GitHub's search matched, loaded or not (My PRs and All
+    /// open; `None` for the review queue and when GitHub did not say).
+    pub total: Option<u64>,
+    /// What of `--filter` went to GitHub with the search (All open only).
+    pub remote: RemoteFilter,
 }
 
 impl BoardView {
     pub fn all_repos(&self) -> bool {
         self.scope.is_all()
+    }
+
+    /// Rows GitHub returned, before the local filters.
+    pub fn loaded(&self) -> usize {
+        self.rows.len() + self.filtered_out
+    }
+
+    /// The filter terms checked only against the loaded rows, spelled as the
+    /// reader wrote them: all but what went to GitHub, plus `is:stale` for
+    /// `--stale`. In All open these can miss a match that is not loaded yet.
+    pub fn local_only_terms(&self) -> Vec<String> {
+        let mut terms = match self.filters.query.as_deref() {
+            Some(query) => {
+                let (chips, rest) = take_filter_chips(query, true);
+                local_only_terms(&rest, &chips, &self.remote)
+            }
+            None => Vec::new(),
+        };
+        let stale = FilterChip::new(Qualifier::Is, "stale").term();
+        if self.filters.stale && !terms.contains(&stale) {
+            terms.push(stale);
+        }
+        terms
     }
 
     pub fn snoozed_ids(&self) -> HashSet<String> {
@@ -155,16 +201,32 @@ impl BoardView {
     }
 }
 
-/// One request, plus up to `pages - 1` user-requested pages.
+/// Why All open refuses to run across all repositories, and how to pick one.
+pub fn all_open_needs_repository() -> String {
+    format!(
+        "{} Pass --repo OWNER/NAME, or set `repo` in ~/.config/prmarmot/config.toml.",
+        prmarmot_core::status::all_open_needs_repository()
+    )
+}
+
+/// One request, plus up to `pages - 1` user-requested pages. All open sends
+/// `filter` with its search, so GitHub answers those terms for the whole
+/// repository and Load more pages the same search.
 pub fn fetch(
     transport: &dyn GithubTransport,
     mode: Mode,
     scope: &BoardScope,
     viewer: &str,
     config: &BoardConfig,
+    filter: &RemoteFilter,
     pages: u8,
 ) -> Result<BoardFetch, GhError> {
-    let mut board = fetch_board_scoped(transport, mode, scope, viewer, config)?;
+    let mut board = match (mode, scope.repository()) {
+        (Mode::AllOpen, Some(repo)) => {
+            fetch_all_open(transport, repo, viewer, config, filter, &[])?
+        }
+        _ => fetch_board_scoped(transport, mode, scope, viewer, config)?,
+    };
     for _ in 1..pages {
         if !board.pagination.can_load_more(mode) {
             break;
@@ -214,6 +276,7 @@ pub fn build(
         marks.push(row_marks);
     }
     let can_load_more = board.pagination.can_load_more(mode);
+    let remote = filters.remote(mode);
     BoardView {
         mode,
         scope,
@@ -229,6 +292,8 @@ pub fn build(
         filters,
         authored_only: false,
         sort: Sort::Wait,
+        total: board.total,
+        remote,
     }
 }
 
@@ -313,6 +378,7 @@ pub mod tests {
             pagination: BoardPagination::default(),
             tracked: Vec::new(),
             access: Default::default(),
+            total: None,
         }
     }
 

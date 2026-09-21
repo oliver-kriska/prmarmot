@@ -82,7 +82,7 @@ fn install_app_menu(cx: &mut App) {
     ]);
 }
 
-const USAGE: &str = "usage: prmarmot [--repo owner/name | --all-repos] [--review]
+const USAGE: &str = "usage: prmarmot [--repo owner/name | --all-repos] [--review | --all-open]
 
 Scope resolution: CLI, then $PRMARMOT_REPO/$PRMARMOT_SCOPE, then `scope` + `repo`
 in ~/.config/prmarmot/config.toml. A clean config opens All repositories.
@@ -122,6 +122,7 @@ fn parse_args_from(
             }
             "--all-repos" => scope = Some(BoardScope::AllRepositories),
             "--review" => mode = Some(Mode::Review),
+            "--all-open" => mode = Some(Mode::AllOpen),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown arg: {other}\n\n{USAGE}")),
         }
@@ -172,9 +173,10 @@ fn main() {
         std::process::exit(1);
     }
     let (file, config_warnings) = config::ConfigWarnings::load();
-    // --review > persisted `view` in config > authored.
+    // --review/--all-open > persisted `view` in config > authored.
     let mode = mode_arg.unwrap_or(match file.view.as_deref() {
         Some("review") => Mode::Review,
+        Some("all") => Mode::AllOpen,
         _ => Mode::Authored,
     });
 

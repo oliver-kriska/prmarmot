@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use prmarmot_core::board as core_board;
 use prmarmot_core::github::{gh_cli, viewer_login};
+use prmarmot_core::search::RemoteFilter;
 
 use crate::error::FfiError;
 use crate::transport::{self, GithubTransport, TokenSource};
-use crate::types::{Board, BoardScope, BoardSettings, Mode, PullRequest, RateLimit};
+use crate::types::{Board, BoardScope, BoardSettings, FilterChip, Mode, PullRequest, RateLimit};
 
 /// What became of a PR that is watched or snoozed but not on the board.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -87,8 +88,8 @@ struct Pages {
     /// task cancelled at a scope switch does not stop the Rust future under
     /// it, which then lands after the reset (iPad review, 2026-09-21).
     generation: u64,
-    /// Two entries at most, one per mode — bounded like every other cache in
-    /// this project.
+    /// Three entries at most, one per mode — bounded like every other cache
+    /// in this project.
     fetches: BTreeMap<u8, core_board::BoardFetch>,
 }
 
@@ -206,24 +207,33 @@ impl BoardClient {
                 )
             })
             .await?;
-        self.remember(core_mode, &fetched, generation);
-        let now = crate::types::instant(now_epoch)?;
-        let tracked = fetched
-            .tracked
-            .iter()
-            .map(|tracked| TrackedPr {
-                pr_id: tracked.pr_id.clone(),
-                status: tracked.status.into(),
-                row: tracked
-                    .row
-                    .as_ref()
-                    .map(|row| PullRequest::from_row(row, now, settings.stale_after_days)),
+        self.tracked_board(mode, fetched, now_epoch, &settings, generation)
+    }
+
+    /// All open for one repository, with the `label:` and `author:` chips in
+    /// `filter` answered by GitHub so the rows, `total` and Load more cover
+    /// the whole repository. Every other chip filters only the loaded rows —
+    /// `local_only_terms` names them and `all_open_local_filter_notice` says
+    /// so. Call it again when the committed chips change, never per keystroke;
+    /// `load_more(.allOpen, …)` continues whichever search ran last.
+    pub async fn fetch_all_open(
+        &self,
+        repository: String,
+        filter: Vec<FilterChip>,
+        settings: BoardSettings,
+        now_epoch: i64,
+        tracked_ids: Vec<String>,
+    ) -> Result<TrackedBoard, FfiError> {
+        let cfg = settings.to_core()?;
+        let remote = RemoteFilter::from_chips(&core_chips(&filter));
+        let viewer = self.config.viewer.clone();
+        let generation = self.generation();
+        let fetched = self
+            .run(move |core| {
+                core_board::fetch_all_open(core, &repository, &viewer, &cfg, &remote, &tracked_ids)
             })
-            .collect();
-        Ok(TrackedBoard {
-            board: board(mode, fetched, now_epoch, settings.stale_after_days)?,
-            tracked,
-        })
+            .await?;
+        self.tracked_board(Mode::AllOpen, fetched, now_epoch, &settings, generation)
     }
 
     /// Every repository this account is involved in, for the picker. A REST
@@ -304,6 +314,34 @@ impl BoardClient {
         self.last.lock().expect("board cache").generation
     }
 
+    fn tracked_board(
+        &self,
+        mode: Mode,
+        fetched: core_board::BoardFetch,
+        now_epoch: i64,
+        settings: &BoardSettings,
+        generation: u64,
+    ) -> Result<TrackedBoard, FfiError> {
+        self.remember(mode.into(), &fetched, generation);
+        let now = crate::types::instant(now_epoch)?;
+        let tracked = fetched
+            .tracked
+            .iter()
+            .map(|tracked| TrackedPr {
+                pr_id: tracked.pr_id.clone(),
+                status: tracked.status.into(),
+                row: tracked
+                    .row
+                    .as_ref()
+                    .map(|row| PullRequest::from_row(row, now, settings.stale_after_days)),
+            })
+            .collect();
+        Ok(TrackedBoard {
+            board: board(mode, fetched, now_epoch, settings.stale_after_days)?,
+            tracked,
+        })
+    }
+
     /// Keep `fetched` for `load_more`, unless a reset ran since `generation`.
     fn remember(&self, mode: core_board::Mode, fetched: &core_board::BoardFetch, generation: u64) {
         let mut pages = self.last.lock().expect("board cache");
@@ -333,7 +371,15 @@ fn key(mode: core_board::Mode) -> u8 {
     match mode {
         core_board::Mode::Authored => 0,
         core_board::Mode::Review => 1,
+        core_board::Mode::AllOpen => 2,
     }
+}
+
+fn core_chips(chips: &[FilterChip]) -> Vec<prmarmot_core::search::FilterChip> {
+    chips
+        .iter()
+        .map(|chip| prmarmot_core::search::FilterChip::new(chip.qualifier.into(), &chip.value))
+        .collect()
 }
 
 fn board(
@@ -363,5 +409,6 @@ fn board(
         more_pages_available: fetched.pagination.can_load_more(core_mode),
         page_limit_reached: fetched.pagination.page_limit_reached(core_mode),
         access_notice: prmarmot_core::status::access_notice(&fetched.access),
+        total: fetched.total,
     })
 }

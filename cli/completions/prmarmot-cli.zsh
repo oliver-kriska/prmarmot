@@ -36,6 +36,7 @@ _prmarmot-cli() {
       commands=(
         'mine:PRs you authored (My PRs), or every PR involving you with --all-repos'
         'review:PRs waiting for your review (Review queue)'
+        'all:every open PR in one repository (All open); needs --repo'
         'watch:poll and print what changes, one event per line'
         'auth:sign in to GitHub without the gh CLI'
         'skill:print or install the coding-agent skill'
@@ -47,7 +48,7 @@ _prmarmot-cli() {
     argument)
       curcontext=${curcontext%:*:*}:prmarmot-cli-$line[1]:
       case $line[1] in
-        mine|authored|review|reviews)
+        mine|authored|review|reviews|all|all-open)
           local -a board
           board=(
             '(-f --format --json)'{-f+,--format=}'[output format]:format:(table markdown json)'
@@ -58,11 +59,18 @@ _prmarmot-cli() {
             '--snoozed[show snoozed PRs instead of collapsing them]'
             '--pages=[result pages to load per queue]:pages:(1 2 3 4 5)'
           )
-          if [[ $line[1] == mine || $line[1] == authored ]]; then
-            board+=('--authored[with --all-repos: only PRs you authored]')
-          else
-            board+=('--sort=[order inside the pickup sections, longest wait or smallest change first]:order:(wait smallest)')
-          fi
+          case $line[1] in
+            mine|authored)
+              board+=('--authored[with --all-repos: only PRs you authored]')
+              ;;
+            review|reviews)
+              board+=('--sort=[order inside the pickup sections, longest wait or smallest change first]:order:(wait smallest)')
+              ;;
+            *)
+              # All open covers one repository.
+              scope=('--repo=[one repository]:repository (OWNER/NAME): ')
+              ;;
+          esac
           _arguments -s $help $scope $view $board && ret=0
           ;;
         watch)

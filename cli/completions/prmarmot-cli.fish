@@ -3,8 +3,8 @@
 # Install:
 #   prmarmot-cli completions fish > ~/.config/fish/completions/prmarmot-cli.fish
 
-set -l commands mine authored review reviews watch auth skill completions help
-set -l boards mine authored review reviews
+set -l commands mine authored review reviews all all-open watch auth skill completions help
+set -l boards mine authored review reviews all all-open
 set -l views $boards watch
 
 # `--until` takes a comma-separated list: offer each condition after the
@@ -15,6 +15,14 @@ function __prmarmot_cli_conditions
     for condition in ci-pass approved mergeable merged
         printf '%s%s\n' "$typed" $condition
     end
+end
+
+# True when the command, the first argument, is one of $argv. Unlike
+# __fish_seen_subcommand_from it ignores later words, such as the `all` in
+# `skill install --agent all`.
+function __prmarmot_cli_command
+    set -l words (commandline -opc)
+    test (count $words) -ge 2; and contains -- $words[2] $argv
 end
 
 # True for `watch` before any other argument: where `mine` or `review` may go.
@@ -29,6 +37,7 @@ complete -c prmarmot-cli -f
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -s V -l version -d 'Show the version'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a mine -d 'PRs you authored (My PRs)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a review -d 'PRs waiting for your review'
+complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a all -d 'Every open PR in one repository (needs --repo)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Print what changes, one event per line'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a auth -d 'Sign in to GitHub without the gh CLI'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a skill -d 'Print or install the coding-agent skill'
@@ -36,24 +45,24 @@ complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a compl
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a help -d 'Show help'
 complete -c prmarmot-cli -s h -l help -d 'Show help'
 
-# mine, review, and watch
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l repo -x -d 'One repository (OWNER/NAME)'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l all-repos -d 'Every repository involving you'
+# mine, review, all, and watch
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l repo -x -d 'One repository (OWNER/NAME)'
+complete -c prmarmot-cli -n "__prmarmot_cli_command mine authored review reviews watch" -l all-repos -d 'Every repository involving you'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from mine authored watch; and not __fish_seen_subcommand_from review reviews" -l authored -d 'With --all-repos: only PRs you authored'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l json -d 'JSON output'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l watched -d 'Only PRs you watch in PR Marmot'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l snoozed -d 'Include snoozed PRs'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l no-color -d 'Plain text'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $views" -l auth -x -a 'auto gh device token' -d 'How to get a token'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l json -d 'JSON output'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l watched -d 'Only PRs you watch in PR Marmot'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l snoozed -d 'Include snoozed PRs'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l no-color -d 'Plain text'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l auth -x -a 'auto gh device token' -d 'How to get a token'
 
-# mine and review
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -s f -l format -x -a 'table markdown json' -d 'Output format'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l changed -d 'Only PRs changed since you last looked'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l stale -d 'Only PRs that have waited too long for a reviewer'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l filter -x -a 'label: author: repo: is:stale' -d 'Only PRs matching a search query'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from review reviews; and not __fish_seen_subcommand_from watch" -l sort -x -a 'wait smallest' -d 'Longest wait or smallest change first'
-complete -c prmarmot-cli -n "__fish_seen_subcommand_from $boards; and not __fish_seen_subcommand_from watch" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
+# mine, review, and all
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -s f -l format -x -a 'table markdown json' -d 'Output format'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l changed -d 'Only PRs changed since you last looked'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l stale -d 'Only PRs that have waited too long for a reviewer'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l filter -x -a 'label: author: repo: is:stale' -d 'Only PRs matching a search query'
+complete -c prmarmot-cli -n "__prmarmot_cli_command review reviews" -l sort -x -a 'wait smallest' -d 'Longest wait or smallest change first'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
 
 # watch
 complete -c prmarmot-cli -n __prmarmot_cli_watch_view_expected -a 'mine review' -d 'View to watch'

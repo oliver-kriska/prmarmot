@@ -25,6 +25,10 @@ pub enum Mode {
     Authored,
     /// PRs waiting for your review — the incoming queue.
     Review,
+    /// Every open PR in one repository, most recently updated first. Needs
+    /// [`BoardScope::Repository`]: with all repositories a fetch fails with
+    /// [`FfiError::Invalid`] carrying `all_open_needs_repository()`.
+    AllOpen,
 }
 
 impl From<Mode> for core_board::Mode {
@@ -32,6 +36,7 @@ impl From<Mode> for core_board::Mode {
         match mode {
             Mode::Authored => Self::Authored,
             Mode::Review => Self::Review,
+            Mode::AllOpen => Self::AllOpen,
         }
     }
 }
@@ -514,6 +519,11 @@ pub struct Board {
     /// everything. Absent from boards cached before it existed.
     #[serde(default)]
     pub access_notice: Option<String>,
+    /// How many open PRs the search found in all, loaded or not — "60 of 759
+    /// open". All open and My PRs carry it; the review queue's two searches
+    /// overlap, so it has none. Absent from boards cached before it existed.
+    #[serde(default)]
+    pub total: Option<u64>,
 }
 
 /// The configuration that changes what a board says. Mirrors the desktop

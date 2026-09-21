@@ -25,10 +25,14 @@ use gpui_component::{
 };
 use prmarmot_core::board::{BoardScope, Mode};
 use prmarmot_core::layout::Sort;
+use prmarmot_core::search::{local_only_terms, RemoteFilter};
+use prmarmot_core::status::{
+    all_open_local_filter_notice, all_open_needs_repository, all_open_no_match_text,
+};
 
 use crate::state::{AppState, SetupStatus};
 use crate::table::{
-    changed_marker_tooltip, columns_for, detail_text, label_chip, matches_filter,
+    changed_marker_tooltip, columns_for, detail_text, label_chip, matches_search,
     take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule,
     TableWidthClass,
 };
@@ -39,6 +43,13 @@ use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion}
 gpui::actions!(prmarmot, [CloseDetails, FocusSearch]);
 
 const ALL_REPOS_LABEL: &str = "All repositories";
+
+fn search_placeholder(mode: Mode) -> &'static str {
+    match mode {
+        Mode::AllOpen => "Filter open PRs…",
+        Mode::Authored | Mode::Review => "Filter loaded PRs…",
+    }
+}
 /// Chips (`label:`, `author:`, `repo:`, `is:`) the search box holds at most.
 const MAX_FILTER_CHIPS: usize = 8;
 
@@ -98,6 +109,8 @@ pub struct RootView {
     discovering_repos: bool,
     repo_status: String,
     search: Entity<InputState>,
+    /// The view the search box's placeholder was last written for.
+    placeholder_mode: Mode,
     /// The words typed in the search box.
     filter_text: String,
     /// The search box's chips, ANDed with the typed words.
@@ -241,7 +254,7 @@ impl RootView {
             select
         };
 
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter loaded PRs…"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder(mode)));
         cx.subscribe_in(
             &search,
             window,
@@ -299,6 +312,14 @@ impl RootView {
             if generation != this.seen_generation {
                 this.seen_generation = generation;
                 this.sync_table(cx);
+                // Load more's rows join their sections, not the bottom.
+                if let Some((_, added)) = state
+                    .read(cx)
+                    .loaded_more
+                    .filter(|&(landed, _)| landed == generation)
+                {
+                    this.show_feedback(loaded_more_text(added), cx);
+                }
             }
             cx.notify();
         })
@@ -431,6 +452,7 @@ impl RootView {
             configured_repos: launch.repos,
             pinned_repos: launch.pinned_repos,
             search_open: false,
+            placeholder_mode: mode,
             discovering_repos: false,
             repo_status: String::new(),
             search,
@@ -558,6 +580,12 @@ impl RootView {
     fn sync_table(&mut self, cx: &mut Context<Self>) {
         #[cfg(feature = "perf")]
         let _timer = crate::perf::RebuildTimer::start();
+        // All open asks GitHub for the label and author chips. Only chips
+        // count, and they change on a click or a finished term, never on a
+        // keystroke; unchanged chips cost nothing here.
+        let remote = RemoteFilter::from_chips(&self.filter_chips);
+        self.state
+            .update(cx, |state, cx| state.set_remote_filter(remote, cx));
         let state = self.state.read(cx);
         let stale = StaleRule {
             now: Utc::now(),
@@ -566,13 +594,7 @@ impl RootView {
         let matching: Vec<_> = state
             .rows
             .iter()
-            .filter(|row| {
-                matches_filter(row, &self.filter_text, stale)
-                    && self
-                        .filter_chips
-                        .iter()
-                        .all(|chip| chip.matches(row, stale))
-            })
+            .filter(|row| matches_search(row, &self.filter_text, &self.filter_chips, stale))
             .collect();
         self.changed_count = matching
             .iter()
@@ -647,10 +669,12 @@ impl RootView {
         self.details_open = false;
         let all_repos = scope.is_all();
         self.state.update(cx, |s, cx| s.switch_scope(scope, cx));
+        // All repositories has no All open; the state fell back to My PRs.
         let mode = self.state.read(cx).mode;
         let cols = self.columns_for_current(mode, cx);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_scope(all_repos);
+            table.delegate_mut().set_mode(mode);
             table.delegate_mut().set_columns(cols);
             table.refresh(cx);
         });
@@ -1005,6 +1029,10 @@ impl RootView {
         if current == mode {
             return;
         }
+        if mode == Mode::AllOpen && self.state.read(cx).scope.is_all() {
+            self.show_feedback(all_open_needs_repository(), cx);
+            return;
+        }
         // Remember the PR we're leaving by URL (stable across the refresh that
         // the target queue will run).
         if let Some(ix) = self.table.read(cx).selected_row() {
@@ -1035,6 +1063,7 @@ impl RootView {
             match mode {
                 Mode::Authored => "authored",
                 Mode::Review => "review",
+                Mode::AllOpen => "all",
             },
         );
     }
@@ -1191,14 +1220,19 @@ impl RootView {
                 }
             }),
             "v" if !platform => {
-                let mode = match self.state.read(cx).mode {
+                let state = self.state.read(cx);
+                let mode = match state.mode {
                     Mode::Authored => Mode::Review,
-                    Mode::Review => Mode::Authored,
+                    // All open is skipped where it cannot load.
+                    Mode::Review if state.scope.is_all() => Mode::Authored,
+                    Mode::Review => Mode::AllOpen,
+                    Mode::AllOpen => Mode::Authored,
                 };
                 self.select_mode(mode, cx);
             }
             "1" if !platform => self.select_mode(Mode::Authored, cx),
             "2" if !platform => self.select_mode(Mode::Review, cx),
+            "3" if !platform => self.select_mode(Mode::AllOpen, cx),
             "t" if !platform => {
                 self.theme_pref = self.theme_pref.next();
                 self.theme_pref.apply(window, cx);
@@ -1573,10 +1607,11 @@ impl RootView {
                     Button::new("open-search")
                         .small()
                         .label("Search · /")
-                        .tooltip(if cfg!(target_os = "macos") {
-                            "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository."
-                        } else {
-                            "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository."
+                        .tooltip(match (state.mode, cfg!(target_os = "macos")) {
+                            (Mode::AllOpen, true) => "Filter open PRs (/ or ⌘F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
+                            (Mode::AllOpen, false) => "Filter open PRs (/ or Ctrl F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
+                            (_, true) => "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository.",
+                            (_, false) => "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository.",
                         })
                         .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
                 )
@@ -1867,14 +1902,15 @@ impl RootView {
                 .rows
                 .iter()
                 .filter(|row| {
-                    needs_you_here(state.mode, row.category)
-                        && state.snooze_description(&row.id).is_none()
+                    row_needs_you(state.mode, row) && state.snooze_description(&row.id).is_none()
                 })
                 .count(),
             badge: state.badge_count,
             badge_complete: state.badge_coverage_complete,
             tracked_loaded: state.tracked_loaded,
             tracked_total: state.tracked_total,
+            total: state.total,
+            filtered: !state.rows_filter.is_empty(),
         });
         // Status priority: a hard error wins; then a rate-limit back-off (so a
         // switch into a paused window shows "paused", not a permanent
@@ -1909,11 +1945,15 @@ impl RootView {
         let selected_mode = match state.mode {
             Mode::Authored => 0,
             Mode::Review => 1,
+            Mode::AllOpen => 2,
         };
         // The queue is a primary scope, not a hidden preference. A compact
-        // toolbar tab view keeps both choices visible and the selected state
-        // persistent (Apple HIG); equal widths prevent either queue from
-        // appearing subordinate. Keyboard 1/2 and v remain accelerators.
+        // toolbar tab view keeps every choice visible and the selected state
+        // persistent (Apple HIG); equal widths prevent any queue from
+        // appearing subordinate. Keyboard 1/2/3 and v remain accelerators.
+        // All open needs one repository, so with all of them it stays in
+        // place, disabled, and says why on hover rather than disappearing.
+        let all_repos = state.scope.is_all();
         let view_switcher = TabBar::new("view-switcher")
             .small()
             .segmented()
@@ -1939,10 +1979,27 @@ impl RootView {
                     FontWeight::MEDIUM
                 },
             ))
+            .child(
+                Tab::new()
+                    .label("All open")
+                    .w(px(104.))
+                    .disabled(all_repos)
+                    .when(all_repos, |tab| {
+                        tab.tooltip(|window, cx| {
+                            Tooltip::new(all_open_needs_repository()).build(window, cx)
+                        })
+                    })
+                    .font_weight(if state.mode == Mode::AllOpen {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    }),
+            )
             .on_click(cx.listener(|this, index: &usize, _, cx| {
                 let mode = match index {
                     0 => Mode::Authored,
-                    _ => Mode::Review,
+                    1 => Mode::Review,
+                    _ => Mode::AllOpen,
                 };
                 this.select_mode(mode, cx);
             }));
@@ -2017,12 +2074,25 @@ impl RootView {
         let reach_notice = state
             .token_reach_hint
             .then(|| prmarmot_core::status::pasted_token_reach_notice().to_owned());
+        // All open: part of the search matched only the loaded PRs, and
+        // GitHub has more, so a short list is not the repository's answer.
+        let filter_notice = (state.mode == Mode::AllOpen)
+            .then(|| {
+                all_open_local_filter_notice(
+                    &local_only_terms(&self.filter_text, &self.filter_chips, &state.rows_filter),
+                    state.rows.len(),
+                    state.total,
+                    state.pagination_can_load_more(),
+                )
+            })
+            .flatten();
         v_flex()
             .flex_shrink_0()
             .children(
                 access_notice
                     .into_iter()
                     .chain(reach_notice)
+                    .chain(filter_notice)
                     .enumerate()
                     .map(|(index, notice)| {
                         let tooltip = notice.clone();
@@ -2460,9 +2530,9 @@ fn view_toggle(
 // The header sentence, the toggle tooltips and the two duration phrasings
 // live in `prmarmot_core::status`, so the iPad shows the same words.
 use prmarmot_core::status::{
-    changed_toggle_tooltip, header_counts as core_header_counts, human_duration, needs_you_here,
-    queue_loading_text, queue_sync_text as core_queue_sync_text, relative, snoozed_toggle_tooltip,
-    BadgeName, HeaderCounts,
+    changed_toggle_tooltip, header_counts as core_header_counts, human_duration, loaded_more_text,
+    queue_loading_text, queue_sync_text as core_queue_sync_text, relative, row_needs_you,
+    snoozed_toggle_tooltip, BadgeName, HeaderCounts,
 };
 
 /// The header's count line and the tooltip that explains it, with the badge
@@ -2627,6 +2697,15 @@ impl Render for RootView {
         if self.selected_row_url(cx).is_none() {
             self.details_open = false;
         }
+        // The view can change without a window at hand (a scope change falls
+        // back from All open), so the placeholder follows it here.
+        let mode = self.state.read(cx).mode;
+        if self.placeholder_mode != mode {
+            self.placeholder_mode = mode;
+            self.search.update(cx, |input, cx| {
+                input.set_placeholder(search_placeholder(mode), window, cx)
+            });
+        }
         let theme = cx.theme();
         // Body state from truth, not `generation` (which also bumps on a switch
         // to an unseen queue and on a repo change): a queue has loaded ONLY
@@ -2634,6 +2713,23 @@ impl Render for RootView {
         // reason it's not showing rows — paused for back-off, a first-fetch
         // error, or still loading — never a stale "Loading…" over an error or
         // a premature "empty" over a fetch in flight (critique #6).
+        // All open's empty filter result is exact when GitHub answered all of
+        // it for these rows, or when nothing is left to load.
+        let no_match = {
+            let s = self.state.read(cx);
+            let exact = s.mode == Mode::AllOpen
+                && (!s.truncated
+                    || local_only_terms(&self.filter_text, &self.filter_chips, &s.rows_filter)
+                        .is_empty());
+            if exact {
+                all_open_no_match_text(&self.filter_summary())
+            } else {
+                format!(
+                    "No loaded PRs match {} — clear the search or load more.",
+                    self.filter_summary()
+                )
+            }
+        };
         let body = {
             let s = self.state.read(cx);
             if s.setup != SetupStatus::Ready {
@@ -2704,10 +2800,7 @@ impl Render for RootView {
                                     .size_full()
                                     .justify_center()
                                     .text_color(theme.muted_foreground)
-                                    .child(format!(
-                                        "No loaded PRs match {} — clear the search or load more.",
-                                        self.filter_summary()
-                                    )),
+                                    .child(no_match),
                             ),
                         BodyState::Loaded => this.child(
                             DataTable::new(&self.table)

@@ -288,7 +288,18 @@ fn row_context(row: &BoardRow, mode: Mode) -> String {
             None => note,
         },
         (Mode::Authored, _) => note,
-        (Mode::Review, _) => {
+        // All open's Note leaves the author to the table's Author column; a
+        // copied group has no such column, so it says whose PR it is. One
+        // asking you for a review reads as in the review queue.
+        (Mode::AllOpen, category) if category != Category::Todo => {
+            let by = format!("by {}", row.author.as_deref().unwrap_or("unknown author"));
+            if note.is_empty() || note == "draft" {
+                by
+            } else {
+                format!("{by} · {note}")
+            }
+        }
+        (Mode::Review | Mode::AllOpen, _) => {
             let mut parts = vec![format!(
                 "by {}",
                 row.author.as_deref().unwrap_or("unknown author")
@@ -597,5 +608,17 @@ mod tests {
         let mut review_draft = row(5, Category::Draft);
         review_draft.note = "· draft (not ready)".into();
         assert_eq!(row_context(&review_draft, Mode::Review), "by dana");
+
+        // All open's Note does not name the author; a shared line must.
+        let mut theirs = row(12, Category::Action);
+        theirs.author = Some("dana".into());
+        theirs.note = "merge conflict · CI failing".into();
+        assert_eq!(
+            row_context(&theirs, Mode::AllOpen),
+            "by dana · merge conflict · CI failing"
+        );
+        theirs.category = Category::Draft;
+        theirs.note = "draft".into();
+        assert_eq!(row_context(&theirs, Mode::AllOpen), "by dana");
     }
 }

@@ -1,5 +1,8 @@
 //! The board search grammar: free words plus `label:`, `author:`, `repo:` and
-//! `is:stale`, ANDed together, matched against rows already loaded.
+//! `is:stale`, matched against rows already loaded. Words, labels and
+//! `is:stale` must all match; several authors, or several repositories, match
+//! any one of them — a PR has one of each, and GitHub's search reads them the
+//! same way, which All open relies on when it sends them there.
 //!
 //! It lives in core, not in a front end, because otherwise the desktop app and
 //! the iPad would drift on what `label:"help wanted"` means. Drawing the chips
@@ -235,14 +238,180 @@ pub fn take_filter_chips(text: &str, all: bool) -> (Vec<FilterChip>, String) {
     (chips, rest)
 }
 
-/// Case-insensitive AND search across the fields users scan in the board:
-/// every free word must appear somewhere, and every qualifier (`label:`,
-/// `author:`, `repo:`, `is:stale`) must match its field exactly. Filtering is
-/// local; it must not trigger GitHub requests on each keystroke.
+/// At most this many labels, and this many authors, are sent to GitHub. The
+/// search box holds fewer chips than that; the bound keeps the query short
+/// whatever a front end allows.
+pub const MAX_REMOTE_TERMS: usize = 8;
+
+/// The part of a filter that GitHub's search answers exactly: labels and
+/// authors. All open loads a page of a repository that may hold a thousand
+/// open PRs, so filtering only the loaded rows would state a confident wrong
+/// answer; these go into the search itself, and the count and Load more then
+/// cover the whole repository.
+///
+/// What GitHub does with them (measured 2026-09-21): qualifiers ignore case;
+/// several `label:` must all match; several `author:` match any of them; an
+/// unknown label or author matches nothing, with no error. An app's PRs carry
+/// its bare login (`dependabot`) yet match only `author:app/dependabot`, so each
+/// author is sent in both forms. The loaded rows are still filtered locally by
+/// every chip, so the result means exactly what the chips say.
+///
+/// Free words, `repo:` and `is:stale` stay local: GitHub cannot answer them
+/// the same way (`is:stale` is PR Marmot's own rule).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct RemoteFilter {
+    labels: Vec<String>,
+    authors: Vec<String>,
+}
+
+impl RemoteFilter {
+    /// The chips GitHub can answer, lowercased, deduplicated, and sorted, so
+    /// the same filter in another order or case is the same search.
+    pub fn from_chips(chips: &[FilterChip]) -> Self {
+        let mut labels: Vec<String> = chips
+            .iter()
+            .filter(|chip| chip.qualifier == Qualifier::Label)
+            .filter_map(|chip| remote_label(&chip.value))
+            .collect();
+        let mut authors: Vec<String> = chips
+            .iter()
+            .filter(|chip| chip.qualifier == Qualifier::Author)
+            .filter_map(|chip| remote_author(&chip.value))
+            .collect();
+        for values in [&mut labels, &mut authors] {
+            values.sort();
+            values.dedup();
+            values.truncate(MAX_REMOTE_TERMS);
+        }
+        Self { labels, authors }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.authors.is_empty()
+    }
+
+    /// The qualifiers to append to a search, each with a leading space, or
+    /// nothing. Labels are always quoted; authors are logins and never need it.
+    pub fn qualifiers(&self) -> String {
+        let mut out = String::new();
+        for label in &self.labels {
+            out.push_str(&format!(" label:\"{label}\""));
+        }
+        for author in &self.authors {
+            out.push_str(&format!(" author:{author} author:app/{author}"));
+        }
+        out
+    }
+
+    /// Whether GitHub answers `chip`, rather than only the loaded rows.
+    pub fn sends(&self, chip: &FilterChip) -> bool {
+        match chip.qualifier {
+            Qualifier::Label => {
+                remote_label(&chip.value).is_some_and(|label| self.labels.contains(&label))
+            }
+            Qualifier::Author => {
+                remote_author(&chip.value).is_some_and(|author| self.authors.contains(&author))
+            }
+            Qualifier::Repo | Qualifier::Is => false,
+        }
+    }
+}
+
+/// A label GitHub can be asked for inside quotes: at most 50 characters (the
+/// longest label GitHub allows), no quote or backslash, no control character.
+fn remote_label(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.chars().count() <= 50
+        && !value
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_control()))
+    .then(|| value.to_lowercase())
+}
+
+/// A GitHub login: 1–39 letters, digits, or hyphens, not starting with one.
+fn remote_author(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 39
+        && !value.starts_with('-')
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    .then(|| value.to_lowercase())
+}
+
+/// The active search terms that filter only the rows already loaded, as the
+/// reader typed them: free words, and the chips GitHub does not answer. When
+/// a view is truncated these can hide a match that is not loaded yet, and the
+/// front end says so.
+pub fn local_only_terms(text: &str, chips: &[FilterChip], remote: &RemoteFilter) -> Vec<String> {
+    let mut terms: Vec<String> = chips
+        .iter()
+        .filter(|chip| !chip.value.is_empty() && !remote.sends(chip))
+        .map(FilterChip::term)
+        .collect();
+    terms.extend(filter_terms(text).into_iter().filter_map(|term| {
+        let chip = term
+            .qualifier
+            .map(|q| FilterChip::new(q, term.value.as_str()));
+        match chip {
+            // `label:` still being typed filters nothing yet.
+            _ if term.value.is_empty() => None,
+            Some(chip) if remote.sends(&chip) => None,
+            Some(chip) => Some(chip.term()),
+            None => Some(format!("“{}”", term.value)),
+        }
+    }));
+    terms
+}
+
+/// Case-insensitive search across the fields users scan in the board: every
+/// free word must appear somewhere, every `label:` and `is:stale` must match
+/// its field exactly, and of several `author:` (or `repo:`) terms one must
+/// match. Filtering is local; it must not trigger GitHub requests on each
+/// keystroke.
 pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
     let terms = filter_terms(query);
+    let terms: Vec<(Option<Qualifier>, &str)> = terms
+        .iter()
+        .map(|term| (term.qualifier, term.value.as_str()))
+        .collect();
+    matches_terms(row, &terms, stale)
+}
+
+/// [`matches_filter`] over the search box as a whole: its chips and the words
+/// still typed, read as one search.
+pub fn matches_search(row: &BoardRow, text: &str, chips: &[FilterChip], stale: StaleRule) -> bool {
+    let typed = filter_terms(text);
+    let terms: Vec<(Option<Qualifier>, &str)> = chips
+        .iter()
+        .map(|chip| (Some(chip.qualifier), chip.value.as_str()))
+        .chain(
+            typed
+                .iter()
+                .map(|term| (term.qualifier, term.value.as_str())),
+        )
+        .collect();
+    matches_terms(row, &terms, stale)
+}
+
+fn matches_terms(row: &BoardRow, terms: &[(Option<Qualifier>, &str)], stale: StaleRule) -> bool {
+    // `label:` alone is still being typed; it filters nothing yet.
+    let terms: Vec<_> = terms
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .collect();
     if terms.is_empty() {
         return true;
+    }
+    let any_of = |qualifier: Qualifier| {
+        let mut values = terms
+            .iter()
+            .filter(|(q, _)| *q == Some(qualifier))
+            .peekable();
+        values.peek().is_none() || values.any(|(_, value)| qualifier.matches(row, value, stale))
+    };
+    if !any_of(Qualifier::Author) || !any_of(Qualifier::Repo) {
+        return false;
     }
     let text = format!(
         "#{} {} {} {} {} {} {}",
@@ -255,10 +424,10 @@ pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
         row.note
     )
     .to_lowercase();
-    terms.iter().all(|term| match term.qualifier {
-        None => text.contains(&term.value.to_lowercase()),
-        // `label:` alone is still being typed; it filters nothing yet.
-        Some(qualifier) => term.value.is_empty() || qualifier.matches(row, &term.value, stale),
+    terms.iter().all(|(qualifier, value)| match qualifier {
+        None => text.contains(&value.to_lowercase()),
+        Some(Qualifier::Author | Qualifier::Repo) => true,
+        Some(qualifier) => qualifier.matches(row, value, stale),
     })
 }
 
@@ -536,6 +705,59 @@ mod tests {
         assert_eq!(
             take_filter_chips("is:stale ", false),
             (vec![chip], String::new())
+        );
+    }
+
+    #[test]
+    fn all_open_sends_labels_quoted_and_authors_as_user_or_app() {
+        let chips = [
+            FilterChip::new(Qualifier::Label, "Help Wanted"),
+            FilterChip::new(Qualifier::Label, "help wanted"),
+            FilterChip::new(Qualifier::Author, "Dependabot"),
+            FilterChip::new(Qualifier::Label, r#"has "quotes""#),
+            FilterChip::new(Qualifier::Author, "not a login"),
+            FilterChip::new(Qualifier::Repo, "acme/widgets"),
+            FilterChip::new(Qualifier::Is, "stale"),
+        ];
+        let remote = RemoteFilter::from_chips(&chips);
+        // A bot's login is `dependabot`, and GitHub finds its PRs only as
+        // `app/dependabot`, so each author goes both ways.
+        assert_eq!(
+            remote.qualifiers(),
+            r#" label:"help wanted" author:dependabot author:app/dependabot"#
+        );
+        assert_eq!(
+            remote,
+            RemoteFilter::from_chips(&[chips[2].clone(), chips[1].clone()]),
+            "the same filter in another order or case is the same search"
+        );
+        assert_eq!(
+            local_only_terms("login fix", &chips, &remote),
+            [
+                r#"label:"has "quotes"""#,
+                r#"author:"not a login""#,
+                "repo:acme/widgets",
+                "is:stale",
+                "“login”",
+                "“fix”",
+            ]
+        );
+        assert!(RemoteFilter::from_chips(&chips[5..]).is_empty());
+    }
+
+    #[test]
+    fn all_open_sends_a_bounded_number_of_labels_and_says_which_stayed_local() {
+        let chips: Vec<FilterChip> = (0..MAX_REMOTE_TERMS + 2)
+            .map(|n| FilterChip::new(Qualifier::Label, format!("area-{n:02}")))
+            .collect();
+        let remote = RemoteFilter::from_chips(&chips);
+        assert_eq!(
+            remote.qualifiers().matches("label:").count(),
+            MAX_REMOTE_TERMS
+        );
+        assert_eq!(
+            local_only_terms("", &chips, &remote),
+            [r#"label:area-08"#, r#"label:area-09"#]
         );
     }
 }

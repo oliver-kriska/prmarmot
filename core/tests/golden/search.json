@@ -293,6 +293,37 @@
         206
       ]
     },
+    "author:alice author:bob": {
+      "authored": [],
+      "chips": [
+        "author:alice",
+        "author:bob"
+      ],
+      "rebuilt": "author:alice author:bob",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        202,
+        206,
+        205
+      ]
+    },
+    "author:alice author:bob label:bug": {
+      "authored": [],
+      "chips": [
+        "author:alice",
+        "author:bob",
+        "label:bug"
+      ],
+      "rebuilt": "author:alice author:bob label:bug",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": [
+        203
+      ]
+    },
     "author:alice repo:acme/widgets": {
       "authored": [],
       "chips": [
@@ -566,6 +597,17 @@
         204
       ]
     },
+    "label:bug label:\"help wanted\"": {
+      "authored": [],
+      "chips": [
+        "label:bug",
+        "label:\"help wanted\""
+      ],
+      "rebuilt": "label:bug label:\"help wanted\"",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
     "repo:ACME/Widgets": {
       "authored": [
         115,
@@ -652,6 +694,68 @@
         "repo:acme/widgets"
       ],
       "rebuilt": "repo:acme/widgets",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
+    },
+    "repo:acme/widgets repo:acme/other": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [
+        "repo:acme/widgets",
+        "repo:acme/other"
+      ],
+      "rebuilt": "repo:acme/widgets repo:acme/other",
       "rebuiltAuthored": [
         115,
         114,

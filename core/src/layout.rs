@@ -11,7 +11,8 @@ use crate::size::ChangeSize;
 /// Which band a header introduces. Stack sub-headers sit inside a band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionKind {
-    /// Authored PRs awaiting merge that are already approved.
+    /// PRs awaiting merge that are already approved: your own in My PRs, and
+    /// anyone's in All open.
     Approved,
     Category(Category),
     Stack,
@@ -83,24 +84,17 @@ pub fn layout<'a>(
         .collect();
     order.retain(|&ix| !snoozed.contains(&rows[ix].id));
     let key = |row: &'a BoardRow| {
-        let approved = is_approved_section(mode, row);
-        let section = match row.category {
-            Category::Await if approved => 0,
-            Category::Action | Category::Todo => 1,
-            Category::Available => 2,
-            Category::Await | Category::Done => 3,
-            Category::Draft => 4,
-        };
-        let approved_action = mode == Mode::Authored
+        let kind = section_kind(mode, row);
+        let section = section_rank(kind);
+        let approved_action = matches!(mode, Mode::Authored | Mode::AllOpen)
             && row.category == Category::Action
             && row.review_state == ReviewState::Approved;
         // Where a section is about getting picked up, the longest wait leads
         // and rows that are not waiting follow in their incoming order.
-        let picked_up_by_wait = match row.category {
-            Category::Todo | Category::Available => true,
-            Category::Await => !approved,
-            _ => false,
-        };
+        let picked_up_by_wait = matches!(
+            kind,
+            SectionKind::Category(Category::Todo | Category::Available | Category::Await)
+        );
         let wait = row.waiting_since.as_deref().filter(|_| picked_up_by_wait);
         let by_size = sort == Sort::Smallest
             && mode == Mode::Review
@@ -118,26 +112,17 @@ pub fn layout<'a>(
     order.sort_by(|&a, &b| key(&rows[a]).cmp(&key(&rows[b])));
     let mut i = 0;
     while i < order.len() {
-        let row = &rows[order[i]];
-        let cat = row.category;
-        let approved = is_approved_section(mode, row);
+        let kind = section_kind(mode, &rows[order[i]]);
         let start = i;
-        while i < order.len()
-            && rows[order[i]].category == cat
-            && is_approved_section(mode, &rows[order[i]]) == approved
-        {
+        while i < order.len() && section_kind(mode, &rows[order[i]]) == kind {
             i += 1;
         }
         display.push(LayoutItem::Header {
-            kind: if approved {
-                SectionKind::Approved
-            } else {
-                SectionKind::Category(cat)
-            },
-            label: if approved {
-                "Approved"
-            } else {
-                group_label(mode, cat, all_repos)
+            kind,
+            label: match kind {
+                SectionKind::Approved => "Approved",
+                SectionKind::Category(cat) => group_label(mode, cat, all_repos),
+                SectionKind::Stack | SectionKind::Snoozed => "Other",
             }
             .into(),
             count: Some(i - start),
@@ -215,10 +200,36 @@ pub fn layout<'a>(
     display
 }
 
-/// Authored PRs waiting to merge that already carry an approval get their own
-/// band ahead of Needs action, without changing the core category.
+/// Which section a row sits in: its category, except that an approved PR
+/// waiting to merge gets the Approved band.
+fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
+    if is_approved_section(mode, row) {
+        SectionKind::Approved
+    } else {
+        SectionKind::Category(row.category)
+    }
+}
+
+/// Section order, the same in every view: what is done leads (Approved), then
+/// what needs you, then what waits, then drafts. All open holds both a review
+/// asked of you and PRs that need attention, and the review comes first.
+fn section_rank(kind: SectionKind) -> u8 {
+    match kind {
+        SectionKind::Approved => 0,
+        SectionKind::Category(Category::Todo) => 1,
+        SectionKind::Category(Category::Action) => 2,
+        SectionKind::Category(Category::Available) => 3,
+        SectionKind::Category(Category::Await | Category::Done) => 4,
+        SectionKind::Category(Category::Draft) => 5,
+        SectionKind::Stack | SectionKind::Snoozed => 6,
+    }
+}
+
+/// PRs waiting to merge that already carry an approval get their own band
+/// ahead of Needs action, without changing the core category: in My PRs,
+/// Involving me and All open alike.
 pub fn is_approved_section(mode: Mode, row: &BoardRow) -> bool {
-    mode == Mode::Authored
+    matches!(mode, Mode::Authored | Mode::AllOpen)
         && row.category == Category::Await
         && row.review_state == ReviewState::Approved
 }
@@ -227,17 +238,84 @@ pub fn is_approved_section(mode: Mode, row: &BoardRow) -> bool {
 /// Todo/Done even though they share a sort rank.
 pub fn group_label(mode: Mode, cat: Category, all_repos: bool) -> &'static str {
     match (mode, cat, all_repos) {
-        (Mode::Authored, Category::Action, true) => "Needs attention",
-        (Mode::Authored, Category::Await, true) => "In progress",
+        // Everyone's PRs, yours among them: the section states the PR's
+        // condition rather than an action of yours.
+        (Mode::Authored, Category::Action, true) | (Mode::AllOpen, Category::Action, _) => {
+            "Needs attention"
+        }
+        (Mode::Authored, Category::Await, true) | (Mode::AllOpen, Category::Await, _) => {
+            "In progress"
+        }
         (Mode::Authored, Category::Action, false) => "Needs action",
         (Mode::Authored, Category::Await, false) => "Awaiting review",
-        (Mode::Review, Category::Todo, _) => "Requested from you",
+        (Mode::Review | Mode::AllOpen, Category::Todo, _) => "Requested from you",
         (Mode::Review, Category::Available, _) => "Available to review · no reviewer requested",
         (Mode::Review, Category::Done, _) => "Reviewed",
         (_, Category::Draft, _) => "Drafts",
         // Unreachable pairings (Action in Review etc.) — a calm fallback.
         _ => "Other",
     }
+}
+
+/// What puts a PR in a section, in one sentence: the hover text on a section
+/// header, and the iPad's long-press. It is paired with [`group_label`] by
+/// the same inputs and follows the derivation in `board.rs`: your own PR
+/// with no reviewer is blocked, someone else's is not, and an approved PR
+/// that is blocked stays with the blocked ones. `None` for a stack
+/// sub-header, which explains itself with its own hover.
+pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Option<String> {
+    // The views that hold other people's PRs next to yours.
+    let mixed = mode == Mode::AllOpen || (mode == Mode::Authored && all_repos);
+    Some(match (mode, kind) {
+        (_, SectionKind::Approved) => format!(
+            "Approved by at least one reviewer, with no changes requested and nothing blocking \
+             it. An approved PR that is blocked stays at the top of {}.",
+            group_label(mode, Category::Action, all_repos)
+        ),
+        (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Action)) if mixed => {
+            "Something blocks it: a merge conflict, failing CI, requested changes or \
+             unresolved comments, or no reviewer yet on one of yours. Someone else's PR here \
+             is theirs to fix."
+                .into()
+        }
+        (Mode::Authored, SectionKind::Category(Category::Action)) => {
+            "Your move: a merge conflict, failing CI, requested changes or unresolved comments, \
+             or no reviewer requested yet."
+                .into()
+        }
+        (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Await)) if mixed => {
+            "Nothing blocks it and nobody has approved it yet: no merge conflict, failing CI, \
+             requested changes or unresolved comments."
+                .into()
+        }
+        (Mode::Authored, SectionKind::Category(Category::Await)) => {
+            "Reviewers are asked or have commented, nothing blocks it, and nobody has approved \
+             it yet: you are waiting on them."
+                .into()
+        }
+        (Mode::Review | Mode::AllOpen, SectionKind::Category(Category::Todo)) => {
+            "Your review is requested, by name or through one of your teams, and you have not \
+             reviewed it yet."
+                .into()
+        }
+        (Mode::Review, SectionKind::Category(Category::Available)) => {
+            "Someone else's PR with no reviewer requested and no review from you. Optional: \
+             nobody assigned it to you."
+                .into()
+        }
+        (Mode::Review, SectionKind::Category(Category::Done)) => {
+            "You already reviewed it. The Note says when new commits came in since.".into()
+        }
+        (_, SectionKind::Category(Category::Draft)) => {
+            "Marked as a draft on GitHub, so not ready for review yet.".into()
+        }
+        (_, SectionKind::Snoozed) => {
+            "You snoozed these. Each comes back when its snooze ends, and counts toward nothing \
+             until then."
+                .into()
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -310,6 +388,154 @@ mod tests {
                 LayoutItem::Row(ix) => rows[*ix].number.to_string(),
             })
             .collect()
+    }
+
+    #[test]
+    fn all_open_groups_everyones_prs_by_state_with_your_reviews_first_among_the_work() {
+        let waiting = |mut r: BoardRow, since: &str| {
+            r.waiting_since = Some(since.into());
+            r
+        };
+        let approved = |mut r: BoardRow| {
+            r.review_state = ReviewState::Approved;
+            r
+        };
+        // As derive_rows hands them over: most recently updated first.
+        let rows = vec![
+            row(9, Category::Draft),
+            row(8, Category::Action),
+            waiting(row(7, Category::Todo), "2026-09-20T10:00:00Z"),
+            waiting(row(6, Category::Await), "2026-09-01T10:00:00Z"),
+            waiting(row(5, Category::Await), "2026-09-15T10:00:00Z"),
+            approved(row(4, Category::Action)),
+            approved(row(3, Category::Await)),
+            waiting(row(2, Category::Todo), "2026-09-10T10:00:00Z"),
+        ];
+        let items = layout(
+            &rows,
+            Mode::AllOpen,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Approved (1)",
+                "3",
+                "Requested from you (2)",
+                "2",
+                "7",
+                "Needs attention (2)",
+                "4",
+                "8",
+                "In progress (2)",
+                "6",
+                "5",
+                "Drafts (1)",
+                "9",
+            ],
+            "the other views' order and waits; an approved PR that needs attention leads its section"
+        );
+        let keys: Vec<&str> = items
+            .iter()
+            .filter_map(|item| match item {
+                LayoutItem::Header {
+                    kind,
+                    count: Some(_),
+                    ..
+                } => Some(kind.key()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, ["approved", "todo", "action", "await", "draft"]);
+    }
+
+    #[test]
+    fn every_section_says_what_puts_a_pr_there() {
+        let approved = |mut r: BoardRow| {
+            r.review_state = ReviewState::Approved;
+            r
+        };
+        let rows = [
+            approved(row(1, Category::Await)),
+            row(2, Category::Action),
+            row(3, Category::Await),
+            row(4, Category::Todo),
+            row(5, Category::Available),
+            row(6, Category::Done),
+            row(7, Category::Draft),
+            row(8, Category::Await),
+        ];
+        let snoozed: HashSet<String> = ["PR_8".to_string()].into();
+        for (mode, all_repos) in [
+            (Mode::Authored, false),
+            (Mode::Authored, true),
+            (Mode::Review, false),
+            (Mode::AllOpen, false),
+        ] {
+            // Only the categories this view's derivation produces.
+            let produced: Vec<BoardRow> = rows
+                .iter()
+                .filter(|row| match mode {
+                    Mode::Authored => matches!(
+                        row.category,
+                        Category::Action | Category::Await | Category::Draft
+                    ),
+                    Mode::Review => matches!(
+                        row.category,
+                        Category::Todo | Category::Available | Category::Done | Category::Draft
+                    ),
+                    Mode::AllOpen => !matches!(row.category, Category::Available | Category::Done),
+                })
+                .cloned()
+                .collect();
+            for item in layout(&produced, mode, all_repos, &snoozed, true, Sort::Wait) {
+                let LayoutItem::Header {
+                    kind,
+                    label,
+                    count: Some(_),
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                let text = section_explanation(mode, kind, all_repos)
+                    .unwrap_or_else(|| panic!("{mode:?} {label}: no explanation"));
+                assert!(text.ends_with('.'), "{label}: {text}");
+                assert!(!text.contains('\u{fe0f}'), "no emoji: {text}");
+            }
+        }
+        // The approved band points at the section a blocked approval stays in.
+        assert!(
+            section_explanation(Mode::Authored, SectionKind::Approved, false)
+                .unwrap()
+                .ends_with("stays at the top of Needs action.")
+        );
+        assert!(
+            section_explanation(Mode::AllOpen, SectionKind::Approved, false)
+                .unwrap()
+                .ends_with("stays at the top of Needs attention.")
+        );
+        // Where other people's PRs sit beside yours, their blockers are theirs.
+        for (mode, all_repos) in [(Mode::Authored, true), (Mode::AllOpen, false)] {
+            let text =
+                section_explanation(mode, SectionKind::Category(Category::Action), all_repos)
+                    .unwrap();
+            assert!(text.contains("theirs to fix"), "{text}");
+        }
+        assert!(section_explanation(
+            Mode::Authored,
+            SectionKind::Category(Category::Action),
+            false
+        )
+        .unwrap()
+        .starts_with("Your move"));
+        assert_eq!(
+            section_explanation(Mode::AllOpen, SectionKind::Stack, false),
+            None
+        );
     }
 
     #[test]

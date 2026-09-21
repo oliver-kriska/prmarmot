@@ -602,6 +602,8 @@ fn the_header_sentence_is_cores_and_names_the_icon_badge_not_a_dock() {
         badge_complete: true,
         tracked_loaded: 50,
         tracked_total: 64,
+        total: None,
+        filtered: false,
     });
     assert_eq!(
         summary.line,
