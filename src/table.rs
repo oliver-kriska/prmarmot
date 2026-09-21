@@ -795,7 +795,10 @@ impl TableDelegate for BoardTableDelegate {
         ));
         actions.push(("Snooze…", RowAction::Snooze));
         if self.snoozed.contains(&row.id) {
-            actions.push(("Cancel snooze", RowAction::CancelSnooze));
+            actions.push((
+                crate::attention_state::SNOOZE_CANCEL,
+                RowAction::CancelSnooze,
+            ));
         }
         for (index, (label, action)) in actions.into_iter().enumerate() {
             if index == 2 || index == 7 {

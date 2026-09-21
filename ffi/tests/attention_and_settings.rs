@@ -538,6 +538,59 @@ fn the_details_panel_and_its_copy_menu_come_from_core_not_from_swift() {
 }
 
 #[test]
+fn the_details_panel_says_what_each_line_is_so_swift_never_matches_words() {
+    let row = row(1);
+    let items = prmarmot_ffi::detail_items(row.clone(), Mode::Review, NOW, 0).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.text.clone())
+            .collect::<Vec<_>>(),
+        detail_lines(row, Mode::Review, NOW, 0).unwrap()
+    );
+    assert_eq!(items[0].kind, prmarmot_ffi::DetailKind::Note);
+    assert_eq!(items[1].kind, prmarmot_ffi::DetailKind::Facts);
+    assert_eq!(
+        items.last().map(|item| item.kind),
+        Some(prmarmot_ffi::DetailKind::Snapshot)
+    );
+    assert_eq!(
+        prmarmot_ffi::attention_line(true, true),
+        "Attention: changed · watched"
+    );
+}
+
+#[test]
+fn the_snooze_menu_and_the_row_facts_are_the_desktops_words() {
+    use prmarmot_ffi::{cancel_snooze_label, size_band_label, snooze_choice_label, SizeBand};
+    assert_eq!(
+        [
+            SnoozeChoice::OneHour,
+            SnoozeChoice::UntilTomorrow,
+            SnoozeChoice::WaitingPerson {
+                login: "alice".into(),
+            },
+            SnoozeChoice::WaitingCi,
+            SnoozeChoice::ReviewAgainWhenChanged,
+        ]
+        .map(snooze_choice_label),
+        [
+            "One hour",
+            "Until tomorrow",
+            "Waiting on alice",
+            "Waiting for CI",
+            "Review again when changed",
+        ]
+    );
+    assert_eq!(cancel_snooze_label(), "Cancel snooze");
+    assert_eq!(
+        [SizeBand::Small, SizeBand::Medium, SizeBand::Large].map(size_band_label),
+        ["Small", "Medium", "Large"]
+    );
+    assert_eq!(prmarmot_ffi::unresolved_label(2), "2 unresolved");
+}
+
+#[test]
 fn the_header_sentence_is_cores_and_names_the_icon_badge_not_a_dock() {
     let summary = prmarmot_ffi::header_summary(prmarmot_ffi::HeaderCounts {
         loaded: 56,

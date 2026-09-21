@@ -1387,23 +1387,23 @@ impl RootView {
             let mut options = v_flex().gap_2();
             let choices = [
                 (
-                    "One hour",
+                    crate::attention_state::SNOOZE_ONE_HOUR,
                     crate::attention_state::SnoozeCondition::Until {
                         deadline: Utc::now() + ChronoDuration::hours(1),
                     },
                 ),
                 (
-                    "Until tomorrow",
+                    crate::attention_state::SNOOZE_UNTIL_TOMORROW,
                     crate::attention_state::SnoozeCondition::Until {
                         deadline: Utc::now() + ChronoDuration::hours(24),
                     },
                 ),
                 (
-                    "Waiting for CI",
+                    crate::attention_state::SNOOZE_WAITING_CI,
                     crate::attention_state::AttentionState::waiting_ci(&row),
                 ),
                 (
-                    "Review again when changed",
+                    crate::attention_state::SNOOZE_REVIEW_AGAIN,
                     crate::attention_state::AttentionState::review_again(&row),
                 ),
             ];
@@ -1445,7 +1445,7 @@ impl RootView {
                 let id = row.id.clone();
                 options = options.child(
                     Button::new("cancel-snooze")
-                        .label("Cancel snooze")
+                        .label(crate::attention_state::SNOOZE_CANCEL)
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| state.cancel_snooze(&id, cx));
                             window.close_dialog(cx);
@@ -1834,18 +1834,10 @@ impl RootView {
                                         "",
                                     );
                                     let state = self.state.read(cx);
-                                    text.push_str(&format!(
-                                        "\nAttention: {} · {}",
-                                        if state.is_changed(&row.id) {
-                                            "changed"
-                                        } else {
-                                            "acknowledged"
-                                        },
-                                        if state.is_watched(&row.id) {
-                                            "watched"
-                                        } else {
-                                            "not watched"
-                                        }
+                                    text.push('\n');
+                                    text.push_str(&prmarmot_core::detail::attention_line(
+                                        state.is_changed(&row.id),
+                                        state.is_watched(&row.id),
                                     ));
                                     if let Some(snooze) = state.snooze_description(&row.id) {
                                         text.push_str(&format!("\n{snooze}"));

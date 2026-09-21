@@ -129,6 +129,20 @@ impl ReviewRelevant {
     }
 }
 
+/// The snooze menu's words, in the desktop's order: one place, so the
+/// desktop's dialog and the iPad's menu say the same thing. A person to wait
+/// on is [`waiting_on`], which is also that snooze's own description.
+pub const SNOOZE_ONE_HOUR: &str = "One hour";
+pub const SNOOZE_UNTIL_TOMORROW: &str = "Until tomorrow";
+pub const SNOOZE_WAITING_CI: &str = "Waiting for CI";
+pub const SNOOZE_REVIEW_AGAIN: &str = "Review again when changed";
+pub const SNOOZE_CANCEL: &str = "Cancel snooze";
+
+/// "Waiting on alice", on the menu and as the snooze's description.
+pub fn waiting_on(login: &str) -> String {
+    format!("Waiting on {login}")
+}
+
 impl Snooze {
     /// The sentence the desktop and the iPad show for this snooze. A deadline
     /// reads in the reader's time zone, `tz_offset_secs` east of UTC, like the
@@ -152,9 +166,9 @@ impl Snooze {
     fn describe(&self, until: impl FnOnce(&DateTime<Utc>) -> String) -> String {
         match &self.condition {
             SnoozeCondition::Until { deadline } => format!("Snoozed until {}", until(deadline)),
-            SnoozeCondition::WaitingPerson { login, .. } => format!("Waiting on {login}"),
+            SnoozeCondition::WaitingPerson { login, .. } => waiting_on(login),
             SnoozeCondition::WaitingCi { .. } => "Waiting for CI to finish".into(),
-            SnoozeCondition::ReviewAgainChanged { .. } => "Review again when changed".into(),
+            SnoozeCondition::ReviewAgainChanged { .. } => SNOOZE_REVIEW_AGAIN.into(),
         }
     }
 

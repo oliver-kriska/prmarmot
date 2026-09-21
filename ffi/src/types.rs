@@ -258,6 +258,16 @@ pub enum SizeBand {
     Large,
 }
 
+impl From<SizeBand> for core_size::SizeBand {
+    fn from(band: SizeBand) -> Self {
+        match band {
+            SizeBand::Small => Self::Small,
+            SizeBand::Medium => Self::Medium,
+            SizeBand::Large => Self::Large,
+        }
+    }
+}
+
 impl From<core_size::SizeBand> for SizeBand {
     fn from(band: core_size::SizeBand) -> Self {
         match band {

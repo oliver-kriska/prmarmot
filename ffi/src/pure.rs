@@ -128,6 +128,18 @@ pub fn size_band(size: ChangeSize) -> SizeBand {
     core_size::ChangeSize::from(size).band().into()
 }
 
+/// "Small", "Medium", "Large": the band's name as the desktop shows it.
+#[uniffi::export]
+pub fn size_band_label(band: SizeBand) -> String {
+    core_size::SizeBand::from(band).label().into()
+}
+
+/// "2 unresolved": open review threads as a short fact.
+#[uniffi::export]
+pub fn unresolved_label(count: u32) -> String {
+    core_cells::unresolved_label(count as usize)
+}
+
 /// "42 changed lines in 3 files".
 #[uniffi::export]
 pub fn size_lines_and_files(size: ChangeSize) -> String {
@@ -294,6 +306,75 @@ pub fn detail_lines(
         now,
         tz_offset_secs,
     ))
+}
+
+/// What a line of the Details panel is (`detail_items`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DetailKind {
+    Note,
+    Facts,
+    RequestedReviewers,
+    Reviews,
+    YourReview,
+    Waiting,
+    Size,
+    Labels,
+    Issue,
+    Stack,
+    Snapshot,
+}
+
+impl From<core_detail::DetailKind> for DetailKind {
+    fn from(kind: core_detail::DetailKind) -> Self {
+        use core_detail::DetailKind as Core;
+        match kind {
+            Core::Note => Self::Note,
+            Core::Facts => Self::Facts,
+            Core::RequestedReviewers => Self::RequestedReviewers,
+            Core::Reviews => Self::Reviews,
+            Core::YourReview => Self::YourReview,
+            Core::Waiting => Self::Waiting,
+            Core::Size => Self::Size,
+            Core::Labels => Self::Labels,
+            Core::Issue => Self::Issue,
+            Core::Stack => Self::Stack,
+            Core::Snapshot => Self::Snapshot,
+        }
+    }
+}
+
+/// One line of the Details panel and what it is.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DetailLine {
+    pub kind: DetailKind,
+    pub text: String,
+}
+
+/// [`detail_lines`], each with what it is, so the labels can be chips and
+/// the closing line muted without the front end matching on the words.
+#[uniffi::export]
+pub fn detail_items(
+    row: PullRequest,
+    mode: Mode,
+    now_epoch: i64,
+    tz_offset_secs: i32,
+) -> Result<Vec<DetailLine>, FfiError> {
+    let now = instant(now_epoch)?;
+    Ok(
+        core_detail::detail_items(&row.into_row(), mode.into(), now, tz_offset_secs)
+            .into_iter()
+            .map(|(kind, text)| DetailLine {
+                kind: kind.into(),
+                text,
+            })
+            .collect(),
+    )
+}
+
+/// "Attention: changed · watched", the Details panel's line under core's.
+#[uniffi::export]
+pub fn attention_line(changed: bool, watched: bool) -> String {
+    core_detail::attention_line(changed, watched)
 }
 
 /// The Details panel's Copy menu, in the desktop's order and wording.

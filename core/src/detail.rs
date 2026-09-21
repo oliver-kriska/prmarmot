@@ -48,6 +48,28 @@ pub fn my_review_text(review: &str) -> Option<&'static str> {
     }
 }
 
+/// What a line of the panel is, so a front end can draw one differently —
+/// the labels as chips, the closing line muted — without reading its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    /// The Note, without its glyphs.
+    Note,
+    /// Author, CI and the open threads.
+    Facts,
+    RequestedReviewers,
+    Reviews,
+    /// Your standing review, in the review queue.
+    YourReview,
+    /// How long it has waited for a reviewer, and since when.
+    Waiting,
+    Size,
+    Labels,
+    Issue,
+    Stack,
+    /// That the panel shows what was loaded, always last.
+    Snapshot,
+}
+
 /// Every line of the panel, in the order it is shown.
 ///
 /// `tz_offset_secs` is the reader's offset from UTC, used only for the
@@ -58,39 +80,61 @@ pub fn detail_lines(
     now: DateTime<Utc>,
     tz_offset_secs: i32,
 ) -> Vec<String> {
+    detail_items(row, mode, now, tz_offset_secs)
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect()
+}
+
+/// [`detail_lines`], each with what it is.
+pub fn detail_items(
+    row: &BoardRow,
+    mode: Mode,
+    now: DateTime<Utc>,
+    tz_offset_secs: i32,
+) -> Vec<(DetailKind, String)> {
     let mut lines = vec![
-        strip_note_glyphs(&row.note),
-        format!(
-            "Author: {} · CI: {} · Unresolved threads: {}",
-            row.author.as_deref().unwrap_or("unknown"),
-            row.ci.as_str(),
-            row.unresolved
+        (DetailKind::Note, strip_note_glyphs(&row.note)),
+        (
+            DetailKind::Facts,
+            format!(
+                "Author: {} · CI: {} · Unresolved threads: {}",
+                row.author.as_deref().unwrap_or("unknown"),
+                row.ci.as_str(),
+                row.unresolved
+            ),
         ),
-        format!(
-            "Requested reviewers: {}",
-            if row.requested.is_empty() {
-                "none".into()
-            } else {
-                row.requested.join(", ")
-            }
+        (
+            DetailKind::RequestedReviewers,
+            format!(
+                "Requested reviewers: {}",
+                if row.requested.is_empty() {
+                    "none".into()
+                } else {
+                    row.requested.join(", ")
+                }
+            ),
         ),
-        format!(
-            "Reviews: {}",
-            if row.reviews.is_empty() {
-                "none".into()
-            } else {
-                row.reviews
-                    .iter()
-                    .map(|review| {
-                        format!(
-                            "{} — {}",
-                            review.login.as_deref().unwrap_or("deleted user"),
-                            review_state_words(&review.state)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
+        (
+            DetailKind::Reviews,
+            format!(
+                "Reviews: {}",
+                if row.reviews.is_empty() {
+                    "none".into()
+                } else {
+                    row.reviews
+                        .iter()
+                        .map(|review| {
+                            format!(
+                                "{} — {}",
+                                review.login.as_deref().unwrap_or("deleted user"),
+                                review_state_words(&review.state)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ),
         ),
     ];
     // Your own PR has no review of yours to show.
@@ -100,7 +144,7 @@ pub fn detail_lines(
         .filter(|_| mode == Mode::Review)
         .and_then(my_review_text)
     {
-        lines.push(format!("Your review: {review}"));
+        lines.push((DetailKind::YourReview, format!("Your review: {review}")));
     }
     // Like the Note's "· 4d", with the start in the reader's time zone.
     let since = row
@@ -111,35 +155,57 @@ pub fn detail_lines(
         let zone = FixedOffset::east_opt(tz_offset_secs).unwrap_or_else(|| {
             FixedOffset::east_opt(0).expect("UTC is always a valid fixed offset")
         });
-        lines.push(format!(
-            "Waiting for a reviewer for {} (since {})",
-            wait_label(secs),
-            since.with_timezone(&zone).format("%Y-%m-%d %H:%M")
+        lines.push((
+            DetailKind::Waiting,
+            format!(
+                "Waiting for a reviewer for {} (since {})",
+                wait_label(secs),
+                since.with_timezone(&zone).format("%Y-%m-%d %H:%M")
+            ),
         ));
     }
     if let Some(size) = row.size {
-        lines.push(format!("Size: {}", size_text(size)));
+        lines.push((DetailKind::Size, format!("Size: {}", size_text(size))));
     }
     if !row.labels.is_empty() {
-        lines.push(format!("Labels: {}", row.labels.join(", ")));
-    }
-    if let Some(issue) = &row.issue {
-        lines.push(format!("Issue: {issue}"));
-    }
-    if let Some(stack) = &row.stack {
-        lines.push(format!(
-            "Stack #{} · Layer {} of {} · Base: {}",
-            stack.number,
-            stack
-                .position
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "?".into()),
-            stack.size,
-            stack.base_ref_name
+        lines.push((
+            DetailKind::Labels,
+            format!("Labels: {}", row.labels.join(", ")),
         ));
     }
-    lines.push("Details reflect the loaded snapshot; refresh restarts pagination.".into());
+    if let Some(issue) = &row.issue {
+        lines.push((DetailKind::Issue, format!("Issue: {issue}")));
+    }
+    if let Some(stack) = &row.stack {
+        lines.push((
+            DetailKind::Stack,
+            format!(
+                "Stack #{} · Layer {} of {} · Base: {}",
+                stack.number,
+                stack
+                    .position
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                stack.size,
+                stack.base_ref_name
+            ),
+        ));
+    }
+    lines.push((
+        DetailKind::Snapshot,
+        "Details reflect the loaded snapshot; refresh restarts pagination.".into(),
+    ));
     lines
+}
+
+/// "Attention: changed · watched" — the Details panel's line about this PR's
+/// marker and watch, under core's lines on the desktop and the iPad alike.
+pub fn attention_line(changed: bool, watched: bool) -> String {
+    format!(
+        "Attention: {} · {}",
+        if changed { "changed" } else { "acknowledged" },
+        if watched { "watched" } else { "not watched" }
+    )
 }
 
 /// Full, unelided snapshot details; no secondary network request or hidden cache.
@@ -237,8 +303,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_optional_line_appears_in_its_place() {
+    /// A row with every optional line present.
+    fn full_row() -> BoardRow {
         let mut pr = row();
         pr.requested = vec!["bob".into(), "kim".into()];
         pr.reviews = vec![
@@ -268,9 +334,13 @@ mod tests {
             base_ref_name: "main".into(),
             position: Some(2),
         });
+        pr
+    }
 
+    #[test]
+    fn every_optional_line_appears_in_its_place() {
         assert_eq!(
-            detail_lines(&pr, Mode::Review, now(), 0),
+            detail_lines(&full_row(), Mode::Review, now(), 0),
             vec![
                 "⏳ Waiting for your review",
                 "Author: alice · CI: pass · Unresolved threads: 0",
@@ -284,6 +354,58 @@ mod tests {
                 "Stack #70 · Layer 2 of 3 · Base: main",
                 "Details reflect the loaded snapshot; refresh restarts pagination.",
             ]
+        );
+    }
+
+    #[test]
+    fn each_line_says_what_it_is_in_the_order_it_is_shown() {
+        let pr = full_row();
+        let items = detail_items(&pr, Mode::Review, now(), 0);
+        assert_eq!(
+            items.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            vec![
+                DetailKind::Note,
+                DetailKind::Facts,
+                DetailKind::RequestedReviewers,
+                DetailKind::Reviews,
+                DetailKind::YourReview,
+                DetailKind::Waiting,
+                DetailKind::Size,
+                DetailKind::Labels,
+                DetailKind::Issue,
+                DetailKind::Stack,
+                DetailKind::Snapshot,
+            ]
+        );
+        assert_eq!(
+            items.into_iter().map(|(_, line)| line).collect::<Vec<_>>(),
+            detail_lines(&pr, Mode::Review, now(), 0)
+        );
+        // Without the optional lines, the kinds close up in the same order.
+        assert_eq!(
+            detail_items(&row(), Mode::Authored, now(), 0)
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>(),
+            vec![
+                DetailKind::Note,
+                DetailKind::Facts,
+                DetailKind::RequestedReviewers,
+                DetailKind::Reviews,
+                DetailKind::Snapshot,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_attention_line_names_the_marker_and_the_watch() {
+        assert_eq!(
+            attention_line(true, false),
+            "Attention: changed · not watched"
+        );
+        assert_eq!(
+            attention_line(false, true),
+            "Attention: acknowledged · watched"
         );
     }
 

@@ -163,6 +163,28 @@ pub enum SnoozeChoice {
     ReviewAgainWhenChanged,
 }
 
+/// What the snooze menu says for `choice`: the desktop's words, from the one
+/// place both front ends take them.
+#[uniffi::export]
+pub fn snooze_choice_label(choice: SnoozeChoice) -> String {
+    use local_attention::{
+        waiting_on, SNOOZE_ONE_HOUR, SNOOZE_REVIEW_AGAIN, SNOOZE_UNTIL_TOMORROW, SNOOZE_WAITING_CI,
+    };
+    match choice {
+        SnoozeChoice::OneHour => SNOOZE_ONE_HOUR.into(),
+        SnoozeChoice::UntilTomorrow => SNOOZE_UNTIL_TOMORROW.into(),
+        SnoozeChoice::WaitingPerson { login } => waiting_on(&login),
+        SnoozeChoice::WaitingCi => SNOOZE_WAITING_CI.into(),
+        SnoozeChoice::ReviewAgainWhenChanged => SNOOZE_REVIEW_AGAIN.into(),
+    }
+}
+
+/// "Cancel snooze", as the desktop's menu says it.
+#[uniffi::export]
+pub fn cancel_snooze_label() -> String {
+    local_attention::SNOOZE_CANCEL.into()
+}
+
 /// A snoozed PR and the sentence describing why.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SnoozedPr {

@@ -97,9 +97,15 @@ fn blocker_context(blocker: &Blocker) -> String {
         Blocker::MergeConflict => "merge conflict".into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) => format!("{n} unresolved"),
+        Blocker::UnresolvedComments(n) => unresolved_label(*n),
         Blocker::NoReviewers { .. } => "reviewers missing".into(),
     }
+}
+
+/// "2 unresolved": open review threads as a short fact, the Note's context
+/// word and what a front end with no column for the count says instead.
+pub fn unresolved_label(count: usize) -> String {
+    format!("{count} unresolved")
 }
 
 /// Split a note into a primary phrase and an optional " — " remedy, for the
