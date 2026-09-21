@@ -182,11 +182,13 @@ screen offers them:
   `repo` and `read:org` reaches every organization you belong to, including
   their private repositories and ones that restrict OAuth apps, and reads CI,
   which a fine-grained token cannot. A *fine-grained* token needs **Pull
-  requests: read** and **Metadata: read** and covers one owner: a token you own
-  cannot see an organization's private repositories — they simply do not
-  appear, with no error to explain it. To reach them, the token's owner must be
-  that organization, which an owner approves, and that token in turn leaves out
-  your personal ones. A fine-grained token also never reads check runs, so CI
+  requests: read** and **Metadata: read** and covers one resource owner: a
+  token whose resource owner is you cannot see an organization's private
+  repositories — they simply do not appear, with no error to explain it. To
+  reach them, choose that organization as the resource owner when you create
+  the token — an organization can require an owner's approval, or block
+  fine-grained tokens altogether — and that token in turn leaves out your
+  personal ones. A fine-grained token also never reads check runs, so CI
   shows as "hidden" and PR Marmot says so in one line.
 - **Enterprise host** — a GitHub Enterprise Server hostname. GHES supports the
   device flow, but each instance is a separate app registration, so set

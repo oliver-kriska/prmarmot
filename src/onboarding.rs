@@ -373,7 +373,7 @@ impl Render for OnboardingView {
                 .child(self.note(
                     format!(
                         "A classic token needs repo and read:org. {} A fine-grained token needs \
-                         Pull requests: read and Metadata: read, and covers one owner. {} \
+                         Pull requests: read and Metadata: read, and covers one resource owner. {} \
                          The token is stored on this Mac only.",
                         prmarmot_core::status::classic_reach_note(),
                         prmarmot_core::status::fine_grained_reach_note()

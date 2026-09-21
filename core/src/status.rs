@@ -238,15 +238,18 @@ pub fn access_notice(gaps: &AccessGaps) -> Option<String> {
 
 /// What a fine-grained token reaches, for the sign-in screen and the docs.
 ///
-/// A fine-grained token belongs to one owner: yours sees your repositories,
-/// and an organization's private repositories need a token owned by that
-/// organization. Nothing marks their absence, which is the trap.
+/// A fine-grained token reaches one resource owner, chosen when it is created:
+/// with you as the owner it sees your repositories, and an organization's
+/// private repositories need that organization as the owner. Nothing marks
+/// their absence, which is the trap. "A token you own" would misread as "any
+/// token you made", so the sentence uses GitHub's own term.
 ///
 /// Its own sentence, not half of a paragraph: a front end that shows the two
 /// kinds of token side by side would read a classic clause here as a mistake.
 pub fn fine_grained_reach_note() -> &'static str {
-    "A token you own cannot see an organization's private repositories — they do not appear, with no \
-     error to explain it. To reach them, the token's owner must be that organization."
+    "A token whose resource owner is you cannot see an organization's private repositories — they do \
+     not appear, with no error to explain it. To reach them, choose that organization as the resource \
+     owner when you create the token."
 }
 
 /// What a classic token reaches, the companion to [`fine_grained_reach_note`].
@@ -319,6 +322,10 @@ mod tests {
     fn the_token_reach_notes_stand_alone_one_per_kind_of_token() {
         let fine = fine_grained_reach_note();
         assert!(fine.contains("no error to explain it"), "{fine}");
+        assert!(
+            fine.contains("resource owner") && !fine.contains("you own"),
+            "GitHub's term, not one that reads as any token you made: {fine}"
+        );
         assert!(
             !fine.to_lowercase().contains("classic"),
             "a card for one kind of token must not describe the other: {fine}"
