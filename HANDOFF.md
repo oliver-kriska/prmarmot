@@ -8,6 +8,24 @@
 
 ---
 
+## Current update — 2026-09-21
+
+**FACT: the iPad's snooze menu, size band, "unresolved" fact and Details panel
+kinds now come from core.** The desktop's words moved into constants
+(`local/src/attention_state.rs`: `SNOOZE_ONE_HOUR` … `SNOOZE_CANCEL`,
+`waiting_on`) and functions (`core::detail::detail_items`, `attention_line`,
+`core::cells::unresolved_label`) that `src/app.rs` and `src/table.rs` call, so
+the desktop reads the same and the iPad stops keeping its own copies.
+`detail_items` is `detail_lines` with a `DetailKind` per line, so a front end
+can draw the labels as chips or mute the last line without matching words.
+
+**FACT: two FFI defects from the iPad review are fixed.** `BoardClient::reset`
+now bumps a generation, and a fetch that started before it no longer stores its
+cursor afterwards (`ffi/tests/offline_board.rs` holds a response across a reset
+and fails on the old code). An unexpected Swift error from a callback is now
+`FfiError::Network` instead of a uniffi panic, which under the iOS profile's
+`panic = "abort"` ended the app.
+
 ## Current update — 2026-09-20
 
 **FACT: the memory gate G0 is passed.** Every "the memory gate is still not

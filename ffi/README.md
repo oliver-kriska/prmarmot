@@ -66,7 +66,13 @@ final class URLSessionTransport: GithubTransport {
 | Direction | What |
 |---|---|
 | Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeLinesAndFiles`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `coreVersion`. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `coreVersion`. |
+
+`reset` is safe to call while a fetch is in flight: a page that was already on
+its way when the account changed is dropped rather than remembered, so a
+`loadMore` after the reset can never continue from the old account's cursor. A
+Swift method that throws something other than `FfiError` reaches Rust as
+`FfiError.Network` with the error's description; it never aborts the process.
 
 Record and field names mirror `cli/schema/board-v1.schema.json`
 (`prmarmot-cli/board@1`), so that published schema doubles as the contract
