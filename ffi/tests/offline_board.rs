@@ -460,6 +460,117 @@ fn load_more_needs_a_board_to_continue() {
     assert!(!client.has_more(Mode::Authored));
 }
 
+/// The authored fixture with one more page behind it, so `has_more` has
+/// something to say.
+fn paged_body() -> String {
+    let path = format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    raw["data"]["search"]["issueCount"] = serde_json::json!(40);
+    raw["data"]["search"]["pageInfo"] =
+        serde_json::json!({ "hasNextPage": true, "endCursor": "page-2" });
+    raw.to_string()
+}
+
+/// Answers with `paged_body`, and when `hold` says so, only once the test
+/// lets it: the request is sent, then waits.
+struct Held {
+    body: String,
+    hold: std::sync::atomic::AtomicBool,
+    sent: async_channel::Sender<()>,
+    release: async_channel::Receiver<()>,
+}
+
+#[async_trait::async_trait]
+impl GithubTransport for Held {
+    async fn send(&self, _request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+        if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+            self.sent.send(()).await.unwrap();
+            self.release.recv().await.unwrap();
+        }
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: self.body.clone(),
+        })
+    }
+
+    async fn get(
+        &self,
+        _request: prmarmot_ffi::transport::RestRequest,
+    ) -> Result<HttpResponse, FfiError> {
+        unreachable!("no REST call here")
+    }
+}
+
+/// A fetch still on its way when `reset` ran is for a board the caller has
+/// left: a Swift task cancelled at a scope switch does not stop the Rust
+/// future under it. When it lands it must not become the board `load_more`
+/// continues, because its cursor is the old scope's (iPad review,
+/// 2026-09-21).
+#[test]
+fn a_fetch_that_outlives_a_reset_leaves_no_cursor_behind() {
+    let (sent, on_sent) = async_channel::unbounded();
+    let (let_go, release) = async_channel::unbounded();
+    let transport = Arc::new(Held {
+        body: paged_body(),
+        hold: false.into(),
+        sent,
+        release,
+    });
+    let client = BoardClient::new(
+        ClientConfig {
+            host: "github.com".into(),
+            viewer: "me".into(),
+            user_agent: "prmarmot-ffi-test/0".into(),
+        },
+        transport.clone(),
+        Arc::new(Token),
+    );
+    let fetch = |client: Arc<BoardClient>| {
+        std::thread::spawn(move || {
+            futures::executor::block_on(client.fetch_board(
+                Mode::Authored,
+                BoardScope::AllRepositories,
+                settings(),
+                NOW,
+            ))
+        })
+    };
+
+    // A fetch that lands with no reset in between is remembered.
+    fetch(client.clone()).join().unwrap().unwrap();
+    assert!(
+        client.has_more(Mode::Authored),
+        "the fixture has a next page"
+    );
+    client.reset();
+    assert!(!client.has_more(Mode::Authored));
+
+    transport
+        .hold
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let held = fetch(client.clone());
+    futures::executor::block_on(on_sent.recv()).unwrap();
+    client.reset();
+    futures::executor::block_on(let_go.send(())).unwrap();
+    held.join().unwrap().unwrap();
+    assert!(
+        !client.has_more(Mode::Authored),
+        "the fetch that outlived the reset left its cursor behind"
+    );
+
+    // And the next fetch, after the reset, is remembered again.
+    let next = fetch(client.clone());
+    futures::executor::block_on(on_sent.recv()).unwrap();
+    futures::executor::block_on(let_go.send(())).unwrap();
+    next.join().unwrap().unwrap();
+    assert!(client.has_more(Mode::Authored));
+}
+
 /// The cycle rule, from the Rust side.
 ///
 /// `BoardClient` holds the transport and the token source strongly. If a

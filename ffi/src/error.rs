@@ -1,9 +1,11 @@
 //! One error type across the boundary.
 //!
 //! Swift sees this as a thrown `FfiError` with associated values. Every
-//! foreign trait method returns it too, because UniFFI panics if a foreign
-//! implementation throws something it was not told about — a Swift `throws`
-//! function whose error is not in the declared type aborts the process.
+//! foreign trait method returns it too. A foreign implementation that throws
+//! something else — a Swift `Keychain` error, a `DecodingError` — arrives as
+//! an unexpected callback error, which becomes `Network` here: without that
+//! `From` impl UniFFI's generic converter panics, and the iOS profile aborts
+//! on panic (iPad review, 2026-09-21).
 
 use prmarmot_core::attention::{PersistError, RestoreError};
 use prmarmot_core::github::GhError;
@@ -84,6 +86,16 @@ impl From<FfiError> for GhError {
     }
 }
 
+/// A foreign trait method threw an error that is not an `FfiError`. UniFFI
+/// picks this impl up by itself; there is no attribute to set.
+impl From<uniffi::UnexpectedUniFFICallbackError> for FfiError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Network {
+            message: format!("Something on this device failed: {}", error.reason),
+        }
+    }
+}
+
 impl From<PersistError> for FfiError {
     fn from(error: PersistError) -> Self {
         Self::Invalid {
@@ -105,5 +117,27 @@ impl FfiError {
         Self::Invalid {
             message: message.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FfiError;
+    use uniffi::{LiftReturn, UnexpectedUniFFICallbackError};
+
+    /// The path UniFFI takes when a Swift callback throws something that is
+    /// not an `FfiError`. Without the `From` impl it panicked, and the iOS
+    /// profile aborts on panic, so a Keychain failure in the token source
+    /// ended the app.
+    #[test]
+    fn a_foreign_error_that_is_not_ours_arrives_as_a_network_error() {
+        let result = <Result<String, FfiError> as LiftReturn<crate::UniFfiTag>>::
+            handle_callback_unexpected_error(UnexpectedUniFFICallbackError::new(
+                "Keychain.Failure.save(-25308)",
+            ));
+        assert!(
+            matches!(&result, Err(FfiError::Network { message }) if message.contains("-25308")),
+            "{result:?}"
+        );
     }
 }

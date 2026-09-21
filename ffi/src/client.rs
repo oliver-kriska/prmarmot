@@ -74,9 +74,22 @@ pub struct BoardClient {
     transport: Arc<dyn GithubTransport>,
     tokens: Arc<dyn TokenSource>,
     config: ClientConfig,
-    /// The last fetch per mode, so `load_more` can continue it. Two entries at
-    /// most — bounded like every other cache in this project.
-    last: Mutex<BTreeMap<u8, core_board::BoardFetch>>,
+    /// The last fetch per mode, so `load_more` can continue it.
+    last: Mutex<Pages>,
+}
+
+/// What `load_more` continues, and which `reset` it belongs to.
+#[derive(Default)]
+struct Pages {
+    /// Bumped by every `reset`. A fetch remembers its board only if no reset
+    /// ran while it was on its way: one that started before is for a board
+    /// the caller has left, and its cursor is for the scope it left. A Swift
+    /// task cancelled at a scope switch does not stop the Rust future under
+    /// it, which then lands after the reset (iPad review, 2026-09-21).
+    generation: u64,
+    /// Two entries at most, one per mode — bounded like every other cache in
+    /// this project.
+    fetches: BTreeMap<u8, core_board::BoardFetch>,
 }
 
 #[uniffi::export]
@@ -94,7 +107,7 @@ impl BoardClient {
             transport,
             tokens,
             config,
-            last: Mutex::new(BTreeMap::new()),
+            last: Mutex::new(Pages::default()),
         })
     }
 
@@ -118,12 +131,13 @@ impl BoardClient {
         let core_mode: core_board::Mode = mode.into();
         let core_scope: core_board::BoardScope = scope.into();
         let viewer = self.config.viewer.clone();
+        let generation = self.generation();
         let fetched = self
             .run(move |core| {
                 core_board::fetch_board_scoped(core, core_mode, &core_scope, &viewer, &cfg)
             })
             .await?;
-        self.remember(core_mode, &fetched);
+        self.remember(core_mode, &fetched, generation);
         board(mode, fetched, now_epoch, settings.stale_after_days)
     }
 
@@ -144,6 +158,7 @@ impl BoardClient {
         let core_mode: core_board::Mode = mode.into();
         let core_scope: core_board::BoardScope = scope.into();
         let viewer = self.config.viewer.clone();
+        let generation = self.generation();
         let current = self.recall(core_mode).ok_or_else(|| {
             FfiError::invalid("load_more needs a board to continue; fetch one first")
         })?;
@@ -159,7 +174,7 @@ impl BoardClient {
                 )
             })
             .await?;
-        self.remember(core_mode, &fetched);
+        self.remember(core_mode, &fetched, generation);
         board(mode, fetched, now_epoch, settings.stale_after_days)
     }
 
@@ -178,6 +193,7 @@ impl BoardClient {
         let core_mode: core_board::Mode = mode.into();
         let core_scope: core_board::BoardScope = scope.into();
         let viewer = self.config.viewer.clone();
+        let generation = self.generation();
         let fetched = self
             .run(move |core| {
                 core_board::fetch_board_scoped_with_tracked(
@@ -190,7 +206,7 @@ impl BoardClient {
                 )
             })
             .await?;
-        self.remember(core_mode, &fetched);
+        self.remember(core_mode, &fetched, generation);
         let now = crate::types::instant(now_epoch)?;
         let tracked = fetched
             .tracked
@@ -247,15 +263,19 @@ impl BoardClient {
         self.last
             .lock()
             .expect("board cache")
+            .fetches
             .get(&key(core_mode))
             .is_some_and(|fetch| fetch.pagination.can_load_more(core_mode))
     }
 
     /// Forget the pagination state, e.g. when the scope or the account
     /// changes. The next `fetch_board` starts from page one regardless; this
-    /// only stops `load_more` continuing a board the user has left.
+    /// only stops `load_more` continuing a board the user has left — including
+    /// one a fetch still on its way would otherwise remember when it lands.
     pub fn reset(&self) {
-        self.last.lock().expect("board cache").clear();
+        let mut pages = self.last.lock().expect("board cache");
+        pages.generation = pages.generation.wrapping_add(1);
+        pages.fetches.clear();
     }
 }
 
@@ -279,17 +299,24 @@ impl BoardClient {
         .await
     }
 
-    fn remember(&self, mode: core_board::Mode, fetched: &core_board::BoardFetch) {
-        self.last
-            .lock()
-            .expect("board cache")
-            .insert(key(mode), fetched.clone());
+    /// Which `reset` a fetch starting now belongs to.
+    fn generation(&self) -> u64 {
+        self.last.lock().expect("board cache").generation
+    }
+
+    /// Keep `fetched` for `load_more`, unless a reset ran since `generation`.
+    fn remember(&self, mode: core_board::Mode, fetched: &core_board::BoardFetch, generation: u64) {
+        let mut pages = self.last.lock().expect("board cache");
+        if pages.generation == generation {
+            pages.fetches.insert(key(mode), fetched.clone());
+        }
     }
 
     fn recall(&self, mode: core_board::Mode) -> Option<core_board::BoardFetch> {
         self.last
             .lock()
             .expect("board cache")
+            .fetches
             .get(&key(mode))
             .cloned()
     }
