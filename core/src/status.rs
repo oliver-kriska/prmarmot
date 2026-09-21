@@ -184,7 +184,7 @@ pub fn organization_approval_note() -> &'static str {
 
 /// What the one-time-code screen says while PR Marmot waits for someone to
 /// authorize it on GitHub. Both front ends show it as static text: the wait
-/// is on the person, who is usually in a browser typing the code, not on
+/// is on the person, who is usually in a browser entering the code, not on
 /// the app, so nothing on that screen needs to move to prove it is alive.
 ///
 /// "Enter", not "type": on an iPad the code is pasted.
