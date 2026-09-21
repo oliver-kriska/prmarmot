@@ -67,7 +67,7 @@ jobs:
       # Keep in sync with `rust-version` in core/, local/, and cli/Cargo.toml.
       # The GPUI app needs a newer toolchain and is not part of this promise.
       - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+        uses: dtolnay/rust-toolchain@1.120
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
