@@ -217,6 +217,12 @@ pub fn organization_approval_note() -> String {
     prmarmot_core::status::organization_approval_note().to_owned()
 }
 
+/// What the one-time-code screen says while it waits, with the page to open.
+#[uniffi::export]
+pub fn device_code_waiting_note(verification_uri: String) -> String {
+    prmarmot_core::status::device_code_waiting_note(&verification_uri)
+}
+
 /// What a fine-grained token reaches, and what a classic one reaches: two
 /// sentences so a screen that shows the two kinds side by side can put each
 /// one in its own card.

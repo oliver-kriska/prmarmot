@@ -326,10 +326,7 @@ impl Render for OnboardingView {
                             .child(user_code.clone()),
                     )
                     .child(self.note(
-                        format!(
-                            "Open {uri}, sign in to GitHub, and type the code. \
-                             PR Marmot is waiting and will continue on its own."
-                        ),
+                        prmarmot_core::status::device_code_waiting_note(&uri),
                         cx,
                     ))
                     .child(

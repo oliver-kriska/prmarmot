@@ -219,7 +219,9 @@ values in the code. New features get the next free number in their area.
   nothing to set up. You type an eight-character code at github.com/login/device. It asks for `repo` and
   `read:org`, and there is no client secret and no server of ours. _since v0.9.0_ The code screen says that an
   organization which restricts OAuth apps hides its repositories until an owner approves PR Marmot, and that
-  GitHub offers the request when you authorize. _since v0.10.0_
+  GitHub offers the request when you authorize. _since v0.10.0_ While it waits, the code screen says so in still
+  text, in one sentence core owns for both front ends: open the page, sign in, enter the code, and PR Marmot
+  continues on its own. Nothing on the screen moves: the wait is on you, in a browser. _unreleased_
 - **F-auth-3** **Use a token** takes a personal access token. A classic one with `repo` and `read:org` reaches
   every organization you belong to and shows CI. A fine-grained one needs Pull requests: read and Metadata: read
   and covers one owner. The token is never displayed. _since v0.9.0_ The sign-in screen names the classic token

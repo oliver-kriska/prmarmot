@@ -182,6 +182,19 @@ pub fn organization_approval_note() -> &'static str {
      authorize."
 }
 
+/// What the one-time-code screen says while PR Marmot waits for someone to
+/// authorize it on GitHub. Both front ends show it as static text: the wait
+/// is on the person, who is usually in a browser typing the code, not on
+/// the app, so nothing on that screen needs to move to prove it is alive.
+///
+/// "Enter", not "type": on an iPad the code is pasted.
+pub fn device_code_waiting_note(verification_uri: &str) -> String {
+    format!(
+        "Open {verification_uri}, sign in to GitHub, and enter the code. PR Marmot is waiting and \
+         will continue on its own."
+    )
+}
+
 /// What the token was not allowed to read on this board, in one line, or
 /// `None` when it read everything. The rows still show; this says why some of
 /// their CI reads "hidden" and what would show it.
@@ -323,6 +336,24 @@ mod tests {
             );
         }
         assert!(pasted_token_reach_notice().starts_with("Using your pasted token"));
+    }
+
+    #[test]
+    fn the_device_code_waiting_note_names_the_page_and_says_it_continues() {
+        let note = device_code_waiting_note("https://github.com/login/device");
+        assert_eq!(
+            note,
+            "Open https://github.com/login/device, sign in to GitHub, and enter the code. PR \
+             Marmot is waiting and will continue on its own."
+        );
+        assert!(
+            !note.contains("type"),
+            "the code is pasted on an iPad, not typed: {note}"
+        );
+        assert!(
+            !note.contains('\n'),
+            "one paragraph, wrapped by the front end"
+        );
     }
 
     #[test]
