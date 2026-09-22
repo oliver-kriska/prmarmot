@@ -52,9 +52,9 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
 | --- | --- |
 | `approved` | approved and waiting to merge |
 | `action` | the user's PRs blocked on the user (see `blockers`); in `mine --all-repos` and `all`, also others' PRs with a conflict, failing CI, requested changes, or unresolved comments |
-| `await` | waiting on reviewers |
+| `await` | waiting on reviewers: one is requested or has commented, nothing blocks it, nobody approved yet |
 | `todo` | review requested from the user |
-| `available` | nobody requested yet |
+| `available` | nobody requested yet: in `review`, a PR the user may pick up; in `mine --all-repos` and `all`, someone else's PR with no reviewer requested and no review |
 | `done` | already reviewed |
 | `draft` | drafts |
 | `snoozed` | snoozed in the app; mention them only if asked |

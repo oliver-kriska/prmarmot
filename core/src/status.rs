@@ -26,7 +26,7 @@ pub fn needs_you_here(mode: Mode, category: Category) -> bool {
 }
 
 /// Whether this row counts toward the header's "need you". In All open,
-/// Needs attention holds anyone's PRs, and a teammate's merge conflict is not
+/// Needs action holds anyone's PRs, and a teammate's merge conflict is not
 /// yours to act on: only your own PRs there count, plus Requested from you.
 /// Your own are the rows with blockers, because someone else's PR carries
 /// facts and never blockers. Every other view goes by the category.
@@ -584,7 +584,7 @@ mod tests {
         );
         let (line, tip) = header_counts(&both_loaded(Mode::Authored, mine), BadgeName::Dock);
         assert_eq!(line, "5 loaded · 2 need you");
-        assert!(tip.contains("2 need you: the PRs under Needs attention, not counting"));
+        assert!(tip.contains("2 need you: the PRs under Needs action, not counting"));
         assert!(tip.contains("The Dock badge shows 3: your PRs"));
         assert!(!tip.contains("so far"));
     }
@@ -610,7 +610,7 @@ mod tests {
             tip,
             "60 of the 759 PRs that are open in this repository are loaded; Load more \
              fetches the next ones.\n\
-             1 needs you: the PRs under Requested from you and your own PRs under Needs attention, \
+             1 needs you: the PRs under Requested from you and your own PRs under Needs action, \
              not counting snoozed ones.\n\
              The Dock badge shows 4: your PRs that need action plus reviews requested \
              from you, not counting snoozed ones."

@@ -22,9 +22,15 @@ values in the code. New features get the next free number in their area.
   Available to review since v0.3.0_
 - **F-board-5** Sections always come in the same order, and empty ones are left out.
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
-  - Involving me: Approved, Needs attention, In progress, Drafts.
+  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _unreleased_ (Needs
+    attention and In progress, with no Available to review, through v0.11.0)
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
-  - All open: Approved, Requested from you, Needs attention, In progress, Drafts. _unreleased_
+  - All open: Approved, Requested from you, Needs action, Available to review, Awaiting review, Drafts.
+    _unreleased_
+
+  A section has one name in every view. Where other people's PRs sit beside yours, one that nobody was asked to
+  review and nobody has reviewed is under Available to review, as in the Review queue, rather than under Awaiting
+  review, where it would wait on nobody. _unreleased_
 
   Snoozed PRs follow in their own group. Within Needs action, approved PRs come first. _since v0.2.0; Approved since
   v0.5.1_ Hover a section's title for one sentence on what puts a PR there; the CLI's JSON carries the same sentence
@@ -62,14 +68,14 @@ values in the code. New features get the next free number in their area.
   background. _since v0.2.0_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
-  - How many of them need you: Needs action (Needs attention in Involving me) in My PRs, and Requested from you
+  - How many of them need you: Needs action in My PRs and Involving me, and Requested from you
     plus Available to review in the Review queue. Snoozed PRs never count.
   - How many watched or snoozed PRs were refreshed.
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
   _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
   match" while a label or author filter narrows the search. Its "need you" counts Requested from you and your own
-  PRs under Needs attention, never someone else's. _unreleased_
+  PRs under Needs action, never someone else's. _unreleased_
 - **F-board-13** Draft rows are dimmed. Statuses show as coloured dots with text, never emoji; the one exception is
   🐛 on a `bug` label. _since v0.1.0_
 - **F-board-14** **All open** lists every open PR in one repository, whoever opened it.

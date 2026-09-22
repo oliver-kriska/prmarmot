@@ -64,7 +64,7 @@ pub enum LayoutItem {
 /// Lay out `rows` for `mode`. Snoozed rows (by PR id) move to a trailing
 /// Snoozed group whose members are listed but only emitted as rows when
 /// `show_snoozed` is set. Requested from you, Available to review, and
-/// Awaiting review (In progress) list the longest pickup wait first, unless
+/// Awaiting review list the longest pickup wait first, unless
 /// `sort` says otherwise; every other order within a section is the incoming
 /// one.
 pub fn layout<'a>(
@@ -201,10 +201,13 @@ pub fn layout<'a>(
 }
 
 /// Which section a row sits in: its category, except that an approved PR
-/// waiting to merge gets the Approved band.
+/// waiting to merge gets the Approved band, and one that nobody was asked to
+/// review is Available to review.
 fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     if is_approved_section(mode, row) {
         SectionKind::Approved
+    } else if is_available_section(mode, row) {
+        SectionKind::Category(Category::Available)
     } else {
         SectionKind::Category(row.category)
     }
@@ -234,24 +237,30 @@ pub fn is_approved_section(mode: Mode, row: &BoardRow) -> bool {
         && row.review_state == ReviewState::Approved
 }
 
-/// The section label for a category within a mode. Action/Await differ from
-/// Todo/Done even though they share a sort rank.
-pub fn group_label(mode: Mode, cat: Category, all_repos: bool) -> &'static str {
-    match (mode, cat, all_repos) {
-        // Everyone's PRs, yours among them: the section states the PR's
-        // condition rather than an action of yours.
-        (Mode::Authored, Category::Action, true) | (Mode::AllOpen, Category::Action, _) => {
-            "Needs attention"
-        }
-        (Mode::Authored, Category::Await, true) | (Mode::AllOpen, Category::Await, _) => {
-            "In progress"
-        }
-        (Mode::Authored, Category::Action, false) => "Needs action",
-        (Mode::Authored, Category::Await, false) => "Awaiting review",
-        (Mode::Review | Mode::AllOpen, Category::Todo, _) => "Requested from you",
-        (Mode::Review, Category::Available, _) => "Available to review · no reviewer requested",
-        (Mode::Review, Category::Done, _) => "Reviewed",
-        (_, Category::Draft, _) => "Drafts",
+/// A PR waiting with no reviewer requested and no review at all sits under
+/// Available to review in Involving me and All open, the Review queue's name
+/// for exactly that, rather than under Awaiting review, where it waits on
+/// nobody. Only someone else's PR gets here: your own with no reviewer is
+/// Needs action (`board::classify_authored`). The core category is unchanged.
+pub fn is_available_section(mode: Mode, row: &BoardRow) -> bool {
+    matches!(mode, Mode::Authored | Mode::AllOpen)
+        && row.category == Category::Await
+        && row.review_state == ReviewState::None
+}
+
+/// The section label for a category within a mode. One name per section in
+/// every view (Oliver, 2026-09-22: "we should be consistent with naming");
+/// where other people's PRs sit beside yours, the hover sentence
+/// ([`section_explanation`]) says what that means for them. `all_repos` is
+/// kept for the callers that pass it alongside.
+pub fn group_label(mode: Mode, cat: Category, _all_repos: bool) -> &'static str {
+    match (mode, cat) {
+        (Mode::Authored | Mode::AllOpen, Category::Action) => "Needs action",
+        (Mode::Authored | Mode::AllOpen, Category::Await) => "Awaiting review",
+        (Mode::Review | Mode::AllOpen, Category::Todo) => "Requested from you",
+        (_, Category::Available) => "Available to review · no reviewer requested",
+        (Mode::Review, Category::Done) => "Reviewed",
+        (_, Category::Draft) => "Drafts",
         // Unreachable pairings (Action in Review etc.) — a calm fallback.
         _ => "Other",
     }
@@ -284,8 +293,8 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
                 .into()
         }
         (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Await)) if mixed => {
-            "Nothing blocks it and nobody has approved it yet: no merge conflict, failing CI, \
-             requested changes or unresolved comments."
+            "Reviewers are asked or have commented, nothing blocks it, and nobody has approved \
+             it yet: its author is waiting on them."
                 .into()
         }
         (Mode::Authored, SectionKind::Category(Category::Await)) => {
@@ -296,6 +305,11 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
         (Mode::Review | Mode::AllOpen, SectionKind::Category(Category::Todo)) => {
             "Your review is requested, by name or through one of your teams, and you have not \
              reviewed it yet."
+                .into()
+        }
+        (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Available)) => {
+            "Someone else's PR with nothing blocking it, no reviewer requested and no review \
+             yet. Optional: nobody assigned it to you."
                 .into()
         }
         (Mode::Review, SectionKind::Category(Category::Available)) => {
@@ -400,8 +414,13 @@ mod tests {
             r.review_state = ReviewState::Approved;
             r
         };
+        let unasked = |mut r: BoardRow| {
+            r.review_state = ReviewState::None;
+            r
+        };
         // As derive_rows hands them over: most recently updated first.
         let rows = vec![
+            unasked(row(10, Category::Await)),
             row(9, Category::Draft),
             row(8, Category::Action),
             waiting(row(7, Category::Todo), "2026-09-20T10:00:00Z"),
@@ -427,16 +446,19 @@ mod tests {
                 "Requested from you (2)",
                 "2",
                 "7",
-                "Needs attention (2)",
+                "Needs action (2)",
                 "4",
                 "8",
-                "In progress (2)",
+                "Available to review · no reviewer requested (1)",
+                "10",
+                "Awaiting review (2)",
                 "6",
                 "5",
                 "Drafts (1)",
                 "9",
             ],
-            "the other views' order and waits; an approved PR that needs attention leads its section"
+            "My PRs' names, order and waits; an approved PR that needs action leads its section, \
+             and one nobody was asked to review is available rather than awaiting"
         );
         let keys: Vec<&str> = items
             .iter()
@@ -449,7 +471,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(keys, ["approved", "todo", "action", "await", "draft"]);
+        assert_eq!(
+            keys,
+            ["approved", "todo", "action", "available", "await", "draft"]
+        );
     }
 
     #[test]
@@ -467,6 +492,10 @@ mod tests {
             row(6, Category::Done),
             row(7, Category::Draft),
             row(8, Category::Await),
+            BoardRow {
+                review_state: ReviewState::None,
+                ..row(9, Category::Await)
+            },
         ];
         let snoozed: HashSet<String> = ["PR_8".to_string()].into();
         for (mode, all_repos) in [
@@ -508,16 +537,15 @@ mod tests {
             }
         }
         // The approved band points at the section a blocked approval stays in.
-        assert!(
-            section_explanation(Mode::Authored, SectionKind::Approved, false)
+        for (mode, all_repos) in [
+            (Mode::Authored, false),
+            (Mode::Authored, true),
+            (Mode::AllOpen, false),
+        ] {
+            assert!(section_explanation(mode, SectionKind::Approved, all_repos)
                 .unwrap()
-                .ends_with("stays at the top of Needs action.")
-        );
-        assert!(
-            section_explanation(Mode::AllOpen, SectionKind::Approved, false)
-                .unwrap()
-                .ends_with("stays at the top of Needs attention.")
-        );
+                .ends_with("stays at the top of Needs action."));
+        }
         // Where other people's PRs sit beside yours, their blockers are theirs.
         for (mode, all_repos) in [(Mode::Authored, true), (Mode::AllOpen, false)] {
             let text =
@@ -783,9 +811,15 @@ mod tests {
                 "1"
             ]
         );
+        // One name per section, whichever view holds it.
+        for category in [Category::Action, Category::Await, Category::Draft] {
+            let mine = group_label(Mode::Authored, category, false);
+            assert_eq!(group_label(Mode::Authored, category, true), mine);
+            assert_eq!(group_label(Mode::AllOpen, category, false), mine);
+        }
         assert_eq!(
-            group_label(Mode::Authored, Category::Action, true),
-            "Needs attention"
+            group_label(Mode::AllOpen, Category::Available, false),
+            group_label(Mode::Review, Category::Available, false)
         );
     }
 
@@ -808,7 +842,7 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             [
-                "Needs attention (4)",
+                "Needs action (4)",
                 "  acme/widgets · Stack #9 · 2 of 3 layers shown",
                 "11",
                 "12",

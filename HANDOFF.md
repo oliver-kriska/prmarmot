@@ -30,16 +30,24 @@ again on 2026-09-21. Design and measurements:
   they only checked the loaded rows. The local grammar changed with it:
   several `author:` / `repo:` terms now match any one (GitHub's reading),
   labels and words still all; one test runs one chip set through both paths.
-- **Sections:** Approved, Requested from you, Needs attention, In progress,
-  Drafts — Involving me's, anyone's PRs in each. Oliver chose sections over
-  the first build's flat list after trying it on his team's repository. "Requested
+- **Sections:** Approved, Requested from you, Needs action, Available to
+  review, Awaiting review, Drafts, anyone's PRs in each. Oliver chose sections over
+  the first build's flat list after trying it on his team's repository. On
+  2026-09-22 he ruled "we should be consistent with naming": one name per
+  section in every view, so Involving me and All open dropped "Needs
+  attention" / "In progress" for My PRs' names, and someone else's PR that
+  nobody was asked to review and nobody has reviewed moved from the waiting
+  section (where it waited on nobody) to the Review queue's Available to
+  review (`layout::is_available_section`; the core category stays Await).
+  Order stays My PRs' own, his call over lifting Awaiting review above Needs
+  action. "Requested
   from you" is a second alias running the Review queue's own
   `review-requested:` search (ids only, first 100), so it is the same set in
   both views, team requests included. Notes on other people's PRs drop the
   "alice's PR ·" prefix because the Author column says it; share text says
   "by alice · approved".
 - **Calm:** "need you" counts Requested from you plus your own PRs under
-  Needs attention (`status::row_needs_you`: your rows are the ones with
+  Needs action (`status::row_needs_you`: your rows are the ones with
   blockers), never a teammate's conflict; the view never adds to the Dock
   badge, and changed markers and
   notifications only cover PRs you watch, your own, those requesting you,

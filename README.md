@@ -347,8 +347,11 @@ Every feature, with its limits and the version it shipped in, is listed in
   review** list the longest wait first. When only a team was asked and nobody
   has reviewed, the Note says "team requested, nobody responded"; with nobody
   asked at all, your PR's Note says "no reviewers".
-- **Sections:** hover a section's title (**In progress**, **Needs
-  attention**, …) for one sentence on what puts a PR there.
+- **Sections:** a section has one name in every view. In **Involving me**
+  and **All open**, someone else's PR that nobody was asked to review and
+  nobody has reviewed is under **Available to review**, as in the Review
+  queue. Hover a section's title (**Awaiting review**, **Needs action**, …)
+  for one sentence on what puts a PR there.
 - **Size band:** in the **Review queue** and **All open**, the Note ends with
   how big the change is: **Small** (at most 100 changed lines and at most 10
   files), **Large** (more than 400 lines or more than 30 files), or **Medium**
@@ -401,7 +404,7 @@ Every feature, with its limits and the version it shipped in, is listed in
   need you, and how many watched or snoozed PRs were refreshed. "Need you"
   counts the view on screen, without snoozed PRs: Needs action in My PRs,
   Requested from you plus Available to review in the Review queue, and in
-  All open Requested from you plus your own PRs under Needs attention (never a
+  All open Requested from you plus your own PRs under Needs action (never a
   teammate's). All open also says how many of the
   repository's open PRs are loaded ("60 of 759 open"). The Dock badge is your
   PRs that need action plus review requests, whichever view is on screen. Hover

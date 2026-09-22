@@ -1702,7 +1702,9 @@ mod tests {
             conflict: false,
             mergeable_unknown: false,
             review_decision: None,
-            review_state: ReviewState::None,
+            // As the derivation leaves any waiting PR in My PRs: a reviewer
+            // is asked. One with nobody asked is Available to review.
+            review_state: ReviewState::Waiting,
             requested: Vec::new(),
             requested_teams: Vec::new(),
             reviews: Vec::new(),

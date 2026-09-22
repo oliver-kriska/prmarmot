@@ -970,7 +970,7 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("## Requested from you (1)"), "{md}");
-        assert!(md.contains("## In progress (1)"), "{md}");
+        assert!(md.contains("## Awaiting review (1)"), "{md}");
         assert!(md.contains("## Drafts (1)"), "{md}");
         assert!(md.contains("| PR | Title | Author | CI | Note |"), "{md}");
         assert!(!md.contains("| Review |"), "{md}");
@@ -1011,7 +1011,7 @@ mod tests {
         assert!(value["sections"][1]["explanation"]
             .as_str()
             .unwrap()
-            .starts_with("Nothing blocks it"));
+            .starts_with("Reviewers are asked or have commented"));
         assert_eq!(value["sections"][1]["prs"][0]["author"], "carol");
 
         // Everything loaded: the count is just what is open.

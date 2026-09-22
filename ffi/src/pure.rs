@@ -244,7 +244,7 @@ pub fn needs_you_here(mode: Mode, category: crate::types::Category) -> bool {
 }
 
 /// Whether this row counts toward "need you", in any view. In All open that
-/// is Requested from you plus your own PRs under Needs attention, never a
+/// is Requested from you plus your own PRs under Needs action, never a
 /// teammate's.
 #[uniffi::export]
 pub fn row_needs_you(mode: Mode, row: PullRequest) -> bool {
@@ -481,7 +481,7 @@ pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
     prmarmot_core::github::rate_limit::backoff_secs(reset_epoch, now_epoch)
 }
 
-/// The label a section header shows for a category, e.g. "Needs attention".
+/// The label a section header shows for a category, e.g. "Needs action".
 #[uniffi::export]
 pub fn group_label(mode: Mode, category: crate::types::Category, all_repos: bool) -> String {
     core_layout::group_label(mode.into(), category.into(), all_repos).to_owned()

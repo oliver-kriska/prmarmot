@@ -257,8 +257,8 @@ impl<'a> Group<'a> {
 }
 
 /// One short phrase saying why the PR is in this group, without repeating the
-/// group title: who it waits on (authored, in progress), what blocks it
-/// (needs action), or who wrote it (review queue).
+/// group title: who it waits on (awaiting review), what blocks it (needs
+/// action), or who wrote it (review queue, All open).
 fn row_context(row: &BoardRow, mode: Mode) -> String {
     let note = strip_note_glyphs(&row.note);
     match (mode, row.category) {
@@ -512,14 +512,14 @@ mod tests {
         b.repo = "acme/gadgets".into();
         b.url = "https://github.com/acme/gadgets/pull/2".into();
         let payload = share_group(
-            "Needs attention",
+            "Needs action",
             &[a, b],
             Mode::Authored,
             ShareFormat::Markdown,
         );
         assert_eq!(
             payload.plain,
-            "**Needs attention (2)**\n\
+            "**Needs action (2)**\n\
              \n- [acme/widgets#1 PR 1](https://github.com/acme/widgets/pull/1)\
              \n- [acme/gadgets#2 PR 2](https://github.com/acme/gadgets/pull/2)"
         );
