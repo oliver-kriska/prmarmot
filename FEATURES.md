@@ -11,7 +11,7 @@ values in the code. New features get the next free number in their area.
 
 - **F-board-1** Two queues, switched from the title bar, with `1` / `2`, or with `v`: **Involving me** (**My PRs**
   when one repository is selected) and **Review queue**. _since v0.1.0_ A third, **All open** (`3`), lists every open
-  PR in the selected repository (F-board-14); `v` skips it while All repositories is selected. _unreleased_
+  PR in the selected repository (F-board-14); `v` skips it while All repositories is selected. _since v0.12.0_
 - **F-board-2** **Involving me** is the zero-config default: open PRs involving your GitHub login across all
   repositories. Your own PRs get actionable Notes, and other people's get status Notes ("alice's PR · approved").
   It never widens to PRs that don't involve you. _since v0.6.0_
@@ -22,20 +22,20 @@ values in the code. New features get the next free number in their area.
   Available to review since v0.3.0_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
-  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _unreleased_ (Needs
+  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_ (Needs
     attention and In progress, with no Available to review, through v0.11.0)
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
   - All open: Approved, Requested from you, Needs action, Available to review, Awaiting review, Drafts.
-    _unreleased_
+    _since v0.12.0_
 
   A section has one name in every view. Where other people's PRs sit beside yours, one that nobody was asked to
   review and nobody has reviewed is under Available to review, as in the Review queue, rather than under Awaiting
-  review, where it would wait on nobody. _unreleased_
+  review, where it would wait on nobody. _since v0.12.0_
 
   Snoozed PRs follow in their own group. Within Needs action, approved PRs come first. _since v0.2.0; Approved since
   v0.5.1_ Hover a section's title for one sentence on what puts a PR there; the CLI's JSON carries the same sentence
-  as each section's `explanation`. _unreleased_ You can put the sections in your own order (F-settings-8).
-  _unreleased_
+  as each section's `explanation`. _since v0.12.0_ You can put the sections in your own order (F-settings-8).
+  _since v0.12.0_
 - **F-board-6** GitHub's native stacks are grouped inside each section and ordered by layer from the base up.
   - Each row carries a layer marker (`├─ 2/3`, `└─ 3/3`).
   - The stack header reads "3 layers", or "2 of 3 layers shown" when part of the stack is elsewhere.
@@ -72,14 +72,14 @@ values in the code. New features get the next free number in their area.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
     Dock badge's rule in every view: your own PRs under Needs action plus Requested from you. Other people's PRs
     under Needs action (Involving me, All open) and Available to review (optional: nobody asked you) never count.
-    _unreleased_ Until then the Review queue counted Available to review, and Involving me counted other people's
+    _since v0.12.0_ Until then the Review queue counted Available to review, and Involving me counted other people's
     PRs under Needs action.
   - How many PRs in this view you watch or snoozed. The explanation says how many of every PR you follow, in any
-    view, each refresh checked (up to 50 at a time). _unreleased_ Until then the line gave that app-wide number.
+    view, each refresh checked (up to 50 at a time). _since v0.12.0_ Until then the line gave that app-wide number.
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
   _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
-  match" while a label or author filter narrows the search. _unreleased_
+  match" while a label or author filter narrows the search. _since v0.12.0_
 - **F-board-13** Draft rows are dimmed. Statuses show as coloured dots with text, never emoji; the one exception is
   🐛 on a `bug` label. _since v0.1.0_
 - **F-board-14** **All open** lists every open PR in one repository, whoever opened it.
@@ -97,7 +97,7 @@ values in the code. New features get the next free number in their area.
   - Other people's PRs stay quiet: changed markers and notifications cover only PRs you watch, your own, those
     asking for your review, and ones another view already follows, and the Dock badge never counts this view.
 
-  _unreleased_
+  _since v0.12.0_
 
 ## Categorization and notes
 
@@ -157,7 +157,7 @@ values in the code. New features get the next free number in their area.
   exactly that, ignoring case. Quote a value with spaces (`label:"help wanted"`). A term becomes a chip after a
   space or `Enter`; the box holds up to 8 chips, and all of them must match. _since v0.8.0_ Several `author:` or
   `repo:` chips keep PRs matching any one of them, as GitHub's search does; words, labels, and `is:stale` must all
-  match. _unreleased_
+  match. _since v0.12.0_
 - **F-search-3** `is:stale` keeps PRs that have waited `stale_after_days` or longer for a reviewer. `stale` is the
   only `is:` value. _since v0.8.0_
 - **F-search-4** Clicking a label, author, or repository in the table or in Details adds it as a chip. _since
@@ -174,7 +174,7 @@ values in the code. New features get the next free number in their area.
   - Words, `is:stale`, and anything past 8 labels or 8 authors check only the loaded PRs. While more are left to
     load, a line under the header names those terms and offers Load more.
 
-  _unreleased_
+  _since v0.12.0_
 
 ## Change tracking
 
@@ -299,11 +299,11 @@ values in the code. New features get the next free number in their area.
   - Nothing is fetched separately for each PR.
 
   _since v0.1.0_ All open returns up to 60 PRs plus the ids of up to 100 that request your review, and costs about
-  4 points. _unreleased_
+  4 points. _since v0.12.0_
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
   page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
-  footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _unreleased_
+  footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _since v0.12.0_
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_
@@ -320,7 +320,7 @@ values in the code. New features get the next free number in their area.
   - reviewer suggestions, the refresh interval, and the theme;
   - notifications and their sound;
   - the Dock badge and automatic update checks;
-  - the section order. _unreleased_
+  - the section order. _since v0.12.0_
 
   **Advanced** holds issue links, whether every PR entering Needs action notifies, and the config file's path.
   **Save** checks each field and puts any error beside it, and **Cancel** discards your edits. Reviewer names must
@@ -332,7 +332,7 @@ values in the code. New features get the next free number in their area.
   never overwritten, and the app starts with defaults. _since v0.1.0_ A banner says the file was ignored and why,
   until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
-  `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _unreleased_ a `section_order`
+  `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _since v0.12.0_ a `section_order`
   entry that is not a section), from the file or the environment.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
@@ -351,7 +351,7 @@ values in the code. New features get the next free number in their area.
   section; each view shows the ones it has, in that order. Snoozed stays last and stacks stay inside their
   section, and nothing is hidden or counted differently. It is saved as `section_order` in config.toml, written
   with the JSON section keys (`section_order = ["available", "await"]`); sections left out follow in their
-  default order. `prmarmot-cli` prints its views in the same order. _unreleased_
+  default order. `prmarmot-cli` prints its views in the same order. _since v0.12.0_
 
 ## Updates and install
 
@@ -461,7 +461,7 @@ values in the code. New features get the next free number in their area.
   - Without a repository it exits 2 before any request. `watch` doesn't take `all`, and `--sort` and `--authored`
     don't apply.
 
-  _unreleased_
+  _since v0.12.0_
 
 ## Platform notes
 
