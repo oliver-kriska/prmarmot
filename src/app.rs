@@ -2463,7 +2463,7 @@ impl RootView {
                 ("Copy selected PR's group as a list", "Y"),
                 ("Watch / unwatch selected PR", "w"),
                 ("Snooze selected PR", "s"),
-                ("My PRs / Review queue", "1 / 2"),
+                ("My PRs / Review queue / All open", "1 / 2 / 3"),
                 ("Switch queue", "v"),
                 ("Refresh", "r"),
                 (
