@@ -438,6 +438,21 @@ height = 900.0
 }
 
 #[test]
+fn a_desktop_section_order_imports_and_exports_unchanged() {
+    let imported = config_from_toml("section_order = [\"available\", \"await\"]\n".into()).unwrap();
+    assert_eq!(imported.section_order, ["available", "await"]);
+    let exported = config_to_toml(imported).unwrap();
+    assert!(
+        exported.contains("section_order = [\"available\", \"await\"]"),
+        "{exported}"
+    );
+    // The default order writes nothing.
+    assert!(!config_to_toml(default_app_config())
+        .unwrap()
+        .contains("section_order"));
+}
+
+#[test]
 fn nonsense_in_a_config_file_is_an_error_and_not_a_default() {
     assert!(config_from_toml("refresh_secs = \"whenever\"".into()).is_err());
     assert!(config_from_toml("= = =".into()).is_err());

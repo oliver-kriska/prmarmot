@@ -8,6 +8,41 @@
 
 ---
 
+## Current update — 2026-09-22
+
+**FACT: the section order is the user's to set, in config.toml and in
+Settings; unreleased.** Oliver: different people have different workflows,
+e.g. someone who assigns reviewers cares most about what nobody was asked to
+review. One order covers every view (each view shows the sections it has in
+it), following his same-day ruling that a section has one name everywhere.
+
+- **Core owns it:** `layout::SectionOrder`, a permutation of
+  `ORDERABLE_SECTIONS` (approved, todo, action, available, await, done,
+  draft — the JSON section keys). `from_keys` puts the named sections first
+  and the rest in default order, and names every unknown or repeated key and
+  `snoozed` (always last) as an ignored value. `layout_ordered` takes it;
+  `layout` is the default order. `section_name` / `section_views` are the
+  Settings list's words. Snoozed and stack sub-headers are never reordered,
+  and nothing is hidden, so counts, the badge and notifications are
+  unchanged.
+- **File:** `section_order = ["available", "await"]` (`prmarmot_local::config::
+  section_order`); bad entries join the ignored-values banner. Settings writes
+  it only when it was changed there, so a hand-written partial list stays as
+  written, and removes it on Reset to default.
+- **Desktop:** Settings → Section order, up/down buttons per section and
+  Reset to default; a save redraws the rows on screen without a fetch. The
+  Settings scroll targets for invalid fields were counted before the header
+  and Account existed; they point at the right fields now.
+- **CLI** prints its views in the same order (`BoardView::sections`), and
+  JSON consumers are told to find sections by `key`.
+- **ffi** is additive: `layout_ordered(…, section_order)`,
+  `parse_section_order`, `default_section_order`, `move_section`,
+  `section_order_entries`, and `AppConfig.section_order` (default `[]`), so
+  the iPad can offer the same list (its Settings control is the iPad
+  worker's).
+- ASSESSMENT — G0: no refresh-loop, repaint or cache change; not a re-run
+  trigger.
+
 ## Current update — 2026-09-21
 
 **FACT: View 1 of the original spec, "All open PRs", exists now as a third
@@ -39,8 +74,12 @@ again on 2026-09-21. Design and measurements:
   nobody was asked to review and nobody has reviewed moved from the waiting
   section (where it waited on nobody) to the Review queue's Available to
   review (`layout::is_available_section`; the core category stays Await).
-  Order stays My PRs' own, his call over lifting Awaiting review above Needs
-  action. "Requested
+  Your own review counts there: `review_state` leaves it out and GitHub
+  drops your request once you review, so a PR only you reviewed read as
+  unreviewed until the pre-release review caught it; `my_review` keeps it
+  under Awaiting review. The default order stays My PRs', his call over
+  lifting Awaiting review above Needs action; since 2026-09-22 the person
+  can change it (section order, above). "Requested
   from you" is a second alias running the Review queue's own
   `review-requested:` search (ids only, first 100), so it is the same set in
   both views, team requests included. Notes on other people's PRs drop the

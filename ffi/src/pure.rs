@@ -54,6 +54,110 @@ pub fn layout(
     .collect()
 }
 
+/// [`layout`] with the sections in a person's order: `section_order` holds
+/// the JSON section keys (`"available"`, `"await"` …), as the desktop's
+/// `section_order` in config.toml does. Sections it leaves out follow in their
+/// default order, and a key it cannot use is skipped (see
+/// [`parse_section_order`] for what was skipped).
+#[uniffi::export]
+pub fn layout_ordered(
+    rows: Vec<PullRequest>,
+    mode: Mode,
+    all_repos: bool,
+    snoozed: Vec<String>,
+    show_snoozed: bool,
+    sort: Sort,
+    section_order: Vec<String>,
+) -> Vec<BoardItem> {
+    let rows = into_rows(rows);
+    let snoozed: HashSet<String> = snoozed.into_iter().collect();
+    core_layout::layout_ordered(
+        &rows,
+        mode.into(),
+        all_repos,
+        &snoozed,
+        show_snoozed,
+        sort.into(),
+        &core_layout::SectionOrder::from_keys(&section_order).0,
+    )
+    .into_iter()
+    .map(BoardItem::from)
+    .collect()
+}
+
+/// A section order as stored keys: every section, each once.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SectionOrderChoice {
+    /// Every orderable section's key, first to last: what to store.
+    pub keys: Vec<String>,
+    /// What of the input was skipped, one sentence each.
+    pub ignored: Vec<String>,
+}
+
+/// Read a stored or typed section order: the sections it names first, then
+/// the rest in their default order, and what it could not use.
+#[uniffi::export]
+pub fn parse_section_order(keys: Vec<String>) -> SectionOrderChoice {
+    let (order, ignored) = core_layout::SectionOrder::from_keys(&keys);
+    SectionOrderChoice {
+        keys: order.keys().into_iter().map(str::to_owned).collect(),
+        ignored,
+    }
+}
+
+/// The default section order, as keys: Settings' "Reset to default".
+#[uniffi::export]
+pub fn default_section_order() -> Vec<String> {
+    core_layout::SectionOrder::default()
+        .keys()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `key` one place earlier or later in `keys`, a Settings list's up and down
+/// buttons; at either end nothing moves. Returns the whole order, normalized.
+#[uniffi::export]
+pub fn move_section(keys: Vec<String>, key: String, earlier: bool) -> Vec<String> {
+    let order = core_layout::SectionOrder::from_keys(&keys).0;
+    let moved = match core_layout::ORDERABLE_SECTIONS
+        .iter()
+        .find(|kind| kind.key().eq_ignore_ascii_case(key.trim()))
+    {
+        Some(kind) => order.moved(*kind, earlier),
+        None => order,
+    };
+    moved.keys().into_iter().map(str::to_owned).collect()
+}
+
+/// One line of a Settings section-order list.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SectionOrderEntry {
+    pub key: String,
+    pub kind: SectionKind,
+    /// "Awaiting review": the same in every view.
+    pub name: String,
+    /// Where it shows, e.g. "My PRs, Involving me, All open".
+    pub views: String,
+}
+
+/// The rows of a Settings section-order list for `keys`, first to last, with
+/// the words the desktop's list uses.
+#[uniffi::export]
+pub fn section_order_entries(keys: Vec<String>) -> Vec<SectionOrderEntry> {
+    core_layout::SectionOrder::from_keys(&keys)
+        .0
+        .kinds()
+        .iter()
+        .map(|kind| SectionOrderEntry {
+            key: kind.key().to_owned(),
+            kind: (*kind).into(),
+            name: core_layout::section_name(*kind).to_owned(),
+            views: core_layout::section_views(*kind).to_owned(),
+        })
+        .collect()
+}
+
 /// The indices of the rows that match a search query, in the order given.
 ///
 /// The grammar is the desktop search box's: bare words match the number,

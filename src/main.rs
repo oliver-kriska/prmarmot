@@ -221,6 +221,7 @@ fn main() {
         update_failure: consume_update_failure(&update_paths),
         config_warnings,
         update_paths,
+        section_order: prmarmot_local::config::section_order(&file),
     };
     let attention_preferences = AttentionPreferences {
         notifications: file.notifications,

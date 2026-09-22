@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use prmarmot_core::board::BoardScope;
+use prmarmot_core::layout::SectionOrder;
 
 pub use prmarmot_local::config::{
     config_path, load, load_reporting, normalized_pins, resolve_scope, FileConfig, MAX_PINNED_REPOS,
@@ -27,6 +28,9 @@ pub struct SettingsUpdate {
     pub notify_all_needs_action: Option<bool>,
     pub dock_badge: Option<bool>,
     pub automatic_update_checks: Option<bool>,
+    /// `Some` writes `section_order`, and the default order removes it;
+    /// `None` leaves whatever the file says as it was written.
+    pub section_order: Option<SectionOrder>,
 }
 
 /// Save editable settings while preserving comments and unrelated keys.
@@ -72,6 +76,14 @@ fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> 
             None => {
                 doc.remove("issue_link");
             }
+        }
+    }
+    if let Some(order) = &update.section_order {
+        if order.is_default() {
+            doc.remove("section_order");
+        } else {
+            doc["section_order"] =
+                toml_edit::value(order.keys().into_iter().collect::<toml_edit::Array>());
         }
     }
     for (key, value) in [
@@ -580,6 +592,44 @@ mod tests {
         .unwrap();
         let saved: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!saved.automatic_update_checks);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn section_order_is_written_as_keys_and_the_default_removes_it() {
+        let path = temp_config("section-order");
+        std::fs::write(&path, "# mine\n[repo_reviewers]\n\"acme\" = [\"olga\"]\n").unwrap();
+        let (order, _) = SectionOrder::from_keys(&["available", "await"]);
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                section_order: Some(order.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# mine"), "{saved}");
+        // A top-level key, not one inside the trailing table.
+        let parsed: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(prmarmot_local::config::section_order(&parsed), order);
+        assert_eq!(parsed.repo_reviewers["acme"], ["olga"]);
+
+        // Untouched in Settings: the file keeps what it said.
+        save_settings_at(&path, &SettingsUpdate::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                section_order: Some(SectionOrder::default()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("section_order"));
         std::fs::remove_file(path).unwrap();
     }
 

@@ -1022,6 +1022,23 @@ mod tests {
     }
 
     #[test]
+    fn sections_follow_the_order_config_toml_asks_for() {
+        let mut view = all_open_view(None, Some(3));
+        view.sections = prmarmot_core::layout::SectionOrder::from_keys(&["draft", "await"]).0;
+        let keys: Vec<String> = board_json(&view)["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(keys, ["draft", "await", "todo"]);
+        let md = markdown(&view, false);
+        let drafts = md.find("## Drafts (1)").unwrap();
+        let requested = md.find("## Requested from you (1)").unwrap();
+        assert!(drafts < requested, "{md}");
+    }
+
+    #[test]
     fn all_open_says_when_part_of_the_filter_only_checked_the_loaded_prs() {
         let view = all_open_view(Some("login is:stale"), Some(761));
         assert_eq!(view.rows.len(), 0);

@@ -390,6 +390,43 @@ fn a_board_lays_out_into_sections_and_shares_as_text() {
         .count();
     assert_eq!(rows, board.rows.len(), "every row is placed exactly once");
 
+    // A person's order moves the sections, never the rows in them.
+    let label = |item: &prmarmot_ffi::BoardItem| match item {
+        prmarmot_ffi::BoardItem::Header { label, .. } => Some(label.clone()),
+        prmarmot_ffi::BoardItem::Row { .. } => None,
+    };
+    let default_labels: Vec<String> = items.iter().filter_map(label).collect();
+    let last = default_labels.last().unwrap().clone();
+    let last_key = prmarmot_ffi::section_order_entries(Vec::new())
+        .into_iter()
+        .find(|entry| last.starts_with(&entry.name))
+        .expect("every header is an orderable section")
+        .key;
+    let reordered = prmarmot_ffi::layout_ordered(
+        board.rows.clone(),
+        Mode::Review,
+        false,
+        Vec::new(),
+        false,
+        Sort::Wait,
+        vec![last_key],
+    );
+    let labels: Vec<String> = reordered.iter().filter_map(label).collect();
+    assert_eq!(labels.first(), Some(&last), "{labels:?}");
+    assert_eq!(labels.len(), default_labels.len());
+    assert_eq!(
+        prmarmot_ffi::layout_ordered(
+            board.rows.clone(),
+            Mode::Review,
+            false,
+            Vec::new(),
+            false,
+            Sort::Wait,
+            prmarmot_ffi::default_section_order(),
+        ),
+        items
+    );
+
     let payload = prmarmot_ffi::share_group(
         "Requested from you".into(),
         board.rows.clone(),
@@ -858,4 +895,50 @@ fn a_board_survives_the_offline_cache() {
     assert!(prmarmot_ffi::decode_board(b"not json".to_vec()).is_err());
     let future = br#"{"version":99,"fetched_at":0,"board":null}"#.to_vec();
     assert!(prmarmot_ffi::decode_board(future).is_err());
+}
+
+/// The Settings list's words and moves come from core, so the iPad's list and
+/// the desktop's say and do the same.
+#[test]
+fn a_section_order_list_moves_names_and_reports_what_it_skipped() {
+    let order = prmarmot_ffi::default_section_order();
+    assert_eq!(
+        order,
+        [
+            "approved",
+            "todo",
+            "action",
+            "available",
+            "await",
+            "done",
+            "draft"
+        ]
+    );
+    let moved = prmarmot_ffi::move_section(order.clone(), "available".into(), true);
+    assert_eq!(moved[2], "available");
+    assert_eq!(moved[3], "action");
+    // At the top nothing moves; an unknown key moves nothing either.
+    assert_eq!(
+        prmarmot_ffi::move_section(order.clone(), "approved".into(), true),
+        order
+    );
+    assert_eq!(
+        prmarmot_ffi::move_section(order.clone(), "later".into(), false),
+        order
+    );
+
+    let parsed = prmarmot_ffi::parse_section_order(vec!["Draft".into(), "soon".into()]);
+    assert_eq!(parsed.keys[0], "draft");
+    assert_eq!(parsed.keys.len(), order.len());
+    assert_eq!(parsed.ignored.len(), 1);
+    assert!(
+        parsed.ignored[0].contains("\"soon\""),
+        "{:?}",
+        parsed.ignored
+    );
+
+    let entries = prmarmot_ffi::section_order_entries(moved);
+    assert_eq!(entries[2].name, "Available to review");
+    assert_eq!(entries[2].views, "Review queue, Involving me, All open");
+    assert_eq!(entries.last().unwrap().name, "Drafts");
 }

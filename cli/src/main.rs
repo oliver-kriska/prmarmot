@@ -220,6 +220,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
     );
     board.authored_only = setup.board.authored_only;
     board.sort = args.sort;
+    board.sections = setup.sections.clone();
     let format = args.format.unwrap_or(if term::stdout_is_terminal() {
         Format::Table
     } else {

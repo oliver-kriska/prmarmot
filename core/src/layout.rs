@@ -61,19 +61,40 @@ pub enum LayoutItem {
     Row(usize),
 }
 
-/// Lay out `rows` for `mode`. Snoozed rows (by PR id) move to a trailing
-/// Snoozed group whose members are listed but only emitted as rows when
-/// `show_snoozed` is set. Requested from you, Available to review, and
-/// Awaiting review list the longest pickup wait first, unless
-/// `sort` says otherwise; every other order within a section is the incoming
-/// one.
-pub fn layout<'a>(
+/// [`layout_ordered`] in the default section order.
+pub fn layout(
+    rows: &[BoardRow],
+    mode: Mode,
+    all_repos: bool,
+    snoozed: &HashSet<String>,
+    show_snoozed: bool,
+    sort: Sort,
+) -> Vec<LayoutItem> {
+    layout_ordered(
+        rows,
+        mode,
+        all_repos,
+        snoozed,
+        show_snoozed,
+        sort,
+        &SectionOrder::default(),
+    )
+}
+
+/// Lay out `rows` for `mode`, its sections in `sections` order. Snoozed rows
+/// (by PR id) move to a trailing Snoozed group whose members are listed but
+/// only emitted as rows when `show_snoozed` is set. Requested from you,
+/// Available to review, and Awaiting review list the longest pickup wait
+/// first, unless `sort` says otherwise; every other order within a section is
+/// the incoming one.
+pub fn layout_ordered<'a>(
     rows: &'a [BoardRow],
     mode: Mode,
     all_repos: bool,
     snoozed: &HashSet<String>,
     show_snoozed: bool,
     sort: Sort,
+    sections: &SectionOrder,
 ) -> Vec<LayoutItem> {
     let mut display = Vec::with_capacity(rows.len() + 4);
     let mut order: Vec<usize> = (0..rows.len()).collect();
@@ -85,7 +106,7 @@ pub fn layout<'a>(
     order.retain(|&ix| !snoozed.contains(&rows[ix].id));
     let key = |row: &'a BoardRow| {
         let kind = section_kind(mode, row);
-        let section = section_rank(kind);
+        let section = sections.rank(kind);
         let approved_action = matches!(mode, Mode::Authored | Mode::AllOpen)
             && row.category == Category::Action
             && row.review_state == ReviewState::Approved;
@@ -213,18 +234,143 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     }
 }
 
-/// Section order, the same in every view: what is done leads (Approved), then
-/// what needs you, then what waits, then drafts. All open holds both a review
-/// asked of you and PRs that need attention, and the review comes first.
-fn section_rank(kind: SectionKind) -> u8 {
+/// The sections a person can put in their own order, in the default one:
+/// what is done leads (Approved), then what needs you, then what waits, then
+/// drafts. All open holds both a review asked of you and PRs that need action,
+/// and the review comes first. Stack sub-headers stay inside their section
+/// and Snoozed always trails, so neither is here. Awaiting review and
+/// Reviewed never share a view.
+pub const ORDERABLE_SECTIONS: [SectionKind; 7] = [
+    SectionKind::Approved,
+    SectionKind::Category(Category::Todo),
+    SectionKind::Category(Category::Action),
+    SectionKind::Category(Category::Available),
+    SectionKind::Category(Category::Await),
+    SectionKind::Category(Category::Done),
+    SectionKind::Category(Category::Draft),
+];
+
+/// The order sections come in, one order for every view: each view shows the
+/// sections it has in this order. Always all of [`ORDERABLE_SECTIONS`], each
+/// once; the default is theirs. Written as the JSON section keys
+/// (`section_order` in config.toml), so a person, the Settings list and an
+/// agent all name a section the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionOrder(Vec<SectionKind>);
+
+impl Default for SectionOrder {
+    fn default() -> Self {
+        Self(ORDERABLE_SECTIONS.to_vec())
+    }
+}
+
+impl SectionOrder {
+    /// The order `keys` asks for: the sections it names first, in its order,
+    /// then the rest in their default order, so an order written before a
+    /// section existed still holds every section. Keys are trimmed and match
+    /// in any case. Returns, one sentence each, what it ignored: an unknown or
+    /// repeated key, or `snoozed`, which always comes last.
+    pub fn from_keys<S: AsRef<str>>(keys: &[S]) -> (Self, Vec<String>) {
+        let mut chosen: Vec<SectionKind> = Vec::with_capacity(ORDERABLE_SECTIONS.len());
+        let mut ignored = Vec::new();
+        for key in keys {
+            let key = key.as_ref().trim();
+            match ORDERABLE_SECTIONS
+                .iter()
+                .find(|kind| kind.key().eq_ignore_ascii_case(key))
+            {
+                Some(kind) if chosen.contains(kind) => {
+                    ignored.push(format!("ignoring repeated section_order entry {key:?}"));
+                }
+                Some(kind) => chosen.push(*kind),
+                None if key.eq_ignore_ascii_case(SectionKind::Snoozed.key()) => ignored.push(
+                    "ignoring section_order entry \"snoozed\": Snoozed always comes last".into(),
+                ),
+                None => ignored.push(format!(
+                    "ignoring section_order entry {key:?}: use {}",
+                    ORDERABLE_SECTIONS.map(|kind| kind.key()).join(", ")
+                )),
+            }
+        }
+        chosen.extend(
+            ORDERABLE_SECTIONS
+                .iter()
+                .filter(|kind| !chosen.contains(kind))
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        (Self(chosen), ignored)
+    }
+
+    /// The sections, first to last.
+    pub fn kinds(&self) -> &[SectionKind] {
+        &self.0
+    }
+
+    /// The JSON keys, first to last: what `section_order` in config.toml holds.
+    pub fn keys(&self) -> Vec<&'static str> {
+        self.0.iter().map(SectionKind::key).collect()
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `kind` one place earlier (`earlier`) or later, the Settings list's up
+    /// and down buttons. At the top or the bottom, the order stays as it is.
+    pub fn moved(&self, kind: SectionKind, earlier: bool) -> Self {
+        let mut kinds = self.0.clone();
+        if let Some(ix) = kinds.iter().position(|k| *k == kind) {
+            let to = if earlier {
+                ix.checked_sub(1)
+            } else {
+                Some(ix + 1).filter(|&to| to < kinds.len())
+            };
+            if let Some(to) = to {
+                kinds.swap(ix, to);
+            }
+        }
+        Self(kinds)
+    }
+
+    /// Where a section sorts: its place in the order. Stack sub-headers and
+    /// Snoozed are never ranked against the rest, so they come after.
+    fn rank(&self, kind: SectionKind) -> usize {
+        self.0
+            .iter()
+            .position(|k| *k == kind)
+            .unwrap_or(self.0.len())
+    }
+}
+
+/// A section's name in the Settings order list, the same in every view it
+/// appears in (a header adds detail, e.g. "Available to review · no reviewer
+/// requested").
+pub fn section_name(kind: SectionKind) -> &'static str {
     match kind {
-        SectionKind::Approved => 0,
-        SectionKind::Category(Category::Todo) => 1,
-        SectionKind::Category(Category::Action) => 2,
-        SectionKind::Category(Category::Available) => 3,
-        SectionKind::Category(Category::Await | Category::Done) => 4,
-        SectionKind::Category(Category::Draft) => 5,
-        SectionKind::Stack | SectionKind::Snoozed => 6,
+        SectionKind::Approved => "Approved",
+        SectionKind::Category(Category::Todo) => "Requested from you",
+        SectionKind::Category(Category::Action) => "Needs action",
+        SectionKind::Category(Category::Available) => "Available to review",
+        SectionKind::Category(Category::Await) => "Awaiting review",
+        SectionKind::Category(Category::Done) => "Reviewed",
+        SectionKind::Category(Category::Draft) => "Drafts",
+        SectionKind::Stack => "Stack",
+        SectionKind::Snoozed => "Snoozed",
+    }
+}
+
+/// Which views show a section, for the line under its name in the Settings
+/// order list: one order covers them all, so the list says where each goes.
+pub fn section_views(kind: SectionKind) -> &'static str {
+    match kind {
+        SectionKind::Approved | SectionKind::Category(Category::Action | Category::Await) => {
+            "My PRs, Involving me, All open"
+        }
+        SectionKind::Category(Category::Todo) => "Review queue, All open",
+        SectionKind::Category(Category::Available) => "Review queue, Involving me, All open",
+        SectionKind::Category(Category::Done) => "Review queue",
+        _ => "Every view",
     }
 }
 
@@ -886,5 +1032,209 @@ mod tests {
             outline(&rows, &shown),
             ["Awaiting review (1)", "2", "Snoozed (1)", "1"]
         );
+    }
+
+    #[test]
+    fn a_section_order_names_what_it_wants_first_and_keeps_every_section() {
+        assert!(SectionOrder::default().is_default());
+        assert_eq!(
+            SectionOrder::default().keys(),
+            [
+                "approved",
+                "todo",
+                "action",
+                "available",
+                "await",
+                "done",
+                "draft"
+            ]
+        );
+        // Listed sections lead in their order; the rest keep the default one.
+        let (order, ignored) = SectionOrder::from_keys(&[" Available ", "AWAIT"]);
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert_eq!(
+            order.keys(),
+            [
+                "available",
+                "await",
+                "approved",
+                "todo",
+                "action",
+                "done",
+                "draft"
+            ]
+        );
+        // What it cannot use is named, one sentence each, and changes nothing.
+        let (order, ignored) =
+            SectionOrder::from_keys(&["draft", "in-progress", "draft", "snoozed"]);
+        assert_eq!(
+            order.keys(),
+            [
+                "draft",
+                "approved",
+                "todo",
+                "action",
+                "available",
+                "await",
+                "done"
+            ]
+        );
+        assert_eq!(
+            ignored,
+            [
+                "ignoring section_order entry \"in-progress\": use approved, todo, action, \
+                 available, await, done, draft",
+                "ignoring repeated section_order entry \"draft\"",
+                "ignoring section_order entry \"snoozed\": Snoozed always comes last",
+            ]
+        );
+        let empty: [&str; 0] = [];
+        assert_eq!(SectionOrder::from_keys(&empty).0, SectionOrder::default());
+        // What `keys` writes reads back as the same order.
+        assert_eq!(SectionOrder::from_keys(&order.keys()).0, order);
+    }
+
+    #[test]
+    fn moving_a_section_swaps_it_with_its_neighbour_and_stops_at_the_ends() {
+        let available = SectionKind::Category(Category::Available);
+        let order = SectionOrder::default().moved(available, true);
+        assert_eq!(
+            order.keys(),
+            [
+                "approved",
+                "todo",
+                "available",
+                "action",
+                "await",
+                "done",
+                "draft"
+            ]
+        );
+        assert_eq!(order.moved(available, false), SectionOrder::default());
+        let first = SectionOrder::default();
+        assert_eq!(first.moved(SectionKind::Approved, true), first);
+        let last = SectionKind::Category(Category::Draft);
+        assert_eq!(first.moved(last, false), first);
+        // Not a section one can order: nothing moves.
+        assert_eq!(first.moved(SectionKind::Snoozed, true), first);
+    }
+
+    #[test]
+    fn every_view_shows_its_sections_in_the_persons_order_with_snoozed_last() {
+        let unasked = |mut r: BoardRow| {
+            r.review_state = ReviewState::None;
+            r
+        };
+        let approved = |mut r: BoardRow| {
+            r.review_state = ReviewState::Approved;
+            r
+        };
+        let rows = vec![
+            row(1, Category::Action),
+            row(2, Category::Await),
+            unasked(row(3, Category::Await)),
+            approved(row(4, Category::Await)),
+            row(5, Category::Todo),
+            row(6, Category::Draft),
+            row(7, Category::Action),
+        ];
+        let snoozed: HashSet<String> = ["PR_7".to_string()].into();
+        // A lead who assigns reviewers: what nobody was asked about comes first.
+        let (order, _) = SectionOrder::from_keys(&["available", "draft", "await"]);
+        let items = layout_ordered(
+            &rows,
+            Mode::AllOpen,
+            false,
+            &snoozed,
+            true,
+            Sort::Wait,
+            &order,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Available to review · no reviewer requested (1)",
+                "3",
+                "Drafts (1)",
+                "6",
+                "Awaiting review (1)",
+                "2",
+                "Approved (1)",
+                "4",
+                "Requested from you (1)",
+                "5",
+                "Needs action (1)",
+                "1",
+                "Snoozed (1)",
+                "7",
+            ]
+        );
+        // The Review queue takes its own sections from the same order.
+        let review = vec![
+            row(1, Category::Todo),
+            row(2, Category::Available),
+            row(3, Category::Done),
+            row(4, Category::Draft),
+        ];
+        let (order, _) = SectionOrder::from_keys(&["done", "draft"]);
+        let items = layout_ordered(
+            &review,
+            Mode::Review,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+            &order,
+        );
+        assert_eq!(
+            outline(&review, &items),
+            [
+                "Reviewed (1)",
+                "3",
+                "Drafts (1)",
+                "4",
+                "Requested from you (1)",
+                "1",
+                "Available to review · no reviewer requested (1)",
+                "2",
+            ]
+        );
+        // The default order is the layout every view had before it could change.
+        assert_eq!(
+            layout_ordered(
+                &rows,
+                Mode::AllOpen,
+                false,
+                &snoozed,
+                true,
+                Sort::Wait,
+                &SectionOrder::default()
+            ),
+            layout(&rows, Mode::AllOpen, false, &snoozed, true, Sort::Wait)
+        );
+    }
+
+    #[test]
+    fn every_orderable_section_has_a_name_and_says_where_it_shows() {
+        for kind in ORDERABLE_SECTIONS {
+            assert!(!section_name(kind).is_empty(), "{kind:?}");
+            assert!(!section_views(kind).is_empty(), "{kind:?}");
+        }
+        assert_eq!(
+            section_views(SectionKind::Category(Category::Done)),
+            "Review queue"
+        );
+        // The Settings name is the header's, before any " · " detail.
+        for (mode, kind) in [
+            (Mode::Authored, SectionKind::Category(Category::Action)),
+            (Mode::Review, SectionKind::Category(Category::Available)),
+            (Mode::AllOpen, SectionKind::Category(Category::Todo)),
+        ] {
+            let SectionKind::Category(category) = kind else {
+                unreachable!()
+            };
+            let header = group_label(mode, category, false);
+            assert!(header.starts_with(section_name(kind)), "{header}");
+        }
     }
 }

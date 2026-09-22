@@ -139,7 +139,8 @@ checkout does the same, replacing a Homebrew-installed app until the next
    queue** in the title bar.
 
 Click **Settings** in the bottom-right corner to edit reviewer suggestions,
-the refresh interval, and the theme directly—no file editing required.
+the refresh interval, the theme, and the section order directly—no file
+editing required.
 Expand **Advanced** to configure issue links or copy the config-file path.
 **Save** validates and applies changes without restarting; **Cancel** discards
 your edits. Reviewer and issue-link changes reload the board, subject to the
@@ -257,6 +258,7 @@ notify_all_needs_action = false         # watched PRs still notify
 dock_badge = true                       # macOS; no-op on Linux
 automatic_update_checks = true          # latest stable release, at most daily
 stale_after_days = 3                    # waiting this long for a reviewer is stale
+section_order = ["available", "await"]  # these sections first, the rest in default order
 
 # Suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]     # any repository without an entry below
@@ -352,6 +354,11 @@ Every feature, with its limits and the version it shipped in, is listed in
   nobody has reviewed is under **Available to review**, as in the Review
   queue. Hover a section's title (**Awaiting review**, **Needs action**, …)
   for one sentence on what puts a PR there.
+- **Section order:** by default, what is done leads (**Approved**), then what
+  needs you, then what waits, then **Drafts**. Settings → **Section order**
+  changes it for every view at once (up and down buttons, **Reset to
+  default**), saved as `section_order` in the config file; the CLI follows it.
+  Each view shows the sections it has in that order, and Snoozed stays last.
 - **Size band:** in the **Review queue** and **All open**, the Note ends with
   how big the change is: **Small** (at most 100 changed lines and at most 10
   files), **Large** (more than 400 lines or more than 30 files), or **Medium**

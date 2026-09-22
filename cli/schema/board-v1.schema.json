@@ -64,7 +64,7 @@
     },
     "sections": {
       "type": "array",
-      "description": "Non-empty sections in the app's display order.",
+      "description": "Non-empty sections in the app's display order: the default, or the user's `section_order` from config.toml. Find a section by `key`, not by position.",
       "items": { "$ref": "#/$defs/section" }
     }
   },
@@ -160,7 +160,10 @@
         "title": { "type": "string" },
         "author": { "type": ["string", "null"], "description": "Null when the account no longer exists." },
         "draft": { "type": "boolean" },
-        "category": { "enum": ["action", "await", "todo", "available", "done", "draft"] },
+        "category": {
+          "enum": ["action", "await", "todo", "available", "done", "draft"],
+          "description": "The PR's category, which can differ from its section's `key`: in `mine` and `all`, PRs under `approved` and `available` have category `await`. Use the section's `key` to find a section's PRs."
+        },
         "queue": {
           "enum": ["requested", "available", null],
           "description": "Review queue, and All open's `todo`: whether your review was requested. Null in My PRs."

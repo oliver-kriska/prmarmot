@@ -20,7 +20,7 @@ values in the code. New features get the next free number in their area.
   PRs with no pending user or team reviewer request (**Available to review**), an optional pool rather than an
   assignment. Your own PRs never appear, and it goes by review requests, not issue assignees. _since v0.1.0;
   Available to review since v0.3.0_
-- **F-board-5** Sections always come in the same order, and empty ones are left out.
+- **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
   - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _unreleased_ (Needs
     attention and In progress, with no Available to review, through v0.11.0)
@@ -34,7 +34,8 @@ values in the code. New features get the next free number in their area.
 
   Snoozed PRs follow in their own group. Within Needs action, approved PRs come first. _since v0.2.0; Approved since
   v0.5.1_ Hover a section's title for one sentence on what puts a PR there; the CLI's JSON carries the same sentence
-  as each section's `explanation`. _unreleased_
+  as each section's `explanation`. _unreleased_ You can put the sections in your own order (F-settings-8).
+  _unreleased_
 - **F-board-6** GitHub's native stacks are grouped inside each section and ordered by layer from the base up.
   - Each row carries a layer marker (`├─ 2/3`, `└─ 3/3`).
   - The stack header reads "3 layers", or "2 of 3 layers shown" when part of the stack is elsewhere.
@@ -315,7 +316,8 @@ values in the code. New features get the next free number in their area.
 - **F-settings-1** **Settings** edits these and applies them without a restart:
   - reviewer suggestions, the refresh interval, and the theme;
   - notifications and their sound;
-  - the Dock badge and automatic update checks.
+  - the Dock badge and automatic update checks;
+  - the section order. _unreleased_
 
   **Advanced** holds issue links, whether every PR entering Needs action notifies, and the config file's path.
   **Save** checks each field and puts any error beside it, and **Cancel** discards your edits. Reviewer names must
@@ -327,7 +329,8 @@ values in the code. New features get the next free number in their area.
   never overwritten, and the app starts with defaults. _since v0.1.0_ A banner says the file was ignored and why,
   until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
-  `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`), from the file or the environment.
+  `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _unreleased_ a `section_order`
+  entry that is not a section), from the file or the environment.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
@@ -340,6 +343,12 @@ values in the code. New features get the next free number in their area.
   repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_
 - **F-settings-7** Quit from the app menu or with `⌘Q` / `Ctrl+Q`, which works everywhere, even in text fields.
   Plain `q` quits when no text field or dialog is active. _since v0.5.0_
+- **F-settings-8** **Section order** in Settings puts the sections in your own order: one list for every view,
+  each section moved with its up and down buttons, and **Reset to default**. The list says which views show each
+  section; each view shows the ones it has, in that order. Snoozed stays last and stacks stay inside their
+  section, and nothing is hidden or counted differently. It is saved as `section_order` in config.toml, written
+  with the JSON section keys (`section_order = ["available", "await"]`); sections left out follow in their
+  default order. `prmarmot-cli` prints its views in the same order. _unreleased_
 
 ## Updates and install
 

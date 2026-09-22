@@ -56,6 +56,11 @@ pub struct AppConfig {
     pub dock_badge: bool,
     pub automatic_update_checks: bool,
     pub stale_after_days: Option<u64>,
+    /// The order sections come in, in every view, as their JSON keys; empty
+    /// is the default order. `parse_section_order` and `section_order_entries`
+    /// read it.
+    #[uniffi(default = [])]
+    pub section_order: Vec<String>,
     pub auth: Option<AuthConfig>,
     pub window: Option<WindowConfig>,
 }
@@ -104,6 +109,7 @@ impl From<FileConfig> for AppConfig {
             dock_badge: file.dock_badge,
             automatic_update_checks: file.automatic_update_checks,
             stale_after_days: file.stale_after_days,
+            section_order: file.section_order,
             auth: file.auth.map(|auth| AuthConfig {
                 host: auth.host,
                 client_id: auth.client_id,
@@ -144,6 +150,7 @@ impl From<AppConfig> for FileConfig {
             dock_badge: config.dock_badge,
             automatic_update_checks: config.automatic_update_checks,
             stale_after_days: config.stale_after_days,
+            section_order: config.section_order,
             auth: config.auth.map(|auth| AuthSection {
                 host: auth.host,
                 client_id: auth.client_id,

@@ -12,6 +12,7 @@ use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IconName, Selectable, Sizable, WindowExt,
 };
 use prmarmot_core::board::IssueLinkRule;
+use prmarmot_core::layout::{section_name, section_views, SectionOrder};
 
 use prmarmot_local::auth::{token_store, TokenKind};
 use prmarmot_local::config::AuthSettings;
@@ -132,6 +133,10 @@ pub struct SettingsView {
     notify_all_needs_action: bool,
     dock_badge: bool,
     automatic_update_checks: bool,
+    /// The order being edited, and the one the file holds: saving writes the
+    /// order only when they differ, so a hand-written list stays as written.
+    section_order: SectionOrder,
+    saved_section_order: SectionOrder,
     advanced: bool,
     error: Option<String>,
     error_field: Option<&'static str>,
@@ -174,6 +179,7 @@ impl SettingsView {
             prmarmot_local::config::auth_settings(&file, None, None, &mut warnings)
         };
         let account = stored_account(&auth);
+        let section_order = prmarmot_local::config::section_order(&file);
         let issue = env.issue_link.clone().or_else(|| {
             file.issue_link
                 .map(|rule| (rule.pattern, rule.url_template))
@@ -199,6 +205,8 @@ impl SettingsView {
             notify_all_needs_action: file.notify_all_needs_action,
             dock_badge: file.dock_badge,
             automatic_update_checks: file.automatic_update_checks,
+            saved_section_order: section_order.clone(),
+            section_order,
             advanced: false,
             error: None,
             error_field: None,
@@ -282,6 +290,8 @@ impl SettingsView {
             notify_all_needs_action: Some(self.notify_all_needs_action),
             dock_badge: Some(self.dock_badge),
             automatic_update_checks: Some(self.automatic_update_checks),
+            section_order: (self.section_order != self.saved_section_order)
+                .then(|| self.section_order.clone()),
         };
         match config::save_settings(&update) {
             Ok(()) => {
@@ -305,13 +315,14 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.error_field = Some(field);
-        // Indices are direct children of settings-scroll; Advanced fields are
-        // siblings so either input can be revealed independently.
+        // Indices are direct children of settings-scroll (the header and
+        // Account come first); Advanced fields are siblings so either input
+        // can be revealed independently.
         let (input, index) = match field {
-            "Reviewer suggestions" => (&self.reviewers, 0),
-            "Refresh interval" => (&self.refresh, 2),
-            "Issue ID regular expression" => (&self.issue_pattern, 5),
-            _ => (&self.issue_url, 6),
+            "Reviewer suggestions" => (&self.reviewers, 2),
+            "Refresh interval" => (&self.refresh, 4),
+            "Issue ID regular expression" => (&self.issue_pattern, 14),
+            _ => (&self.issue_url, 15),
         };
         input.update(cx, |input, cx| input.focus(window, cx));
         self.scroll.scroll_to_top_of_item(index);
@@ -376,6 +387,83 @@ impl SettingsView {
             Err(message) => self.account_message = Some(message),
         }
         cx.notify();
+    }
+
+    /// Section order: one list for every view, each section moved with its up
+    /// and down buttons. The names and where each shows come from core, as
+    /// the iPad's list does.
+    fn render_section_order(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let last = self.section_order.kinds().len().saturating_sub(1);
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex().justify_between().child("Section order").child(
+                    Button::new("settings-section-order-reset")
+                        .small()
+                        .ghost()
+                        .label("Reset to default")
+                        .disabled(self.section_order.is_default())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.section_order = SectionOrder::default();
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(div().text_size(px(12.)).text_color(muted).child(
+                "The order sections come in, the same in every view; each view shows the ones it \
+                 has. Saved as section_order in config.toml.",
+            ))
+            .children(
+                self.section_order
+                    .kinds()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(ix, kind)| {
+                        let name = section_name(kind);
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .text_color(muted)
+                                    .child((ix + 1).to_string()),
+                            )
+                            .child(div().child(name))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(11.))
+                                    .text_color(muted)
+                                    .child(section_views(kind)),
+                            )
+                            .child(
+                                Button::new(("settings-section-up", ix))
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::ArrowUp)
+                                    .tooltip(format!("Move {name} up"))
+                                    .disabled(ix == 0)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.section_order = this.section_order.moved(kind, true);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new(("settings-section-down", ix))
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::ArrowDown)
+                                    .tooltip(format!("Move {name} down"))
+                                    .disabled(ix == last)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.section_order = this.section_order.moved(kind, false);
+                                        cx.notify();
+                                    })),
+                            )
+                    }),
+            )
     }
 
     fn field(
@@ -522,6 +610,7 @@ impl Render for SettingsView {
                                     })),
                             ),
                     )
+                    .child(self.render_section_order(cx))
                     .child(
                         h_flex()
                             .justify_between()

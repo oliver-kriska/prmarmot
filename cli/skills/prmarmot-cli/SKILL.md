@@ -42,7 +42,9 @@ loaded PRs. `total` says how many are open (or match those two terms): when it
 is larger than `count + filters.filtered_out`, not every PR was checked.
 
 **Structure:**
-- The top level has `sections[]`, in the app's display order.
+- The top level has `sections[]`, in the app's display order: the default one,
+  or the user's `section_order` from config.toml. Find a section by `key`,
+  never by position.
 - Each section has a stable `key`, a `label`, an `explanation` (one sentence on
   what puts a PR there; quote it when the user asks what a section means), and
   `prs[]`.

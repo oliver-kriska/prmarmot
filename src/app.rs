@@ -24,7 +24,7 @@ use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
 use prmarmot_core::board::{BoardScope, Mode};
-use prmarmot_core::layout::Sort;
+use prmarmot_core::layout::{SectionOrder, Sort};
 use prmarmot_core::search::{local_only_terms, RemoteFilter};
 use prmarmot_core::status::{
     all_open_local_filter_notice, all_open_needs_repository, all_open_no_match_text,
@@ -80,6 +80,8 @@ pub struct Launch {
     pub update_failure: Option<String>,
     /// What the settings ignored: the whole file, or single values.
     pub config_warnings: crate::config::ConfigWarnings,
+    /// `section_order` from the file.
+    pub section_order: SectionOrder,
 }
 
 #[derive(Clone)]
@@ -150,6 +152,8 @@ pub struct RootView {
     /// Review queue: list the smallest changes first instead of the longest
     /// wait.
     smallest_first: bool,
+    /// The order sections come in, in every view (`section_order`, Settings).
+    section_order: SectionOrder,
     /// Loaded PRs matching the search that changed since you looked.
     changed_count: usize,
     /// Snoozed PRs among the rows the table shows.
@@ -476,6 +480,7 @@ impl RootView {
             changed_only: false,
             snoozed_expanded: false,
             smallest_first: false,
+            section_order: launch.section_order,
             changed_count: 0,
             snoozed_count: 0,
             suppress_ack_for: None,
@@ -637,6 +642,9 @@ impl RootView {
             } else {
                 Sort::Wait
             });
+            table
+                .delegate_mut()
+                .set_section_order(self.section_order.clone());
             table.delegate_mut().set_rows(rows);
             table
                 .delegate_mut()
@@ -715,6 +723,13 @@ impl RootView {
                 this.automatic_update_checks = file.automatic_update_checks;
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
                 this.theme_pref.apply(window, cx);
+                // The order is the window's alone, so a change to it redraws
+                // the rows already here rather than waiting for a fetch.
+                let sections = prmarmot_local::config::section_order(&file);
+                if this.section_order != sections {
+                    this.section_order = sections;
+                    this.sync_table(cx);
+                }
                 let refresh = crate::state::refresh_interval(file.refresh_secs);
                 if this.refresh != refresh {
                     this.refresh = refresh;

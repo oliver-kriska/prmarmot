@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule};
 use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
+use prmarmot_core::layout::SectionOrder;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -53,6 +54,11 @@ pub struct FileConfig {
     /// (`is:stale`, `--stale`); at least 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_after_days: Option<u64>,
+    /// The order sections come in, in every view, as their JSON keys
+    /// (`["available", "await"]`). Sections left out follow in their default
+    /// order; empty is the default order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_order: Vec<String>,
     // TOML requires plain keys before tables, so these come last.
     /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
     /// (`"acme/api"`), used before `default_reviewers`.
@@ -91,6 +97,7 @@ impl Default for FileConfig {
             dock_badge: true,
             automatic_update_checks: true,
             stale_after_days: None,
+            section_order: Vec::new(),
             auth: None,
         }
     }
@@ -233,15 +240,22 @@ pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
 }
 
 /// Each value the settings ignore, one line apiece: the board rules' (an
-/// issue-link pattern, `[repo_reviewers]` keys, `stale_after_days = 0`) and
-/// the sign-in's (`[auth] mode` and `store` words), from the file or the
-/// environment. The app lists them in a banner, since a launch from Finder
-/// or Spotlight never shows stderr.
+/// issue-link pattern, `[repo_reviewers]` keys, `stale_after_days = 0`),
+/// `section_order` entries, and the sign-in's (`[auth] mode` and `store`
+/// words), from the file or the environment. The app lists them in a banner,
+/// since a launch from Finder or Spotlight never shows stderr.
 pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     let mut warnings = Vec::new();
     board_rules(file, &mut warnings);
+    warnings.extend(SectionOrder::from_keys(&file.section_order).1);
     auth_settings(file, None, None, &mut warnings);
     warnings
+}
+
+/// The section order the file asks for, whatever of it could be used; what
+/// could not is in [`ignored_values`].
+pub fn section_order(file: &FileConfig) -> SectionOrder {
+    SectionOrder::from_keys(&file.section_order).0
 }
 
 fn board_rules(file: &FileConfig, warnings: &mut Vec<String>) -> BoardConfig {
@@ -508,6 +522,7 @@ mod tests {
         let file: FileConfig = toml::from_str(
             r#"
             stale_after_days = 0
+            section_order = ["available", "later"]
             [repo_reviewers]
             "a/b/c" = ["nope"]
             [issue_link]
@@ -523,6 +538,7 @@ mod tests {
         for expected in [
             "ignoring [repo_reviewers] key \"a/b/c\"",
             "ignoring stale_after_days = 0",
+            "ignoring section_order entry \"later\": use approved",
             // The reason is the regex engine's words, and the iOS build uses
             // a smaller engine that phrases it differently.
             "ignoring bad issue-link pattern \"DEMO-(\": ",
@@ -534,8 +550,28 @@ mod tests {
                 "{expected} missing from {lines:#?}"
             );
         }
-        assert_eq!(lines.len(), 5, "one line each, not joined: {lines:#?}");
+        assert_eq!(lines.len(), 6, "one line each, not joined: {lines:#?}");
         assert!(ignored_values(&FileConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn section_order_is_read_as_keys_and_what_it_leaves_out_follows() {
+        assert!(section_order(&FileConfig::default()).is_default());
+        let file: FileConfig =
+            toml::from_str("section_order = [\"available\", \"await\"]\n").unwrap();
+        assert_eq!(
+            section_order(&file).keys(),
+            [
+                "available",
+                "await",
+                "approved",
+                "todo",
+                "action",
+                "done",
+                "draft"
+            ]
+        );
+        assert!(ignored_values(&file).is_empty());
     }
 
     #[test]

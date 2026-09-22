@@ -11,7 +11,7 @@ use prmarmot_core::board::{
 };
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
-use prmarmot_core::layout::{layout, LayoutItem, Sort};
+use prmarmot_core::layout::{layout_ordered, LayoutItem, SectionOrder, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::search::{
     local_only_terms, matches_filter, take_filter_chips, FilterChip, Qualifier, RemoteFilter,
@@ -27,6 +27,8 @@ pub struct Setup {
     pub scope: BoardScope,
     pub board: BoardConfig,
     pub auth: AuthSettings,
+    /// `section_order` from the file: the app's order, so both show the same.
+    pub sections: SectionOrder,
     pub warnings: Vec<String>,
 }
 
@@ -49,11 +51,14 @@ pub fn setup(
     let (board, warning) = config::board_config(&file);
     warnings.extend(warning);
     let auth = config::auth_settings(&file, cli_host, cli_auth, &mut warnings);
+    let (sections, ignored) = SectionOrder::from_keys(&file.section_order);
+    warnings.extend(ignored);
     Setup {
         file,
         scope,
         board,
         auth,
+        sections,
         warnings,
     }
 }
@@ -145,6 +150,9 @@ pub struct BoardView {
     /// The order inside the review queue's pickup sections (`--sort`); set by
     /// the caller.
     pub sort: Sort,
+    /// The order of the sections themselves (`section_order` in config.toml);
+    /// set by the caller.
+    pub sections: SectionOrder,
     /// How many PRs GitHub's search matched, loaded or not (My PRs and All
     /// open; `None` for the review queue and when GitHub did not say).
     pub total: Option<u64>,
@@ -190,13 +198,14 @@ impl BoardView {
     }
 
     pub fn layout(&self, show_snoozed: bool) -> Vec<LayoutItem> {
-        layout(
+        layout_ordered(
             &self.rows,
             self.mode,
             self.all_repos(),
             &self.snoozed_ids(),
             show_snoozed,
             self.sort,
+            &self.sections,
         )
     }
 }
@@ -292,6 +301,7 @@ pub fn build(
         filters,
         authored_only: false,
         sort: Sort::Wait,
+        sections: SectionOrder::default(),
         total: board.total,
         remote,
     }

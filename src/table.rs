@@ -27,7 +27,9 @@ use prmarmot_core::board::{BoardRow, Ci, Mode};
 use prmarmot_core::cells::{
     common_labels, label_order, note_presentation, review_cell, NotePresentation, ReviewCell, Tone,
 };
-use prmarmot_core::layout::{layout, section_explanation, LayoutItem, SectionKind, Sort};
+use prmarmot_core::layout::{
+    layout_ordered, section_explanation, LayoutItem, SectionKind, SectionOrder, Sort,
+};
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use prmarmot_core::size::ChangeSize;
@@ -471,6 +473,8 @@ pub struct BoardTableDelegate {
     stale_after_days: u64,
     /// The order inside the review queue's pickup sections.
     sort: Sort,
+    /// The order of the sections themselves (`section_order`).
+    sections: SectionOrder,
     /// All open only: labels most rows on screen carry, drawn after the
     /// ones that tell rows apart. Empty in the other views.
     common_labels: Vec<String>,
@@ -502,6 +506,7 @@ impl BoardTableDelegate {
             show_snoozed: false,
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             sort: Sort::Wait,
+            sections: SectionOrder::default(),
             common_labels: Vec::new(),
             on_row_action: None,
             on_group_copy: None,
@@ -557,6 +562,11 @@ impl BoardTableDelegate {
         self.sort = sort;
     }
 
+    /// Takes effect with the next `set_rows`.
+    pub fn set_section_order(&mut self, sections: SectionOrder) {
+        self.sections = sections;
+    }
+
     pub fn set_rows(&mut self, rows: Vec<BoardRow>) {
         self.rows = rows;
         self.rebuild_display();
@@ -585,13 +595,14 @@ impl BoardTableDelegate {
         } else {
             Vec::new()
         };
-        self.display = layout(
+        self.display = layout_ordered(
             &self.rows,
             self.mode,
             self.all_repos,
             &self.snoozed,
             show_snoozed,
             self.sort,
+            &self.sections,
         )
         .into_iter()
         .map(|item| match item {
