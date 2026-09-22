@@ -1922,6 +1922,13 @@ impl RootView {
                 .count(),
             badge: state.badge_count,
             badge_complete: state.badge_coverage_complete,
+            followed: state
+                .rows
+                .iter()
+                .filter(|row| {
+                    state.is_watched(&row.id) || state.snooze_description(&row.id).is_some()
+                })
+                .count(),
             tracked_loaded: state.tracked_loaded,
             tracked_total: state.tracked_total,
             total: state.total,

@@ -43,6 +43,25 @@ it), following his same-day ruling that a section has one name everywhere.
 - ASSESSMENT — G0: no refresh-loop, repaint or cache change; not a re-run
   trigger.
 
+**FACT: every header number is the open view's; unreleased.** Oliver asked
+for the counts to reflect the tab that is open, and chose both rules
+(2026-09-22):
+
+- **"Need you" is the Dock badge's rule in every view:** your own PRs under
+  Needs action plus Requested from you (`status::row_needs_you`, which no
+  longer looks at the mode; your rows are the ones with blockers). On his
+  data that took the Review queue from 18 to 0 (18 PRs under Available to
+  review, none requested) and Involving me from 39 to 34 (5 other people's
+  PRs under Needs action). My PRs and All open are unchanged.
+  `needs_you_here(Review, Available)` is false now. The desktop badge calls
+  `row_needs_you` too, so the header and badge can't drift apart; its count
+  is unchanged.
+- **"N watched/snoozed" counts this view's rows** you watch or snoozed
+  (`HeaderCounts::followed`, ffi `followed` with default 0). The app-wide
+  rotation (`tracked_loaded`/`tracked_total`, up to 50 per refresh) moved
+  into the explanation: "Each refresh also checks 50 of the 64 PRs you watch
+  or snoozed, in any view, taking turns."
+
 ## Current update — 2026-09-21
 
 **FACT: View 1 of the original spec, "All open PRs", exists now as a third
@@ -87,7 +106,8 @@ again on 2026-09-21. Design and measurements:
   "by alice · approved".
 - **Calm:** "need you" counts Requested from you plus your own PRs under
   Needs action (`status::row_needs_you`: your rows are the ones with
-  blockers), never a teammate's conflict; the view never adds to the Dock
+  blockers; every view since 2026-09-22), never a teammate's conflict; the
+  view never adds to the Dock
   badge, and changed markers and
   notifications only cover PRs you watch, your own, those requesting you,
   and ones another view already follows. Load more says how many PRs joined

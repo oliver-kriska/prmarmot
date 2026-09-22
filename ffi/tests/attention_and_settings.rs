@@ -619,11 +619,18 @@ fn the_header_sentence_is_cores_and_names_the_icon_badge_not_a_dock() {
         tracked_total: 64,
         total: None,
         filtered: false,
+        followed: 2,
     });
     assert_eq!(
         summary.line,
-        "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed"
+        "56 loaded · partial results · 3 need you · 2 watched/snoozed"
     );
+    assert!(summary
+        .explanation
+        .contains("checks 50 of the 64 PRs you watch or snoozed"));
+    assert!(summary
+        .explanation
+        .contains("Available to review never counts"));
     assert!(summary.explanation.contains("The app icon badge shows 5"));
     assert!(!summary.explanation.contains("Dock"));
 }

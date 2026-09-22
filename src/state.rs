@@ -1112,20 +1112,10 @@ impl AppState {
                 Mode::Review => review_loaded = true,
                 Mode::AllOpen => return,
             }
+            // The header's rule, so the badge and "need you" can't drift
+            // apart: your own PRs under Needs action, reviews asked of you.
             for row in rows {
-                let counts = match mode {
-                    Mode::Authored => {
-                        row.category == prmarmot_core::board::Category::Action
-                            && row.author.as_deref() == self.me.as_deref()
-                    }
-                    Mode::Review => {
-                        row.queue_provenance
-                            == Some(prmarmot_core::board::QueueProvenance::Requested)
-                            && row.category == prmarmot_core::board::Category::Todo
-                    }
-                    Mode::AllOpen => false,
-                };
-                if counts && !snoozed(&row.id) {
+                if prmarmot_core::status::row_needs_you(mode, row) && !snoozed(&row.id) {
                     ids.insert(row.id.clone());
                 }
             }

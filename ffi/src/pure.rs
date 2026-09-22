@@ -289,7 +289,8 @@ pub struct HeaderCounts {
     pub truncated: bool,
     pub mode: Mode,
     pub all_repos: bool,
-    /// Rows of this view that need you, snoozed ones excluded.
+    /// Rows of this view that need you (`row_needs_you`), snoozed ones
+    /// excluded.
     pub need_you: u32,
     /// Across My PRs and the review queue: your PRs that need action plus
     /// reviews requested from you, snoozed ones excluded. This is the icon
@@ -297,6 +298,9 @@ pub struct HeaderCounts {
     pub badge: u32,
     /// Both views have loaded, so `badge` is the whole count.
     pub badge_complete: bool,
+    /// Of every PR you watch or snoozed, in any view, how many the last
+    /// refresh checked (up to 50 at a time) and how many there are. Only the
+    /// explanation says these.
     pub tracked_loaded: u32,
     pub tracked_total: u32,
     /// `Board.total`: how many PRs GitHub's search found. All open's line
@@ -307,12 +311,15 @@ pub struct HeaderCounts {
     /// `total` counts matches: "12 match".
     #[uniffi(default = false)]
     pub filtered: bool,
+    /// Rows of this view you watch or snoozed: the line's "3 watched/snoozed".
+    #[uniffi(default = 0)]
+    pub followed: u32,
 }
 
 /// The header sentence and the explanation behind it.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct HeaderSummary {
-    /// "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed".
+    /// "56 loaded · partial results · 3 need you · 2 watched/snoozed".
     pub line: String,
     /// The paragraph behind the info button, with the badge named for iOS.
     pub explanation: String,
@@ -330,6 +337,7 @@ pub fn header_summary(counts: HeaderCounts) -> HeaderSummary {
             need_you: counts.need_you as usize,
             badge: counts.badge as usize,
             badge_complete: counts.badge_complete,
+            followed: counts.followed as usize,
             tracked_loaded: counts.tracked_loaded as usize,
             tracked_total: counts.tracked_total as usize,
             total: counts.total,
@@ -340,16 +348,17 @@ pub fn header_summary(counts: HeaderCounts) -> HeaderSummary {
     HeaderSummary { line, explanation }
 }
 
-/// Whether a row of this view counts toward "need you". All open needs the
-/// row itself: use `row_needs_you` there.
+/// Whether a row of this category can count toward "need you", from the
+/// category alone. Needs action in Involving me and All open also holds other
+/// people's PRs, so count rows with `row_needs_you`.
 #[uniffi::export]
 pub fn needs_you_here(mode: Mode, category: crate::types::Category) -> bool {
     core_status::needs_you_here(mode.into(), category.into())
 }
 
-/// Whether this row counts toward "need you", in any view. In All open that
-/// is Requested from you plus your own PRs under Needs action, never a
-/// teammate's.
+/// Whether this row counts toward "need you": the icon badge's rule in every
+/// view. Requested from you plus your own PRs under Needs action; never a
+/// teammate's, and never Available to review.
 #[uniffi::export]
 pub fn row_needs_you(mode: Mode, row: PullRequest) -> bool {
     core_status::row_needs_you(mode.into(), &row.into_row())

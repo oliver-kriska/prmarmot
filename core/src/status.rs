@@ -12,32 +12,26 @@ use crate::board::{BoardRow, Category, Mode};
 use crate::github::access::AccessGaps;
 use crate::layout::group_label;
 
-/// Whether a row of this category counts toward the header's "need you":
-/// My PRs' Needs action section, or the review queue's Requested from you and
-/// Available to review sections. All open needs the row itself
-/// ([`row_needs_you`]); from the category alone it counts only Requested from
-/// you.
+/// Whether a row of this category can count toward the header's "need you",
+/// from the category alone: Needs action in My PRs, Requested from you in the
+/// review queue and All open. Available to review never counts: nobody asked
+/// you. Needs action in Involving me and All open also holds other people's
+/// PRs, which only the row tells apart ([`row_needs_you`]).
 pub fn needs_you_here(mode: Mode, category: Category) -> bool {
     match mode {
         Mode::Authored => category == Category::Action,
-        Mode::Review => matches!(category, Category::Todo | Category::Available),
-        Mode::AllOpen => category == Category::Todo,
+        Mode::Review | Mode::AllOpen => category == Category::Todo,
     }
 }
 
-/// Whether this row counts toward the header's "need you". In All open,
-/// Needs action holds anyone's PRs, and a teammate's merge conflict is not
-/// yours to act on: only your own PRs there count, plus Requested from you.
-/// Your own are the rows with blockers, because someone else's PR carries
-/// facts and never blockers. Every other view goes by the category.
-pub fn row_needs_you(mode: Mode, row: &BoardRow) -> bool {
-    match mode {
-        Mode::AllOpen => {
-            row.category == Category::Todo
-                || (row.category == Category::Action && !row.blockers.is_empty())
-        }
-        _ => needs_you_here(mode, row.category),
-    }
+/// Whether this row counts toward the header's "need you": the Dock badge's
+/// rule, applied to the view on screen. That is Requested from you, plus your
+/// own PRs under Needs action; a teammate's merge conflict is not yours to act
+/// on. Your own are the rows with blockers, because someone else's PR carries
+/// facts and never blockers. The rule is the same in every view, so `mode`
+/// only says which view the row came from.
+pub fn row_needs_you(_mode: Mode, row: &BoardRow) -> bool {
+    row.category == Category::Todo || (row.category == Category::Action && !row.blockers.is_empty())
 }
 
 /// The numbers behind the header's count line.
@@ -47,7 +41,7 @@ pub struct HeaderCounts {
     pub truncated: bool,
     pub mode: Mode,
     pub all_repos: bool,
-    /// Rows of this view that need you ([`needs_you_here`]), snoozed ones
+    /// Rows of this view that need you ([`row_needs_you`]), snoozed ones
     /// excluded.
     pub need_you: usize,
     /// The badge, across My PRs and the review queue: your PRs that need
@@ -55,6 +49,10 @@ pub struct HeaderCounts {
     pub badge: usize,
     /// Both views have loaded, so `badge` is the whole count.
     pub badge_complete: bool,
+    /// Rows of this view you watch or snoozed.
+    pub followed: usize,
+    /// Of every PR you watch or snoozed, in any view, how many the last
+    /// refresh checked (up to 50 at a time) and how many there are.
     pub tracked_loaded: usize,
     pub tracked_total: usize,
     /// How many open PRs GitHub's search found, when the view asked (All
@@ -110,13 +108,9 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
         line.push_str(" · partial results");
     }
     line.push_str(&format!(" · {need_you}"));
-    let tracked = match (c.tracked_loaded, c.tracked_total) {
-        (_, 0) => None,
-        (loaded, total) if loaded >= total => Some(format!("{total} watched/snoozed")),
-        (loaded, total) => Some(format!("{loaded} of {total} watched/snoozed")),
-    };
-    if let Some(tracked) = &tracked {
-        line.push_str(&format!(" · {tracked}"));
+    let followed = (c.followed > 0).then(|| format!("{} watched/snoozed", c.followed));
+    if let Some(followed) = &followed {
+        line.push_str(&format!(" · {followed}"));
     }
 
     let mut tip = match total {
@@ -135,22 +129,21 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
         (true, None) => "; GitHub has more (Load more).",
         (false, _) => ".",
     });
-    let sections = match c.mode {
-        Mode::Authored => group_label(Mode::Authored, Category::Action, c.all_repos).to_owned(),
-        Mode::Review => format!(
-            "{} and Available to review",
-            group_label(Mode::Review, Category::Todo, c.all_repos)
-        ),
-        Mode::AllOpen => format!(
-            "{} and your own PRs under {}",
-            group_label(Mode::AllOpen, Category::Todo, c.all_repos),
-            group_label(Mode::AllOpen, Category::Action, c.all_repos)
-        ),
+    let todo = group_label(c.mode, Category::Todo, c.all_repos);
+    let action = group_label(c.mode, Category::Action, c.all_repos);
+    let counted = match c.mode {
+        Mode::Authored => format!("your PRs under {action}"),
+        Mode::Review => format!("the PRs under {todo}"),
+        Mode::AllOpen => format!("{todo} and your own PRs under {action}"),
     };
     tip.push_str(&format!(
-        "\n{}: the PRs under {sections}, not counting snoozed ones.",
+        "\n{}: {counted}, not counting snoozed ones.",
         upper_first(&need_you)
     ));
+    match c.mode {
+        Mode::Review => tip.push_str(" Available to review never counts: nobody asked you."),
+        Mode::Authored | Mode::AllOpen => {}
+    }
     tip.push_str(&format!(
         "\n{} shows {}: your PRs that need action plus reviews requested from \
          you, not counting snoozed ones.",
@@ -160,11 +153,26 @@ pub fn header_counts(c: &HeaderCounts, badge_name: BadgeName) -> (String, String
     if !c.badge_complete {
         tip.push_str(" Only the views loaded since launch are counted so far.");
     }
-    if let Some(tracked) = tracked {
-        tip.push_str(&format!(
-            "\n{}: watched and snoozed PRs, refreshed with this view (up to 50 each time).",
-            upper_first(&tracked)
-        ));
+    if let Some(followed) = followed {
+        let which = if c.followed == 1 {
+            "the PR in this view you watch or snoozed"
+        } else {
+            "the PRs in this view you watch or snoozed"
+        };
+        tip.push_str(&format!("\n{}: {which}.", upper_first(&followed)));
+    }
+    match (c.tracked_loaded, c.tracked_total) {
+        (_, 0) => {}
+        (_, 1) => {
+            tip.push_str("\nEach refresh also checks the PR you watch or snoozed, in any view.")
+        }
+        (loaded, total) if loaded >= total => tip.push_str(&format!(
+            "\nEach refresh also checks all {total} PRs you watch or snoozed, in any view."
+        )),
+        (loaded, total) => tip.push_str(&format!(
+            "\nEach refresh also checks {loaded} of the {total} PRs you watch or snoozed, \
+             in any view, taking turns."
+        )),
     }
     (line, tip)
 }
@@ -485,7 +493,12 @@ mod tests {
         assert!(!organization_approval_note().contains("CLI"));
     }
 
-    fn counts(need_you: usize, complete: bool, tracked: (usize, usize)) -> HeaderCounts {
+    fn counts(
+        need_you: usize,
+        complete: bool,
+        followed: usize,
+        tracked: (usize, usize),
+    ) -> HeaderCounts {
         HeaderCounts {
             loaded: 56,
             truncated: true,
@@ -494,6 +507,7 @@ mod tests {
             need_you,
             badge: need_you,
             badge_complete: complete,
+            followed,
             tracked_loaded: tracked.0,
             tracked_total: tracked.1,
             total: None,
@@ -505,60 +519,132 @@ mod tests {
     fn the_header_says_who_needs_you_in_plain_words() {
         let line = |c: HeaderCounts| header_counts(&c, BadgeName::Dock).0;
         assert_eq!(
-            line(counts(0, true, (0, 0))),
+            line(counts(0, true, 0, (0, 0))),
             "56 loaded · partial results · nothing needs you"
         );
         assert_eq!(
-            line(counts(1, false, (2, 2))),
+            line(counts(1, false, 2, (2, 2))),
             "56 loaded · partial results · 1 needs you · 2 watched/snoozed"
         );
-        assert_eq!(
-            line(counts(3, true, (50, 64))),
-            "56 loaded · partial results · 3 need you · 50 of 64 watched/snoozed"
-        );
-        let (_, tip) = header_counts(&counts(3, false, (2, 2)), BadgeName::Dock);
+        let (_, tip) = header_counts(&counts(3, false, 2, (2, 2)), BadgeName::Dock);
         assert_eq!(
             tip,
             "56 PRs loaded in this view; GitHub has more (Load more).\n\
-             3 need you: the PRs under Needs action, not counting snoozed ones.\n\
+             3 need you: your PRs under Needs action, not counting snoozed ones.\n\
              The Dock badge shows 3: your PRs that need action plus reviews requested \
              from you, not counting snoozed ones. Only the views loaded \
              since launch are counted so far.\n\
-             2 watched/snoozed: watched and snoozed PRs, refreshed with this view (up to 50 \
-             each time)."
+             2 watched/snoozed: the PRs in this view you watch or snoozed.\n\
+             Each refresh also checks all 2 PRs you watch or snoozed, in any view."
         );
+    }
+
+    /// The watched/snoozed count is this view's, like every other number in
+    /// the line; the ones followed elsewhere are only in the explanation.
+    #[test]
+    fn the_watched_count_is_the_views_and_the_rest_are_explained() {
+        let (line, tip) = header_counts(&counts(3, true, 0, (50, 64)), BadgeName::Dock);
+        assert_eq!(line, "56 loaded · partial results · 3 need you");
+        assert!(!tip.contains("watched/snoozed"), "{tip}");
+        assert!(
+            tip.ends_with(
+                "\nEach refresh also checks 50 of the 64 PRs you watch or snoozed, in any \
+                 view, taking turns."
+            ),
+            "{tip}"
+        );
+        let (line, tip) = header_counts(&counts(0, true, 1, (1, 1)), BadgeName::Dock);
+        assert_eq!(
+            line,
+            "56 loaded · partial results · nothing needs you · 1 watched/snoozed"
+        );
+        assert!(
+            tip.ends_with(
+                "\n1 watched/snoozed: the PR in this view you watch or snoozed.\n\
+                 Each refresh also checks the PR you watch or snoozed, in any view."
+            ),
+            "{tip}"
+        );
+    }
+
+    fn row(category: Category, yours: bool) -> BoardRow {
+        use crate::board::{Blocker, Ci, ReviewState};
+        BoardRow {
+            id: format!("PR_{category:?}_{yours}"),
+            repo: "acme/widgets".into(),
+            updated_at: None,
+            head_oid: None,
+            reviewed_oid: None,
+            reviewed_at: None,
+            number: 1,
+            url: "https://github.com/acme/widgets/pull/1".into(),
+            title: "Change".into(),
+            issue: None,
+            issue_url: None,
+            author: Some(if yours { "me" } else { "bob" }.into()),
+            stack: None,
+            queue_provenance: None,
+            draft: category == Category::Draft,
+            category,
+            bug: false,
+            labels: Vec::new(),
+            ci: Ci::Pass,
+            conflict: !yours,
+            mergeable_unknown: false,
+            review_decision: None,
+            review_state: ReviewState::Waiting,
+            requested: Vec::new(),
+            requested_teams: Vec::new(),
+            reviews: Vec::new(),
+            my_review: None,
+            unresolved: 0,
+            // Your own PR under Needs action says why; someone else's carries
+            // the fact (a conflict) and no blockers.
+            blockers: if yours && category == Category::Action {
+                vec![Blocker::MergeConflict]
+            } else {
+                Vec::new()
+            },
+            created_at: "2026-09-01T10:00:00Z".into(),
+            waiting_since: None,
+            size: None,
+            note: String::new(),
+        }
+    }
+
+    /// Every view counts what the badge counts: your own PRs under Needs
+    /// action and the reviews asked of you. A teammate's Needs action PR
+    /// (Involving me, All open) and Available to review never count.
+    #[test]
+    fn every_view_counts_what_the_badge_counts() {
+        let rows = [
+            row(Category::Action, true),
+            row(Category::Action, false),
+            row(Category::Todo, false),
+            row(Category::Available, false),
+            row(Category::Await, true),
+            row(Category::Await, false),
+            row(Category::Done, false),
+            row(Category::Draft, true),
+        ];
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            let counted: Vec<_> = rows
+                .iter()
+                .filter(|row| row_needs_you(mode, row))
+                .map(|row| row.id.as_str())
+                .collect();
+            assert_eq!(counted, ["PR_Action_true", "PR_Todo_false"], "{mode:?}");
+        }
+        assert!(needs_you_here(Mode::Authored, Category::Action));
+        assert!(needs_you_here(Mode::Review, Category::Todo));
+        assert!(!needs_you_here(Mode::Review, Category::Available));
+        assert!(!needs_you_here(Mode::AllOpen, Category::Available));
     }
 
     /// Once both views have loaded, the badge is the total, but the header
     /// still counts only the view on screen.
     #[test]
     fn the_header_counts_this_view_even_when_the_badge_covers_both() {
-        let count = |mode, categories: &[Category]| {
-            categories
-                .iter()
-                .filter(|&&category| needs_you_here(mode, category))
-                .count()
-        };
-        let mine = count(
-            Mode::Authored,
-            &[
-                Category::Action,
-                Category::Action,
-                Category::Await,
-                Category::Draft,
-            ],
-        );
-        let review = count(
-            Mode::Review,
-            &[
-                Category::Todo,
-                Category::Available,
-                Category::Available,
-                Category::Done,
-                Category::Draft,
-            ],
-        );
-        assert_eq!((mine, review), (2, 3));
         let both_loaded = |mode, need_you| HeaderCounts {
             loaded: 5,
             truncated: false,
@@ -567,24 +653,25 @@ mod tests {
             need_you,
             badge: 3,
             badge_complete: true,
+            followed: 0,
             tracked_loaded: 0,
             tracked_total: 0,
             total: None,
             filtered: false,
         };
-        let (line, tip) = header_counts(&both_loaded(Mode::Review, review), BadgeName::Dock);
-        assert_eq!(line, "5 loaded · 3 need you");
+        let (line, tip) = header_counts(&both_loaded(Mode::Review, 1), BadgeName::Dock);
+        assert_eq!(line, "5 loaded · 1 needs you");
         assert_eq!(
             tip,
             "5 PRs loaded in this view.\n\
-             3 need you: the PRs under Requested from you and Available to review, not \
-             counting snoozed ones.\n\
+             1 needs you: the PRs under Requested from you, not counting snoozed ones. \
+             Available to review never counts: nobody asked you.\n\
              The Dock badge shows 3: your PRs that need action plus reviews requested \
              from you, not counting snoozed ones."
         );
-        let (line, tip) = header_counts(&both_loaded(Mode::Authored, mine), BadgeName::Dock);
+        let (line, tip) = header_counts(&both_loaded(Mode::Authored, 2), BadgeName::Dock);
         assert_eq!(line, "5 loaded · 2 need you");
-        assert!(tip.contains("2 need you: the PRs under Needs action, not counting"));
+        assert!(tip.contains("2 need you: your PRs under Needs action, not counting"));
         assert!(tip.contains("The Dock badge shows 3: your PRs"));
         assert!(!tip.contains("so far"));
     }
@@ -599,6 +686,7 @@ mod tests {
             need_you: 1,
             badge: 4,
             badge_complete: true,
+            followed: 0,
             tracked_loaded: 0,
             tracked_total: 0,
             total: Some(total),
@@ -610,8 +698,8 @@ mod tests {
             tip,
             "60 of the 759 PRs that are open in this repository are loaded; Load more \
              fetches the next ones.\n\
-             1 needs you: the PRs under Requested from you and your own PRs under Needs action, \
-             not counting snoozed ones.\n\
+             1 needs you: Requested from you and your own PRs under Needs action, not \
+             counting snoozed ones.\n\
              The Dock badge shows 4: your PRs that need action plus reviews requested \
              from you, not counting snoozed ones."
         );
@@ -665,7 +753,7 @@ mod tests {
 
     #[test]
     fn the_ipad_says_app_icon_where_the_desktop_says_dock() {
-        let (_, tip) = header_counts(&counts(3, true, (0, 0)), BadgeName::AppIcon);
+        let (_, tip) = header_counts(&counts(3, true, 0, (0, 0)), BadgeName::AppIcon);
         assert!(
             tip.contains("The app icon badge shows 3: your PRs"),
             "{tip}"

@@ -21,6 +21,9 @@ views with a plain-language **Note** on every row.
   the same sections as the other views. A label or author filter goes to
   GitHub's search, so it covers the whole repository, not just the PRs loaded
   so far.
+- **One name per section, in your order:** a section is called the same in
+  every view, and Settings → **Section order** puts them in the order your
+  workflow needs. The header counts only what needs you in the view on screen.
 - **Read-only by design:** PR Marmot can open a PR or linked issue and copy its
   URL, but it never assigns reviewers, comments, merges, or changes GitHub.
 - **Signs in with your GitHub account:** it uses your
@@ -408,14 +411,14 @@ Every feature, with its limits and the version it shipped in, is listed in
     The × at the right clears the search. An empty search closes when you leave
     it.
 - **Header:** it shows how many PRs this view has loaded, how many of them
-  need you, and how many watched or snoozed PRs were refreshed. "Need you"
-  counts the view on screen, without snoozed PRs: Needs action in My PRs,
-  Requested from you plus Available to review in the Review queue, and in
-  All open Requested from you plus your own PRs under Needs action (never a
-  teammate's). All open also says how many of the
-  repository's open PRs are loaded ("60 of 759 open"). The Dock badge is your
-  PRs that need action plus review requests, whichever view is on screen. Hover
-  the header for the explanation.
+  need you, and how many of them you watch or snoozed. "Need you" is the Dock
+  badge's rule counted over the view on screen, without snoozed PRs: your own
+  PRs under Needs action plus Requested from you. A teammate's PR under Needs
+  action and Available to review (nobody asked you) never count. All open
+  also says how many of the repository's open PRs are loaded ("60 of 759
+  open"). The Dock badge adds up My PRs and the Review queue, whichever view
+  is on screen. Hover the header for the explanation, including how many of
+  the PRs you follow, in any view, each refresh checked.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.

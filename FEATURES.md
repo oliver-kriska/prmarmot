@@ -69,14 +69,17 @@ values in the code. New features get the next free number in their area.
   background. _since v0.2.0_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
-  - How many of them need you: Needs action in My PRs and Involving me, and Requested from you
-    plus Available to review in the Review queue. Snoozed PRs never count.
-  - How many watched or snoozed PRs were refreshed.
+  - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
+    Dock badge's rule in every view: your own PRs under Needs action plus Requested from you. Other people's PRs
+    under Needs action (Involving me, All open) and Available to review (optional: nobody asked you) never count.
+    _unreleased_ Until then the Review queue counted Available to review, and Involving me counted other people's
+    PRs under Needs action.
+  - How many PRs in this view you watch or snoozed. The explanation says how many of every PR you follow, in any
+    view, each refresh checked (up to 50 at a time). _unreleased_ Until then the line gave that app-wide number.
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
   _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
-  match" while a label or author filter narrows the search. Its "need you" counts Requested from you and your own
-  PRs under Needs action, never someone else's. _unreleased_
+  match" while a label or author filter narrows the search. _unreleased_
 - **F-board-13** Draft rows are dimmed. Statuses show as coloured dots with text, never emoji; the one exception is
   🐛 on a `bug` label. _since v0.1.0_
 - **F-board-14** **All open** lists every open PR in one repository, whoever opened it.
