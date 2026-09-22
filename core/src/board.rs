@@ -3235,6 +3235,46 @@ mod tests {
         );
     }
 
+    /// Your own review is not in `review_state`, and GitHub drops your
+    /// request once you review, so a teammate's PR that only you reviewed
+    /// reads as nobody asked and nobody reviewed. It stays under Awaiting
+    /// review rather than Available to review ("no review yet").
+    #[test]
+    fn a_teammates_pr_you_reviewed_is_not_available_to_review() {
+        let unasked = someone_elses(1, "alice", "2026-09-19T10:00:00Z");
+        let mut reviewed = someone_elses(2, "alice", "2026-09-20T10:00:00Z");
+        reviewed["reviews"]["nodes"] = json!([
+            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-20T09:00:00Z"}
+        ]);
+        let prs = [pr(unasked), pr(reviewed)];
+        for (mode, rows) in [
+            (
+                Mode::AllOpen,
+                derive_all_open_rows(&prs, "acme/widgets", "me", &cfg(), &[]),
+            ),
+            (
+                Mode::Authored,
+                derive_involving_rows(&prs, "acme/widgets", "me", &cfg()),
+            ),
+        ] {
+            let by_number = |n: u64| rows.iter().find(|row| row.number == n).unwrap();
+            let reviewed = by_number(2);
+            assert_eq!(
+                (reviewed.review_state, reviewed.my_review.as_deref()),
+                (ReviewState::None, Some("APPROVED")),
+                "{mode:?}"
+            );
+            assert!(
+                !crate::layout::is_available_section(mode, reviewed),
+                "{mode:?}"
+            );
+            assert!(
+                crate::layout::is_available_section(mode, by_number(1)),
+                "{mode:?}"
+            );
+        }
+    }
+
     #[test]
     fn global_involving_rows_keep_own_notes_and_describe_other_authors() {
         let mut mine = base(1);

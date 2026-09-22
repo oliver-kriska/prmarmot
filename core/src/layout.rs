@@ -242,10 +242,18 @@ pub fn is_approved_section(mode: Mode, row: &BoardRow) -> bool {
 /// for exactly that, rather than under Awaiting review, where it waits on
 /// nobody. Only someone else's PR gets here: your own with no reviewer is
 /// Needs action (`board::classify_authored`). The core category is unchanged.
+///
+/// `review_state` leaves your own review out, and GitHub drops your request
+/// once you review, so a PR only you reviewed also reads as `None`: your
+/// review (`my_review`) keeps it under Awaiting review, as `pickup` does.
 pub fn is_available_section(mode: Mode, row: &BoardRow) -> bool {
     matches!(mode, Mode::Authored | Mode::AllOpen)
         && row.category == Category::Await
         && row.review_state == ReviewState::None
+        && !matches!(
+            row.my_review.as_deref(),
+            Some("APPROVED" | "COMMENTED" | "CHANGES_REQUESTED")
+        )
 }
 
 /// The section label for a category within a mode. One name per section in
