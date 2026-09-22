@@ -13,8 +13,8 @@ use prmarmot_core::attention::{
 };
 use prmarmot_core::board::{
     carry_forward_conflicts, fetch_all_open, fetch_board_scoped_with_tracked,
-    fetch_more_board_scoped, BoardConfig, BoardFetch, BoardPagination, BoardRow, BoardScope,
-    Category, Mode, TrackedPr, TrackedPrStatus,
+    fetch_more_board_scoped, BoardConfig, BoardFetch, BoardPagination, BoardRow, BoardScope, Mode,
+    TrackedPr, TrackedPrStatus,
 };
 use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
@@ -996,19 +996,11 @@ impl AppState {
         let Some(attention) = self.attention.as_mut() else {
             return;
         };
-        // All open lists everyone's work. Remembering all of it would push
-        // the snapshots of your own PRs out of their bounded store, so it
-        // records only PRs that already have one or that involve you.
-        let me = self.me.as_deref();
+        // All open records only the PRs that already have a snapshot or that
+        // involve you (`AttentionState::observes`, shared with the iPad).
         let observed: Vec<&BoardRow> = rows
             .iter()
-            .filter(|row| {
-                mode != Mode::AllOpen
-                    || attention.snapshots.snapshot(&row.id).is_some()
-                    || attention.is_watched(&row.id)
-                    || row.category == Category::Todo
-                    || (me.is_some() && row.author.as_deref() == me)
-            })
+            .filter(|row| attention.observes(mode, row))
             .collect();
         if !self.demo_seeded && std::env::var_os("PRMARMOT_DEMO_ATTENTION").is_some() {
             if let Some(row) = rows.first() {

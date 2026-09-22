@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, Offset, Utc};
 use prmarmot_core::attention::{Observation, SnapshotNamespace, SnapshotStore};
-use prmarmot_core::board::{BoardRow, Ci};
+use prmarmot_core::board::{BoardRow, Category, Ci, Mode};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_SCHEMA_VERSION: u32 = 1;
@@ -323,6 +323,21 @@ impl AttentionState {
         self.watches.iter().any(|watch| watch.pr_id == pr_id)
     }
 
+    /// Whether a fetched row of a `mode` view is observed: recorded, marked
+    /// changed when it differs, and considered for a notification. Every
+    /// view's rows are, except All open's. All open lists everyone's work, and
+    /// remembering all of it would push the snapshots of your own PRs out of
+    /// their bounded store, so there only the PRs that already have a
+    /// snapshot, that you watch, that ask for your review, or that are yours
+    /// (this state's account) are.
+    pub fn observes(&self, mode: Mode, row: &BoardRow) -> bool {
+        mode != Mode::AllOpen
+            || self.snapshots.snapshot(&row.id).is_some()
+            || self.is_watched(&row.id)
+            || row.category == Category::Todo
+            || row.author.as_deref() == Some(self.snapshots.namespace().account.as_str())
+    }
+
     pub fn watch(&self, pr_id: &str) -> Option<&Watch> {
         self.watches.iter().find(|watch| watch.pr_id == pr_id)
     }
@@ -576,6 +591,47 @@ mod tests {
             waiting_since: None,
             size: None,
             note: "needs your review".into(),
+        }
+    }
+
+    #[test]
+    fn all_open_observes_only_what_involves_you_and_every_other_view_everything() {
+        let mut state = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        let others = |number| BoardRow {
+            category: Category::Await,
+            queue_provenance: None,
+            requested: Vec::new(),
+            ..row(number)
+        };
+        let watched = others(4);
+        let recorded = others(5);
+        state.toggle_watch(&watched);
+        state
+            .snapshots
+            .observe(recorded.id.clone(), observation(&recorded))
+            .unwrap();
+        let rows = [
+            others(1),
+            row(2),
+            BoardRow {
+                author: Some("me".into()),
+                ..others(3)
+            },
+            watched,
+            recorded,
+        ];
+        let kept: Vec<_> = rows
+            .iter()
+            .filter(|row| state.observes(Mode::AllOpen, row))
+            .map(|row| row.number)
+            .collect();
+        assert_eq!(
+            kept,
+            [2, 3, 4, 5],
+            "a teammate's PR you never followed is not remembered"
+        );
+        for mode in [Mode::Authored, Mode::Review] {
+            assert!(rows.iter().all(|row| state.observes(mode, row)), "{mode:?}");
         }
     }
 

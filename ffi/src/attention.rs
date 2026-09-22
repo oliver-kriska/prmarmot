@@ -346,6 +346,25 @@ impl AttentionStore {
             .collect())
     }
 
+    /// Whether to `observe` a fetched row of a `mode` board: always, except in
+    /// All open. There only the PRs already recorded, watched, asking for
+    /// your review, or yours (the store's account) are, so everyone's work
+    /// doesn't push your own PRs' snapshots out of the bounded store. The
+    /// desktop's rule, from local.
+    pub fn observes(&self, mode: Mode, row: PullRequest) -> bool {
+        self.lock().observes(mode.into(), &row.into_row())
+    }
+
+    /// The rows of a fetched `mode` board to `observe`, in their order: every
+    /// row outside All open, and in All open the ones `observes` keeps.
+    pub fn rows_to_observe(&self, mode: Mode, rows: Vec<PullRequest>) -> Vec<PullRequest> {
+        let state = self.lock();
+        let mode = mode.into();
+        rows.into_iter()
+            .filter(|row| state.observes(mode, &row.clone().into_row()))
+            .collect()
+    }
+
     /// Mark a PR as seen. Returns whether anything changed, so the caller can
     /// skip writing an identical file.
     pub fn acknowledge(&self, pr_id: String) -> bool {

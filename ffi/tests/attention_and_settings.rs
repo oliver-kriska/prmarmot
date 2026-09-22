@@ -120,6 +120,44 @@ fn store() -> AttentionStore {
     AttentionStore::new("github.com".into(), "me".into())
 }
 
+/// All open lists everyone's work, and the store remembers only what involves
+/// you, by the desktop's rule: every other view's rows are all observed.
+#[test]
+fn all_open_observes_only_what_involves_you_by_the_desktops_rule() {
+    let store = store();
+    let teammates = |number| PullRequest {
+        author: Some("bob".into()),
+        category: prmarmot_ffi::Category::Await,
+        ..row(number)
+    };
+    let watched = teammates(2);
+    store.toggle_watch(watched.clone());
+    let rows = vec![
+        teammates(1),
+        watched,
+        PullRequest {
+            author: Some("me".into()),
+            ..teammates(3)
+        },
+        PullRequest {
+            category: prmarmot_ffi::Category::Todo,
+            ..teammates(4)
+        },
+    ];
+    let observed = |mode| -> Vec<u64> {
+        store
+            .rows_to_observe(mode, rows.clone())
+            .into_iter()
+            .map(|row| row.number)
+            .collect()
+    };
+    assert_eq!(observed(Mode::AllOpen), [2, 3, 4]);
+    assert_eq!(observed(Mode::Authored), [1, 2, 3, 4]);
+    assert_eq!(observed(Mode::Review), [1, 2, 3, 4]);
+    assert!(!store.observes(Mode::AllOpen, rows[0].clone()));
+    assert!(store.observes(Mode::AllOpen, rows[2].clone()));
+}
+
 #[test]
 fn watching_a_pr_is_a_toggle_and_the_list_is_oldest_first() {
     let store = store();

@@ -61,6 +61,11 @@ for the counts to reflect the tab that is open, and chose both rules
   rotation (`tracked_loaded`/`tracked_total`, up to 50 per refresh) moved
   into the explanation: "Each refresh also checks 50 of the 64 PRs you watch
   or snoozed, in any view, taking turns."
+- **All open's observe rule moved to local** for the iPad (its worker asked;
+  retyping it in Swift would break parity): `AttentionState::observes(mode,
+  row)` — every row outside All open; there only PRs with a snapshot, watched,
+  Requested from you, or yours by the state's account. The desktop calls it;
+  ffi exports `AttentionStore.observes` and `rows_to_observe`.
 
 ## Current update — 2026-09-21
 
