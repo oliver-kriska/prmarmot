@@ -18,7 +18,7 @@ use prmarmot_core::board::{
 };
 use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
-use prmarmot_core::github::rate_limit::{backoff_secs, should_back_off, RateLimitInfo};
+use prmarmot_core::github::rate_limit::{backoff_secs, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::search::RemoteFilter;
 use prmarmot_local::config::AuthSettings;
@@ -667,17 +667,14 @@ impl AppState {
         }
         // Preserve the reserve for the user's own gh/git usage.
         if let Some(rate) = &self.rate {
-            if should_back_off(rate) {
-                let reset = rate.reset_epoch();
-                if reset.is_some_and(|r| now < r) {
-                    self.backoff_until = Some(now + backoff_secs(reset, now));
-                    self.error = Some(format!(
-                        "GitHub budget low ({} left) — pausing refresh",
-                        rate.remaining
-                    ));
-                    cx.notify();
-                    return;
-                }
+            if let Some(until) = rate.pause_until(now) {
+                self.backoff_until = Some(until);
+                self.error = Some(format!(
+                    "GitHub budget low ({} left) — pausing refresh",
+                    rate.remaining
+                ));
+                cx.notify();
+                return;
             }
         }
 
@@ -825,17 +822,14 @@ impl AppState {
             return;
         }
         if let Some(rate) = &self.rate {
-            if should_back_off(rate) {
-                let reset = rate.reset_epoch();
-                if reset.is_some_and(|r| now < r) {
-                    self.backoff_until = Some(now + backoff_secs(reset, now));
-                    self.error = Some(format!(
-                        "GitHub budget low ({} left) — pausing refresh",
-                        rate.remaining
-                    ));
-                    cx.notify();
-                    return;
-                }
+            if let Some(until) = rate.pause_until(now) {
+                self.backoff_until = Some(until);
+                self.error = Some(format!(
+                    "GitHub budget low ({} left) — pausing refresh",
+                    rate.remaining
+                ));
+                cx.notify();
+                return;
             }
         }
 

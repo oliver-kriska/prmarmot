@@ -66,7 +66,7 @@ final class URLSessionTransport: GithubTransport {
 | Direction | What |
 |---|---|
 | Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `coreVersion`. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`. |
 
 `reset` is safe to call while a fetch is in flight: a page that was already on
 its way when the account changed is dropped rather than remembered, so a
@@ -94,6 +94,14 @@ a Rust row ignores them.
 - **No clock.** Every entry point that needs "now" takes Unix seconds.
   `core/clippy.toml` and `core/tests/no_clock.rs` enforce the other half.
 - **No async runtime.** See below.
+
+## The GitHub budget
+
+`reservePauseUntil(rate, nowEpoch)` is the desktop's rule for leaving
+`rateLimitReserve()` (50) points of the hourly budget to the person's own `gh`
+and git, from the same core function the desktop calls: given the last board's
+`RateLimit`, it returns the second to wait until (one to fifteen minutes away)
+or `nil` to fetch. A reset of 0 is unknown and never pauses.
 
 ## How blocking core meets async Swift
 

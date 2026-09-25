@@ -21,6 +21,11 @@ impl RateLimitInfo {
             .ok()
             .map(|t| t.timestamp().max(0) as u64)
     }
+
+    /// [`reserve_pause_until`] for this budget.
+    pub fn pause_until(&self, now_epoch: u64) -> Option<u64> {
+        reserve_pause_until(self.remaining, self.reset_epoch(), now_epoch)
+    }
 }
 
 /// Skip refreshes when fewer points than this remain — the rest of the hourly
@@ -47,6 +52,23 @@ pub fn should_back_off(rate: &RateLimitInfo) -> bool {
     rate.remaining < RATE_LIMIT_RESERVE
 }
 
+/// Whether the last known budget says to stop fetching, and until when.
+///
+/// `Some(epoch second)` when fewer than [`RATE_LIMIT_RESERVE`] points remain
+/// and the budget has not reset yet: pause until then, clamped by
+/// [`backoff_secs`] to between one and fifteen minutes from now. `None` when
+/// there is budget to spend, or when the reset is unknown or already past —
+/// the stale number no longer describes the budget, so the next fetch goes
+/// ahead and brings a fresh one. The desktop and the iPad both call this.
+pub fn reserve_pause_until(
+    remaining: u32,
+    reset_epoch: Option<u64>,
+    now_epoch: u64,
+) -> Option<u64> {
+    (remaining < RATE_LIMIT_RESERVE && reset_epoch.is_some_and(|reset| now_epoch < reset))
+        .then(|| now_epoch.saturating_add(backoff_secs(reset_epoch, now_epoch)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +93,61 @@ mod tests {
         assert!(!should_back_off(&mk(5000)));
         assert!(!should_back_off(&mk(RATE_LIMIT_RESERVE)));
         assert!(should_back_off(&mk(RATE_LIMIT_RESERVE - 1)));
+    }
+
+    #[test]
+    fn the_reserve_pauses_only_until_a_reset_still_ahead() {
+        let now = 1_000_000;
+        let low = RATE_LIMIT_RESERVE - 1;
+        // Enough budget: never pause, whatever the reset says.
+        assert_eq!(
+            reserve_pause_until(RATE_LIMIT_RESERVE, Some(now + 300), now),
+            None
+        );
+        assert_eq!(reserve_pause_until(5000, Some(now + 300), now), None);
+        // Low budget, reset ahead: wait for it, one to fifteen minutes.
+        assert_eq!(
+            reserve_pause_until(low, Some(now + 300), now),
+            Some(now + 300)
+        );
+        assert_eq!(reserve_pause_until(0, Some(now + 1), now), Some(now + 60));
+        assert_eq!(reserve_pause_until(0, Some(now + 59), now), Some(now + 60));
+        assert_eq!(
+            reserve_pause_until(0, Some(now + 900), now),
+            Some(now + 900)
+        );
+        assert_eq!(
+            reserve_pause_until(0, Some(now + 901), now),
+            Some(now + 900)
+        );
+        assert_eq!(reserve_pause_until(0, Some(u64::MAX), now), Some(now + 900));
+        // Low budget, but the number is stale or unknown: fetch a fresh one.
+        assert_eq!(reserve_pause_until(0, Some(now), now), None);
+        assert_eq!(reserve_pause_until(0, Some(now - 1), now), None);
+        assert_eq!(reserve_pause_until(0, None, now), None);
+        // A clock at the end of time cannot overflow.
+        assert_eq!(
+            reserve_pause_until(0, Some(u64::MAX), u64::MAX - 1),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn a_budget_pauses_by_the_same_rule() {
+        let rate = RateLimitInfo {
+            limit: 5000,
+            cost: 3,
+            remaining: 10,
+            reset_at: "2026-07-24T18:00:00Z".into(),
+        };
+        let reset = rate.reset_epoch().unwrap();
+        assert_eq!(rate.pause_until(reset - 120), Some(reset));
+        assert_eq!(rate.pause_until(reset), None);
+        let unparsable = RateLimitInfo {
+            reset_at: "soon".into(),
+            ..rate
+        };
+        assert_eq!(unparsable.pause_until(reset - 120), None);
     }
 
     #[test]

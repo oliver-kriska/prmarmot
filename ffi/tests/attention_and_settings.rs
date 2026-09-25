@@ -787,3 +787,28 @@ fn github_deciding_or_no_history_leaves_the_row_as_github_says() {
         .unwrap();
     assert_eq!(kept, mergeable);
 }
+
+#[test]
+fn the_ipad_pauses_on_the_same_budget_numbers_as_the_desktop() {
+    let rate = |remaining, reset_epoch| prmarmot_ffi::RateLimit {
+        limit: 5_000,
+        remaining,
+        cost: 3,
+        reset_epoch,
+    };
+    let reserve = prmarmot_ffi::rate_limit_reserve();
+    assert_eq!(reserve, 50);
+    let pause = prmarmot_ffi::reserve_pause_until;
+    // Enough budget, or a budget that has already refilled: fetch.
+    assert_eq!(pause(rate(reserve, NOW + 300), NOW), None);
+    assert_eq!(pause(rate(0, NOW), NOW), None);
+    // 0 is how a board says it never learned the reset: fetch a fresh one.
+    assert_eq!(pause(rate(0, 0), NOW), None);
+    assert_eq!(pause(rate(0, -5), NOW), None);
+    // Low: wait for the reset, one to fifteen minutes away.
+    assert_eq!(pause(rate(reserve - 1, NOW + 300), NOW), Some(NOW + 300));
+    assert_eq!(pause(rate(0, NOW + 10), NOW), Some(NOW + 60));
+    assert_eq!(pause(rate(0, i64::MAX), NOW), Some(NOW + 900));
+    // A clock before 1970 reads as 1970.
+    assert_eq!(pause(rate(0, 100), -1), Some(100));
+}

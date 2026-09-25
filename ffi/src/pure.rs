@@ -19,8 +19,8 @@ use prmarmot_core::status as core_status;
 use crate::error::FfiError;
 use crate::types::{
     instant, into_rows, BoardItem, ChangeSize, Ci, CiCell, FilterChip, FilterQualifier, Mode,
-    NotePresentation, PullRequest, ReviewCell, SectionKind, ShareFormat, SharePayload, SizeBand,
-    Sort, Tone,
+    NotePresentation, PullRequest, RateLimit, ReviewCell, SectionKind, ShareFormat, SharePayload,
+    SizeBand, Sort, Tone,
 };
 
 /// Lay out a board: section headers in their fixed order, stack sub-groups,
@@ -592,6 +592,32 @@ pub fn copy_items(
 #[uniffi::export]
 pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
     prmarmot_core::github::rate_limit::backoff_secs(reset_epoch, now_epoch)
+}
+
+/// Whether to stop fetching to leave GitHub's budget for the person's own
+/// tools, and until when: the epoch second to wait until, or `None` to fetch.
+///
+/// The desktop calls the same core function, so both products pause on the
+/// same numbers. It pauses when fewer than [`rate_limit_reserve`] points remain
+/// and the budget has not refilled yet, for between one and fifteen minutes.
+/// A reset of 0 or less is unknown (see `RateLimit::reset_epoch`), and an
+/// unknown or past reset never pauses: the next fetch brings a fresh budget.
+/// Pass the `RateLimit` of the last board and the caller's clock.
+#[uniffi::export]
+pub fn reserve_pause_until(rate: RateLimit, now_epoch: i64) -> Option<i64> {
+    let reset = u64::try_from(rate.reset_epoch)
+        .ok()
+        .filter(|&reset| reset > 0);
+    let now = u64::try_from(now_epoch).unwrap_or(0);
+    prmarmot_core::github::rate_limit::reserve_pause_until(rate.remaining, reset, now)
+        .map(|until| i64::try_from(until).unwrap_or(i64::MAX))
+}
+
+/// How many points of GitHub's hourly budget PR Marmot leaves for the
+/// person's own `gh` and git: fetching pauses below this.
+#[uniffi::export]
+pub fn rate_limit_reserve() -> u32 {
+    prmarmot_core::github::rate_limit::RATE_LIMIT_RESERVE
 }
 
 /// The label a section header shows for a category, e.g. "Needs action".
