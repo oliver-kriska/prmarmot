@@ -93,6 +93,11 @@ a Rust row ignores them.
   Where they live is Swift's business.
 - **No clock.** Every entry point that needs "now" takes Unix seconds.
   `core/clippy.toml` and `core/tests/no_clock.rs` enforce the other half.
+  `AttentionStore.snooze` and `wakeDue` clamp a clock outside 1970–9999 to
+  that range instead of falling back to the device's own clock, so an absurd
+  clock can neither overflow a deadline nor write one the store cannot read
+  back; the other entry points that take a clock throw `FfiError.Invalid` for
+  an instant that does not exist.
 - **No async runtime.** See below.
 
 ## Which build is this

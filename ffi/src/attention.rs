@@ -450,16 +450,17 @@ impl AttentionStore {
         local_attention::AttentionState::waiting_on_author(&row, &me).and(row.author)
     }
 
-    /// Snooze a row. `now_epoch` is the caller's clock: core owns none.
+    /// Snooze a row. `now_epoch` is the caller's clock: core owns none. A
+    /// clock outside 1970–9999 is clamped to that range, as `wake_due` does.
     pub fn snooze(&self, row: PullRequest, choice: SnoozeChoice, now_epoch: i64) {
         let row = row.into_row();
         let now = instant(now_epoch);
         let condition = match choice {
             SnoozeChoice::OneHour => local_attention::SnoozeCondition::Until {
-                deadline: now + chrono::Duration::hours(1),
+                deadline: later(now, chrono::Duration::hours(1)),
             },
             SnoozeChoice::UntilTomorrow => local_attention::SnoozeCondition::Until {
-                deadline: now + chrono::Duration::hours(24),
+                deadline: later(now, chrono::Duration::hours(24)),
             },
             SnoozeChoice::WaitingPerson { login } => {
                 local_attention::AttentionState::waiting_person(&row, login)
@@ -492,7 +493,9 @@ impl AttentionStore {
     }
 
     /// Wake whatever this refresh's rows say should wake. Returns the PR ids
-    /// that woke, for the caller to mention.
+    /// that woke, for the caller to mention. A clock outside 1970–9999 is
+    /// clamped to that range: before 1970 nothing timed wakes, after 9999
+    /// everything timed does.
     pub fn wake_due(&self, rows: Vec<PullRequest>, now_epoch: i64) -> Vec<String> {
         let rows: Vec<_> = rows.into_iter().map(PullRequest::into_row).collect();
         self.lock().wake_due(&rows, instant(now_epoch))
@@ -527,8 +530,25 @@ fn namespace(host: String, account: String) -> core_attention::SnapshotNamespace
     core_attention::SnapshotNamespace::new(host, account)
 }
 
+/// 9999-12-31T23:59:59Z, the last second a four-digit year can write.
+const LAST_EPOCH: i64 = 253_402_300_799;
+
+/// The caller's clock as an instant, clamped to 1970–9999.
+///
+/// The clamp is deliberate, not a fallback: a snooze stamped with the clock
+/// the caller gave is still the caller's (never this device's own `Utc::now`),
+/// an absurd clock cannot overflow the arithmetic after it, and every instant
+/// stored stays one the state file can write and read back.
 fn instant(epoch: i64) -> DateTime<Utc> {
-    Utc.timestamp_opt(epoch, 0)
+    Utc.timestamp_opt(epoch.clamp(0, LAST_EPOCH), 0)
         .single()
-        .unwrap_or_else(Utc::now)
+        .expect("every second from 1970 to 9999 is an instant")
+}
+
+/// `from + by`, stopping at the same last second as `instant`.
+fn later(from: DateTime<Utc>, by: chrono::Duration) -> DateTime<Utc> {
+    instant(
+        from.checked_add_signed(by)
+            .map_or(LAST_EPOCH, |deadline| deadline.timestamp()),
+    )
 }

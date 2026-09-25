@@ -789,6 +789,38 @@ fn github_deciding_or_no_history_leaves_the_row_as_github_says() {
 }
 
 #[test]
+fn an_absurd_clock_is_clamped_to_the_years_1970_to_9999_and_never_panics() {
+    // A clock at the end of time: the snooze ends at the last second a
+    // four-digit year can write, not in an overflow, and the state file still
+    // reads back.
+    let store = store();
+    store.snooze(row(1), SnoozeChoice::UntilTomorrow, i64::MAX);
+    assert_eq!(
+        store.snooze_description("PR_1".into(), 0),
+        Some("Snoozed until 9999-12-31 23:59".into())
+    );
+    let reread =
+        AttentionStore::from_bytes("github.com".into(), "me".into(), store.to_bytes().unwrap())
+            .unwrap();
+    assert!(reread.is_snoozed("PR_1".into()));
+    assert!(store.wake_due(vec![row(1)], NOW).is_empty());
+    assert_eq!(
+        store.wake_due(vec![row(1)], i64::MAX),
+        vec!["PR_1".to_string()]
+    );
+
+    // A clock before 1970 reads as 1970: an hour from then, not an hour from
+    // whatever this machine's own clock says.
+    store.snooze(row(2), SnoozeChoice::OneHour, i64::MIN);
+    assert_eq!(
+        store.snooze_description("PR_2".into(), 0),
+        Some("Snoozed until 1970-01-01 01:00".into())
+    );
+    assert!(store.wake_due(vec![row(2)], -HOUR).is_empty());
+    assert_eq!(store.wake_due(vec![row(2)], NOW), vec!["PR_2".to_string()]);
+}
+
+#[test]
 fn the_ipad_pauses_on_the_same_budget_numbers_as_the_desktop() {
     let rate = |remaining, reset_epoch| prmarmot_ffi::RateLimit {
         limit: 5_000,
