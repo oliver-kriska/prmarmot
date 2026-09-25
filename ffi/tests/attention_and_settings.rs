@@ -862,6 +862,17 @@ fn a_build_says_which_commit_it_came_from() {
         build.profile
     );
     assert_eq!(build.dirty.is_none(), build.commit == "unknown");
+    // A checkout of this repository always has a release tag behind it.
+    assert!(
+        build.release == "unknown" || build.release.starts_with('v'),
+        "{:?}",
+        build.release
+    );
+    assert_eq!(
+        build.release.ends_with("-dirty"),
+        build.dirty == Some(true),
+        "{build:?}"
+    );
     let marked = if build.dirty == Some(true) {
         format!("{}-dirty", build.commit)
     } else {
@@ -869,7 +880,7 @@ fn a_build_says_which_commit_it_came_from() {
     };
     assert_eq!(
         build.description,
-        format!("{} ({marked}, {})", build.version, build.profile)
+        format!("{} ({marked}, {})", build.release, build.profile)
     );
 }
 

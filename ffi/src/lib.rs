@@ -54,7 +54,12 @@ pub fn core_version() -> String {
 /// shows so two XCFrameworks can be told apart.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CoreBuild {
-    /// `core_version()`.
+    /// The desktop release this core ships in, from the nearest `v*` tag:
+    /// "v0.12.1" when built on the tag, "v0.12.1-3-gabc1234" three commits
+    /// past it, with "-dirty" when `dirty`. "unknown" outside a git checkout.
+    /// This is the version to show; it matches the desktop app's.
+    pub release: String,
+    /// `core_version()`, the ffi crate's own version, which rarely moves.
     pub version: String,
     /// The short (12-character) commit it was built from, or "unknown" when
     /// it was not built from a git checkout.
@@ -64,8 +69,8 @@ pub struct CoreBuild {
     pub dirty: Option<bool>,
     /// Cargo's profile, "debug" or "release".
     pub profile: String,
-    /// All of it in one line, e.g. "0.1.0 (1a2b3c4d5e6f, release)" or
-    /// "0.1.0 (1a2b3c4d5e6f-dirty, debug)".
+    /// All of it in one line, e.g. "v0.12.1 (1a2b3c4d5e6f, release)" or
+    /// "v0.12.1-3-gabc1234-dirty (abc1234abcde-dirty, debug)".
     pub description: String,
 }
 
@@ -73,6 +78,7 @@ pub struct CoreBuild {
 /// written into it when it was compiled (`ffi/build.rs`).
 #[uniffi::export]
 pub fn core_build() -> CoreBuild {
+    let release = env!("PRMARMOT_FFI_RELEASE").to_owned();
     let version = core_version();
     let commit = env!("PRMARMOT_FFI_COMMIT").to_owned();
     let dirty = match env!("PRMARMOT_FFI_DIRTY") {
@@ -85,8 +91,9 @@ pub fn core_build() -> CoreBuild {
         Some(true) => format!("{commit}-dirty"),
         _ => commit.clone(),
     };
-    let description = format!("{version} ({marked}, {profile})");
+    let description = format!("{release} ({marked}, {profile})");
     CoreBuild {
+        release,
         version,
         commit,
         dirty,

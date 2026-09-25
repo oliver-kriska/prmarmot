@@ -41,6 +41,21 @@ fn main() {
         .map(|changes| !changes.is_empty())
     });
 
+    // The desktop release this core ships in: the nearest `v*` tag, with how
+    // far past it the commit is ("v0.12.1", "v0.12.1-3-gabc1234"). The dirty
+    // mark is ours, scoped like `dirty` above, not describe's whole-tree one.
+    let release = commit
+        .as_ref()
+        .and_then(|_| git(&["describe", "--tags", "--match", "v[0-9]*", "--abbrev=7"]))
+        .filter(|tag| !tag.is_empty())
+        .map(|tag| match dirty {
+            Some(true) => format!("{tag}-dirty"),
+            _ => tag,
+        });
+    println!(
+        "cargo:rustc-env=PRMARMOT_FFI_RELEASE={}",
+        release.as_deref().unwrap_or("unknown")
+    );
     println!(
         "cargo:rustc-env=PRMARMOT_FFI_COMMIT={}",
         commit.as_deref().unwrap_or("unknown")
@@ -76,6 +91,8 @@ fn main() {
             "HEAD".to_owned(),
             "index".to_owned(),
             "packed-refs".to_owned(),
+            // So a tag made on this commit changes `release`.
+            "refs/tags".to_owned(),
         ];
         git_paths.extend(git(&["symbolic-ref", "-q", "HEAD"]));
         for path in git_paths {

@@ -103,12 +103,13 @@ a Rust row ignores them.
 ## Which build is this
 
 `coreVersion()` is the crate's version and rarely moves. `coreBuild()` is what
-tells two XCFrameworks apart: `ffi/build.rs` writes the short commit, whether
-`core/`, `local/`, `ffi/` or `Cargo.lock` had uncommitted changes, and the
-profile into the library when it compiles, and `description` puts them on one
-line (`0.1.0 (1a2b3c4d5e6f-dirty, release)`) for an About screen or a bug
-report. Built outside a git checkout, the commit reads `unknown` and `dirty` is
-`nil`.
+tells two XCFrameworks apart: `ffi/build.rs` writes the desktop release the
+core ships in (the nearest `v*` tag, e.g. `v0.12.1`, or `v0.12.1-3-gabc1234`
+past it), the short commit, whether `core/`, `local/`, `ffi/` or `Cargo.lock`
+had uncommitted changes, and the profile into the library when it compiles,
+and `description` puts them on one line (`v0.12.1 (1a2b3c4d5e6f, release)`)
+for an About screen or a bug report. Built outside a git checkout, the release
+and commit read `unknown` and `dirty` is `nil`.
 
 ## The GitHub budget
 
