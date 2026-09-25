@@ -306,7 +306,8 @@ values in the code. New features get the next free number in their area.
   footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _since v0.12.0_
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
-  far-off reset. _since v0.1.0_
+  far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else
+  until a spent budget resets, rather than always the one-minute floor. _since v0.12.1_
 - **F-refresh-6** Each PR's data is capped: 20 labels, 15 review requests, 60 reviews, 100 review threads (so the
   unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_
 - **F-refresh-7** If the first load fails, **Retry** tries again. A watched PR you can no longer see is reported as
