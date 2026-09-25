@@ -45,7 +45,7 @@ Two ways to influence it:
 | Rung | Product | How it is built | Price | Role |
 |---|---|---|---|---|
 | 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, reuses your `gh` login, everything stays on your machine | Free, MIT, forever | The product; the open-source brand |
-| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Paid app on the App Store, bought once | First paid product |
+| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Free for seven days, then bought once, on the App Store | First paid product |
 | 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your iPad | Subscription | The only way mobile alerts can be reliable |
 | 4 | Mac App Store copy of rung 1 (optional) | The same open-source app, sandboxed | Paid for convenience | Only if it turns out cheap |
 
@@ -188,7 +188,7 @@ Details inspector. No alert promises until Phase 6.
 - [x] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1. Every feature is tested against a mocked GitHub API.
 - [x] Platform wins: Shortcuts ("what needs me"), Spotlight, keyboard shortcuts on iPad. Home/Lock Screen widgets are deferred: without a server they can only show the app's last refresh, so they wait for Phase 6.
 - [ ] Best-effort background refresh with local notifications, labelled best-effort in the UI and never in a screenshot.
-- [x] Paid app, bought once on the App Store; no free tier, no trial, no in-app purchase (2026-09-18). The free desktop app and the App Store screenshots are the way to try it.
+- [ ] Free for seven days, then bought once, on the App Store (2026-09-25; replaces the 2026-09-18 plan of a paid app with no trial). The trial and the one-time unlock are both App Store in-app purchases handled on the iPad by StoreKit: no subscription, no server, and a reinstall or a second iPad does not restart the trial. The desktop app stays free, with every feature.
 - [ ] TestFlight invitations go to the waitlist thread first; App Store privacy label "data not collected" (the privacy manifest declares no tracking and no collected data).
 
 ## Phase 6 — PR Marmot Cloud — after G2
