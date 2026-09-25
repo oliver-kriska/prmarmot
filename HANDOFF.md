@@ -29,6 +29,20 @@ uncommitted until Oliver tests them.** The desktop's behaviour does not change.
   could overflow `now + 24 h`; they now clamp to 1970–9999 (so a deadline
   always writes and reads back) with checked arithmetic. A clamp rather than an
   error keeps the Swift signatures the iPad already calls.
+- **A matched issue ID is percent-encoded into its link** (b887d5b): an ID
+  with a space, `#`, `?` or `/` no longer breaks the URL; `PROJ-123` links are
+  byte-identical.
+- **A refused request waits as long as GitHub says.** `retry-after` (seconds)
+  is parsed and travels in `GhError::RateLimited { reset_epoch,
+  retry_after_secs }` (and `FfiError`), because core reads no clock; the
+  caller waits `rate_limited_wait_secs(reset, retry_after, now)` —
+  `retry-after` when sent, otherwise the reset, clamped 60..900 (GitHub's
+  documented order). The reset is carried only when the budget is what ran
+  out, since GitHub sends one on every response. A 429 secondary limit with `retry-after: 300`
+  used to retry after the 60 s floor. And a 200 whose GraphQL `errors[]` says
+  `RATE_LIMITED` is now classified in `response::classify`, where the headers
+  are still at hand, so it carries `x-ratelimit-reset` instead of `None`. The
+  `gh` CLI transport has no headers on that path and still waits the floor.
 
 ## Current update — 2026-09-22
 
