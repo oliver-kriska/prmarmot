@@ -8,6 +8,28 @@
 
 ---
 
+## Current update — 2026-09-25
+
+**FACT: three fixes from the iPad's round-5 review, unreleased and
+uncommitted until Oliver tests them.** The desktop's behaviour does not change.
+
+- **The budget pause is core's.** `rate_limit::reserve_pause_until(remaining,
+  reset, now)` (and `RateLimitInfo::pause_until`) is the rule `refresh()` and
+  `load_more()` used to spell out in `src/state.rs`: fewer than 50 points left
+  and a reset still ahead → wait until the reset, clamped to 60..900 s; an
+  unknown or past reset never pauses. The desktop now calls it, and ffi exports
+  it as `reserve_pause_until(RateLimit, now)` plus `rate_limit_reserve()`.
+  Boundary tests in core and ffi. `cli/src/watch.rs` keeps its own backoff,
+  which reacts to a failed fetch, not to the reserve.
+- **`core_build()`** (ffi): `ffi/build.rs` embeds the short commit, whether
+  `core/`, `local/`, `ffi/` or `Cargo.lock` was dirty, and the profile; outside
+  a git checkout they read "unknown". No new dependency. `core_version()` stays.
+- **The attention store's clock is clamped, not replaced.** `snooze` and
+  `wake_due` used to fall back to `Utc::now()` for an unrepresentable clock and
+  could overflow `now + 24 h`; they now clamp to 1970–9999 (so a deadline
+  always writes and reads back) with checked arithmetic. A clamp rather than an
+  error keeps the Swift signatures the iPad already calls.
+
 ## Current update — 2026-09-22
 
 **FACT: the section order is the user's to set, in config.toml and in
