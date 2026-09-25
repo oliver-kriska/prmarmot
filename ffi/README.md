@@ -66,7 +66,7 @@ final class URLSessionTransport: GithubTransport {
 | Direction | What |
 |---|---|
 | Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
 
 `reset` is safe to call while a fetch is in flight: a page that was already on
 its way when the account changed is dropped rather than remembered, so a
@@ -94,6 +94,16 @@ a Rust row ignores them.
 - **No clock.** Every entry point that needs "now" takes Unix seconds.
   `core/clippy.toml` and `core/tests/no_clock.rs` enforce the other half.
 - **No async runtime.** See below.
+
+## Which build is this
+
+`coreVersion()` is the crate's version and rarely moves. `coreBuild()` is what
+tells two XCFrameworks apart: `ffi/build.rs` writes the short commit, whether
+`core/`, `local/`, `ffi/` or `Cargo.lock` had uncommitted changes, and the
+profile into the library when it compiles, and `description` puts them on one
+line (`0.1.0 (1a2b3c4d5e6f-dirty, release)`) for an About screen or a bug
+report. Built outside a git checkout, the commit reads `unknown` and `dirty` is
+`nil`.
 
 ## The GitHub budget
 

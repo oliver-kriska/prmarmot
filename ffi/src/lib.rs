@@ -43,9 +43,54 @@ pub use signin::*;
 pub use transport::*;
 pub use types::*;
 
-/// The version of `prmarmot-ffi` a build embeds, for a Settings screen and for
-/// telling two XCFrameworks apart.
+/// The version of `prmarmot-ffi` a build embeds. It moves rarely, so it cannot
+/// tell two XCFrameworks apart: `core_build()` can.
 #[uniffi::export]
 pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
+}
+
+/// Which build of the core this is: what an About screen or a bug report
+/// shows so two XCFrameworks can be told apart.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CoreBuild {
+    /// `core_version()`.
+    pub version: String,
+    /// The short (12-character) commit it was built from, or "unknown" when
+    /// it was not built from a git checkout.
+    pub commit: String,
+    /// `core/`, `local/`, `ffi/` or `Cargo.lock` had uncommitted changes, so
+    /// the commit alone does not describe it. `None` when unknown.
+    pub dirty: Option<bool>,
+    /// Cargo's profile, "debug" or "release".
+    pub profile: String,
+    /// All of it in one line, e.g. "0.1.0 (1a2b3c4d5e6f, release)" or
+    /// "0.1.0 (1a2b3c4d5e6f-dirty, debug)".
+    pub description: String,
+}
+
+/// The build this library is: its version, commit, dirty flag and profile,
+/// written into it when it was compiled (`ffi/build.rs`).
+#[uniffi::export]
+pub fn core_build() -> CoreBuild {
+    let version = core_version();
+    let commit = env!("PRMARMOT_FFI_COMMIT").to_owned();
+    let dirty = match env!("PRMARMOT_FFI_DIRTY") {
+        "dirty" => Some(true),
+        "clean" => Some(false),
+        _ => None,
+    };
+    let profile = env!("PRMARMOT_FFI_PROFILE").to_owned();
+    let marked = match dirty {
+        Some(true) => format!("{commit}-dirty"),
+        _ => commit.clone(),
+    };
+    let description = format!("{version} ({marked}, {profile})");
+    CoreBuild {
+        version,
+        commit,
+        dirty,
+        profile,
+        description,
+    }
 }

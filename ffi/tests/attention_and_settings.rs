@@ -812,3 +812,26 @@ fn the_ipad_pauses_on_the_same_budget_numbers_as_the_desktop() {
     // A clock before 1970 reads as 1970.
     assert_eq!(pause(rate(0, 100), -1), Some(100));
 }
+
+#[test]
+fn a_build_says_which_commit_it_came_from() {
+    let build = prmarmot_ffi::core_build();
+    assert_eq!(build.version, prmarmot_ffi::core_version());
+    // Tests run from a checkout; a source tarball would say "unknown".
+    assert!(
+        build.commit == "unknown"
+            || (build.commit.len() == 12 && build.commit.chars().all(|c| c.is_ascii_hexdigit())),
+        "{:?}",
+        build.commit
+    );
+    assert_eq!(build.profile, "debug");
+    let marked = if build.dirty == Some(true) {
+        format!("{}-dirty", build.commit)
+    } else {
+        build.commit.clone()
+    };
+    assert_eq!(
+        build.description,
+        format!("{} ({marked}, debug)", build.version)
+    );
+}
