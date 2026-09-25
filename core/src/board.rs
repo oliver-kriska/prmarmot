@@ -1515,12 +1515,30 @@ fn my_latest_review(pr: &RawPr, me: &str) -> String {
         .unwrap_or_else(|| "NONE".to_string())
 }
 
+/// `text` as one URL path or query component: the characters a URL never
+/// needs to escape stay as they are, so an ordinary `PROJ-123` reads the same,
+/// and every other byte is percent-encoded — `/`, `#`, `?` and a space
+/// included, so a matched ID can never end the path or start a query. The
+/// template around it is the user's own URL and stays untouched.
+fn url_component(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 fn derive_title(raw_title: &str, cfg: &BoardConfig) -> (Option<String>, Option<String>, String) {
     let (issue, issue_url) = match &cfg.issue_link {
         Some(rule) => match rule.pattern.find(raw_title) {
             Some(m) => {
                 let id = m.as_str().to_string();
-                let url = rule.url_template.replace("{id}", &id);
+                let url = rule.url_template.replace("{id}", &url_component(&id));
                 (Some(id), Some(url))
             }
             None => (None, None),
@@ -2294,6 +2312,35 @@ mod tests {
             Some("https://tracker.example.test/issues/PROJ-1234")
         );
         assert_eq!(row.title, "Fix the crash");
+    }
+
+    #[test]
+    fn a_matched_issue_id_is_percent_encoded_into_the_link() {
+        let rule = IssueLinkRule::new(
+            r"T-[a-z #?/]+[0-9]",
+            "https://tracker.test/browse/{id}?view=1",
+        )
+        .unwrap();
+        let cfg = BoardConfig {
+            issue_link: Some(rule),
+            ..cfg()
+        };
+        let mut v = base(9);
+        v["title"] = json!("[T-a b#c?d/1] Odd ticket ids");
+        let row = derive_rows(&[pr(v)], Mode::Authored, "acme/widgets", "me", &cfg)
+            .into_iter()
+            .next()
+            .unwrap();
+        // The ID reads as written; only the link escapes it.
+        assert_eq!(row.issue.as_deref(), Some("T-a b#c?d/1"));
+        assert_eq!(
+            row.issue_url.as_deref(),
+            Some("https://tracker.test/browse/T-a%20b%23c%3Fd%2F1?view=1")
+        );
+        assert_eq!(row.title, "Odd ticket ids");
+        // Unreserved characters and non-ASCII (as UTF-8 bytes).
+        assert_eq!(url_component("AZaz09-_.~"), "AZaz09-_.~");
+        assert_eq!(url_component("é"), "%C3%A9");
     }
 
     #[test]
