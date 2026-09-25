@@ -16,7 +16,7 @@ use prmarmot_core::board::{
     BoardPagination, BoardRow, BoardScope, Mode, TrackedPrStatus,
 };
 use prmarmot_core::github::rate_limit::{
-    backoff_secs, should_back_off, RateLimitInfo, MIN_REFRESH_SECS,
+    backoff_secs, rate_limited_wait_secs, should_back_off, RateLimitInfo, MIN_REFRESH_SECS,
 };
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_local::attention_state::AttentionState;
@@ -932,8 +932,15 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
                 return Stop::Failed(error);
             }
             Err(error) if !engine.is_primed() => return Stop::Failed(error),
-            Err(GhError::RateLimited { reset_epoch }) => {
-                let secs = backoff_secs(reset_epoch, now.timestamp().max(0) as u64);
+            Err(GhError::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            }) => {
+                let secs = rate_limited_wait_secs(
+                    reset_epoch,
+                    retry_after_secs,
+                    now.timestamp().max(0) as u64,
+                );
                 (
                     vec![Event::RateLimited {
                         retry_in_secs: secs,
@@ -1693,6 +1700,25 @@ mod tests {
         // Resolving a removal is a small nodes() request, not another search.
         assert!(queries[4].contains("tracked: nodes(ids:$tracked)"));
         assert!(!queries[4].contains("search("));
+    }
+
+    #[test]
+    fn a_rate_limited_poll_waits_as_long_as_github_says() {
+        let script = Script::new(vec![
+            search(vec![node(1, "OPEN", "PENDING", "MERGEABLE")]),
+            // A secondary limit: retry-after 300 and no reset.
+            Err(GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: Some(300),
+            }),
+            search(vec![node(1, "OPEN", "SUCCESS", "MERGEABLE")]),
+        ]);
+        let (stop, events, sleeps) = run_script(session(&script, None, Some(1)));
+
+        assert_eq!(stop, Stop::Done);
+        assert_eq!(types(&events), ["ready", "rate_limited", "changed"]);
+        assert_eq!(events[1]["retry_in_secs"], 300);
+        assert_eq!(sleeps, [Duration::from_secs(60), Duration::from_secs(300)]);
     }
 
     #[test]

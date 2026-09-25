@@ -856,7 +856,12 @@ fn a_build_says_which_commit_it_came_from() {
         "{:?}",
         build.commit
     );
-    assert_eq!(build.profile, "debug");
+    assert!(
+        ["debug", "release"].contains(&build.profile.as_str()),
+        "{:?}",
+        build.profile
+    );
+    assert_eq!(build.dirty.is_none(), build.commit == "unknown");
     let marked = if build.dirty == Some(true) {
         format!("{}-dirty", build.commit)
     } else {
@@ -864,6 +869,20 @@ fn a_build_says_which_commit_it_came_from() {
     };
     assert_eq!(
         build.description,
-        format!("{} ({marked}, debug)", build.version)
+        format!("{} ({marked}, {})", build.version, build.profile)
     );
+}
+
+#[test]
+fn a_refused_request_waits_as_long_as_github_says() {
+    let wait = prmarmot_ffi::rate_limited_wait_secs;
+    // 429 with retry-after 300, and RATE_LIMITED with a 600 s and a 90 000 s reset.
+    assert_eq!(wait(None, Some(300), 1_000), 300);
+    assert_eq!(wait(Some(1_600), None, 1_000), 600);
+    assert_eq!(wait(Some(91_000), None, 1_000), 900);
+    assert_eq!(wait(None, None, 1_000), 60);
+    // retry-after wins over a reset, in GitHub's documented order.
+    assert_eq!(wait(Some(3_700), Some(60), 1_000), 60);
+    // A clock before 1970 does not trap.
+    assert_eq!(wait(None, Some(300), -5), 300);
 }

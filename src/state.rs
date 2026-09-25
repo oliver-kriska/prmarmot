@@ -18,7 +18,7 @@ use prmarmot_core::board::{
 };
 use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
-use prmarmot_core::github::rate_limit::{backoff_secs, RateLimitInfo};
+use prmarmot_core::github::rate_limit::{rate_limited_wait_secs, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::search::RemoteFilter;
 use prmarmot_local::config::AuthSettings;
@@ -776,9 +776,12 @@ impl AppState {
                         state.generation += 1;
                         state.update_badge();
                     }
-                    Err(GhError::RateLimited { reset_epoch }) => {
+                    Err(GhError::RateLimited {
+                        reset_epoch,
+                        retry_after_secs,
+                    }) => {
                         let now = Local::now().timestamp().max(0) as u64;
-                        let wait = backoff_secs(reset_epoch, now);
+                        let wait = rate_limited_wait_secs(reset_epoch, retry_after_secs, now);
                         state.backoff_until = Some(now + wait);
                         state.error = Some(format!(
                             "GitHub rate limited — retrying in {}m",
@@ -889,9 +892,12 @@ impl AppState {
                         state.loaded_more = Some((state.generation, added));
                         state.update_badge();
                     }
-                    Err(GhError::RateLimited { reset_epoch }) => {
+                    Err(GhError::RateLimited {
+                        reset_epoch,
+                        retry_after_secs,
+                    }) => {
                         let now = Local::now().timestamp().max(0) as u64;
-                        let wait = backoff_secs(reset_epoch, now);
+                        let wait = rate_limited_wait_secs(reset_epoch, retry_after_secs, now);
                         state.backoff_until = Some(now + wait);
                         state.error = Some(format!(
                             "GitHub rate limited — retrying in {}m",

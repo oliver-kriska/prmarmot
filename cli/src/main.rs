@@ -321,7 +321,10 @@ mod tests {
         assert_eq!(exit_code_for(&GhError::NotInstalled), EXIT_AUTH);
         assert_eq!(exit_code_for(&GhError::NotAuthenticated), EXIT_AUTH);
         assert_eq!(
-            exit_code_for(&GhError::RateLimited { reset_epoch: None }),
+            exit_code_for(&GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: None,
+            }),
             EXIT_RATE_LIMITED
         );
         assert_eq!(

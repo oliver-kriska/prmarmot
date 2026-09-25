@@ -47,6 +47,24 @@ pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
         .clamp(60, 900)
 }
 
+/// How long to wait after GitHub refused a request as rate limited, in
+/// seconds, in GitHub's documented order: `retry-after` when it was sent,
+/// otherwise the budget's reset, otherwise the floor — clamped by
+/// [`backoff_secs`]. Retrying a secondary limit before `retry-after` is up can
+/// make GitHub extend the block; waiting for the primary reset instead would
+/// stall the board for up to fifteen minutes with budget left.
+pub fn rate_limited_wait_secs(
+    reset_epoch: Option<u64>,
+    retry_after_secs: Option<u64>,
+    now_epoch: u64,
+) -> u64 {
+    let until = match retry_after_secs {
+        Some(secs) => Some(now_epoch.saturating_add(secs)),
+        None => reset_epoch,
+    };
+    backoff_secs(until, now_epoch)
+}
+
 /// True when the next refresh should be skipped to preserve the reserve.
 pub fn should_back_off(rate: &RateLimitInfo) -> bool {
     rate.remaining < RATE_LIMIT_RESERVE
@@ -130,6 +148,24 @@ mod tests {
             reserve_pause_until(0, Some(u64::MAX), u64::MAX - 1),
             Some(u64::MAX)
         );
+    }
+
+    #[test]
+    fn a_refused_request_waits_for_the_later_of_reset_and_retry_after() {
+        let now = 1_000_000;
+        // A secondary limit: retry-after and no reset.
+        assert_eq!(rate_limited_wait_secs(None, Some(300), now), 300);
+        // The primary budget, spent: its reset, clamped.
+        assert_eq!(rate_limited_wait_secs(Some(now + 600), None, now), 600);
+        assert_eq!(rate_limited_wait_secs(Some(now + 90_000), None, now), 900);
+        // Both: retry-after wins, in GitHub's documented order.
+        assert_eq!(rate_limited_wait_secs(Some(now + 120), Some(300), now), 300);
+        assert_eq!(rate_limited_wait_secs(Some(now + 2_700), Some(60), now), 60);
+        // Neither, or a tiny one: the one-minute floor.
+        assert_eq!(rate_limited_wait_secs(None, None, now), 60);
+        assert_eq!(rate_limited_wait_secs(None, Some(5), now), 60);
+        // Absurd values cannot overflow and still cap at fifteen minutes.
+        assert_eq!(rate_limited_wait_secs(None, Some(u64::MAX), now), 900);
     }
 
     #[test]

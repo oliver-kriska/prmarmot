@@ -557,6 +557,51 @@ mod tests {
     }
 
     #[test]
+    fn a_secondary_limit_and_a_graphql_limit_carry_what_github_said() {
+        let header = |name: &str, value: &str| Header {
+            name: name.into(),
+            value: value.into(),
+        };
+        let secondary = Ok(HttpResponse {
+            status: 429,
+            headers: vec![header("Retry-After", "300")],
+            body: r#"{"message":"You have exceeded a secondary rate limit"}"#.into(),
+        });
+        let spent = Ok(HttpResponse {
+            status: 200,
+            headers: vec![
+                header("x-ratelimit-remaining", "0"),
+                header("x-ratelimit-reset", "1600"),
+            ],
+            body: r#"{"data":null,"errors":[{"type":"RATE_LIMITED","message":"x"}]}"#.into(),
+        });
+        let first = |response| {
+            futures::executor::block_on(run(
+                Scripted::new(vec![response]),
+                Arc::new(FixedToken("t")),
+                "github.com",
+                "prmarmot-test/0",
+                |core| core.graphql("q", &[]),
+            ))
+            .unwrap_err()
+        };
+        assert_eq!(
+            first(secondary),
+            FfiError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: Some(300),
+            }
+        );
+        assert_eq!(
+            first(spent),
+            FfiError::RateLimited {
+                reset_epoch: Some(1600),
+                retry_after_secs: None,
+            }
+        );
+    }
+
+    #[test]
     fn github_statuses_are_read_on_this_side_of_the_boundary() {
         let limited = Ok(HttpResponse {
             status: 403,
@@ -583,7 +628,8 @@ mod tests {
         assert_eq!(
             error,
             FfiError::RateLimited {
-                reset_epoch: Some(1750)
+                reset_epoch: Some(1750),
+                retry_after_secs: None,
             }
         );
 

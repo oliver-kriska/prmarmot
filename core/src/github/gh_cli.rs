@@ -175,7 +175,12 @@ fn classify_failure(stderr: &str) -> GhError {
     if s.contains("gh auth login") || s.contains("not logged in") || s.contains("authentication") {
         GhError::NotAuthenticated
     } else if s.contains("rate limit") || s.contains("rate_limited") {
-        GhError::RateLimited { reset_epoch: None }
+        // `gh api` prints no response headers on this path, so there is no
+        // reset or retry-after to carry: the caller waits the one-minute floor.
+        GhError::RateLimited {
+            reset_epoch: None,
+            retry_after_secs: None,
+        }
     } else {
         GhError::Network(stderr.trim().chars().take(300).collect())
     }

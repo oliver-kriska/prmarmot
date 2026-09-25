@@ -37,7 +37,7 @@ pub fn graphql_body(query: &str, variables: &[(&str, &str)], ids: &[String]) -> 
 }
 
 /// The parts of a response that decide what it means: the status line and the
-/// two rate-limit headers. Everything else is in the body.
+/// rate-limit headers. Everything else is in the body.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResponseMeta {
     pub status: u16,
@@ -45,6 +45,9 @@ pub struct ResponseMeta {
     pub remaining: Option<u64>,
     /// `x-ratelimit-reset`, when present and numeric (Unix seconds).
     pub reset_epoch: Option<u64>,
+    /// `retry-after` in seconds, when present and numeric. GitHub sends the
+    /// seconds form; the HTTP-date form is ignored rather than guessed at.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl ResponseMeta {
@@ -66,6 +69,7 @@ impl ResponseMeta {
             match name.to_ascii_lowercase().as_str() {
                 "x-ratelimit-remaining" => self.remaining = value,
                 "x-ratelimit-reset" => self.reset_epoch = value,
+                "retry-after" => self.retry_after_secs = value,
                 _ => {}
             }
         }
@@ -79,19 +83,34 @@ impl ResponseMeta {
 /// terminal, so they say what happened rather than naming a status code alone.
 pub fn classify(meta: ResponseMeta, body: &str) -> Result<Value, GhError> {
     let status = meta.status;
+    let rate_limited = || GhError::RateLimited {
+        reset_epoch: meta.reset_epoch,
+        retry_after_secs: meta.retry_after_secs,
+    };
     match status {
-        200..=299 => serde_json::from_str(body).map_err(|e| {
-            GhError::Parse(format!(
-                "GitHub returned {status} with a body that is not JSON: {e}"
-            ))
-        }),
+        200..=299 => {
+            let value: Value = serde_json::from_str(body).map_err(|e| {
+                GhError::Parse(format!(
+                    "GitHub returned {status} with a body that is not JSON: {e}"
+                ))
+            })?;
+            // GraphQL reports a spent budget as a 200 with a RATE_LIMITED
+            // error. Only here are the headers still at hand, and without
+            // their reset the caller would poll a spent budget every minute.
+            if graphql_rate_limited(&value) {
+                return Err(rate_limited());
+            }
+            Ok(value)
+        }
         401 => Err(GhError::NotAuthenticated),
         // A 403 or 429 is a rate limit only when GitHub says so; a 403 for a
         // repository the token cannot see must not look like a rate limit.
-        403 | 429 if meta.remaining == Some(0) || mentions_rate_limit(body) => {
-            Err(GhError::RateLimited {
-                reset_epoch: meta.reset_epoch,
-            })
+        403 | 429
+            if meta.remaining == Some(0)
+                || meta.retry_after_secs.is_some()
+                || mentions_rate_limit(body) =>
+        {
+            Err(rate_limited())
         }
         403 => Err(GhError::Network(format!(
             "GitHub refused the request (403){}",
@@ -110,6 +129,17 @@ pub fn classify(meta: ResponseMeta, body: &str) -> Result<Value, GhError> {
             detail(body)
         ))),
     }
+}
+
+/// A GraphQL envelope with an `errors[]` entry of type `RATE_LIMITED`.
+pub fn graphql_rate_limited(body: &Value) -> bool {
+    body.get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errors| {
+            errors
+                .iter()
+                .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"))
+        })
 }
 
 fn mentions_rate_limit(body: &str) -> bool {
@@ -144,6 +174,8 @@ pub fn detail(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::github::rate_limit::rate_limited_wait_secs;
 
     fn meta(status: u16) -> ResponseMeta {
         ResponseMeta::new(status)
@@ -196,7 +228,8 @@ mod tests {
         assert_eq!(
             classify(limited, "{}").unwrap_err(),
             GhError::RateLimited {
-                reset_epoch: Some(1750)
+                reset_epoch: Some(1750),
+                retry_after_secs: None,
             }
         );
 
@@ -216,6 +249,69 @@ mod tests {
             .unwrap_err(),
             GhError::RateLimited { .. }
         ));
+    }
+
+    #[test]
+    fn a_secondary_limit_carries_retry_after() {
+        // 429 with retry-after 300: wait five minutes, not the one-minute floor.
+        let meta = ResponseMeta::new(429).with_headers([("Retry-After", "300")]);
+        let error = classify(meta, "{}").unwrap_err();
+        assert_eq!(
+            error,
+            GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: Some(300),
+            }
+        );
+        let GhError::RateLimited {
+            reset_epoch,
+            retry_after_secs,
+        } = error
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            rate_limited_wait_secs(reset_epoch, retry_after_secs, 1_000),
+            300
+        );
+        // The HTTP-date form is not guessed at.
+        let dated =
+            ResponseMeta::new(429).with_headers([("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")]);
+        assert_eq!(dated.retry_after_secs, None);
+    }
+
+    #[test]
+    fn a_graphql_rate_limit_in_a_200_keeps_the_headers_reset() {
+        let body = r#"{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#;
+        let now = 1_000_000;
+        for (reset_in, waits) in [(600, 600), (90_000, 900)] {
+            let reset = (now + reset_in).to_string();
+            let meta = ResponseMeta::new(200).with_headers([
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", reset.as_str()),
+            ]);
+            let error = classify(meta, body).unwrap_err();
+            assert_eq!(
+                error,
+                GhError::RateLimited {
+                    reset_epoch: Some(now + reset_in),
+                    retry_after_secs: None,
+                }
+            );
+            if let GhError::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            } = error
+            {
+                assert_eq!(
+                    rate_limited_wait_secs(reset_epoch, retry_after_secs, now),
+                    waits
+                );
+            }
+        }
+        // Other GraphQL errors in a 200 are still the query parser's to judge.
+        let other = r#"{"data":null,"errors":[{"type":"NOT_FOUND","message":"x"}]}"#;
+        assert!(classify(meta(200), other).is_ok());
     }
 
     #[test]

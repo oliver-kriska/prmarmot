@@ -170,6 +170,7 @@ fn finish(sent: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result
         status: response.status().as_u16(),
         remaining: header_u64(&response, "x-ratelimit-remaining"),
         reset_epoch: header_u64(&response, "x-ratelimit-reset"),
+        retry_after_secs: header_u64(&response, "retry-after"),
     };
     let text = response
         .body_mut()

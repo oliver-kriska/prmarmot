@@ -1302,7 +1302,10 @@ mod tests {
             );
         }
         let limited = HttpReleaseSource::new(FakeRest::answering(Err(
-            prmarmot_core::github::GhError::RateLimited { reset_epoch: None },
+            prmarmot_core::github::GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: None,
+            },
         )));
         assert!(matches!(
             limited.latest_stable(&identity()),

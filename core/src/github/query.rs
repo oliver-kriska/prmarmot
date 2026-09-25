@@ -641,11 +641,13 @@ fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
             })
             .collect();
         if !errors.is_empty() {
-            let rate_limited = errors
-                .iter()
-                .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"));
-            if rate_limited {
-                return Err(GhError::RateLimited { reset_epoch: None });
+            // Only a transport without headers gets here (the `gh` CLI):
+            // an HTTP response was already classified with its reset.
+            if super::response::graphql_rate_limited(body) {
+                return Err(GhError::RateLimited {
+                    reset_epoch: None,
+                    retry_after_secs: None,
+                });
             }
             let msgs = errors
                 .iter()
@@ -792,7 +794,10 @@ mod tests {
         let limited = serde_json::json!({"errors": [{"type": "RATE_LIMITED", "message": "x"}]});
         assert_eq!(
             parse_pull_request_id(&limited, "acme/api", 7).unwrap_err(),
-            GhError::RateLimited { reset_epoch: None }
+            GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: None,
+            }
         );
         assert!(pull_request_id_query(7).contains("pullRequest(number:7)"));
 

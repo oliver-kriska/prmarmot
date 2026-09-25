@@ -66,7 +66,7 @@ final class URLSessionTransport: GithubTransport {
 | Direction | What |
 |---|---|
 | Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `rateLimitedWaitSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
 
 `reset` is safe to call while a fetch is in flight: a page that was already on
 its way when the account changed is dropped rather than remembered, so a
@@ -117,6 +117,13 @@ report. Built outside a git checkout, the commit reads `unknown` and `dirty` is
 and git, from the same core function the desktop calls: given the last board's
 `RateLimit`, it returns the second to wait until (one to fifteen minutes away)
 or `nil` to fetch. A reset of 0 is unknown and never pauses.
+
+A request GitHub refused comes back as `FfiError.rateLimited(resetEpoch:
+retryAfterSecs:)`: the budget's reset (also read from a 200 carrying a GraphQL
+`RATE_LIMITED` error) when the budget is what ran out, and a secondary limit's
+`retry-after`. Wait `rateLimitedWaitSecs(resetEpoch:retryAfterSecs:nowEpoch:)`
+seconds — `retry-after` when GitHub sent it, otherwise the reset, between one
+and fifteen minutes — as the desktop does.
 
 ## How blocking core meets async Swift
 

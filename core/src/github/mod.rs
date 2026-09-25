@@ -21,8 +21,15 @@ pub enum GhError {
     NotInstalled,
     /// `gh` present but not authenticated (or token expired).
     NotAuthenticated,
-    /// GraphQL RATE_LIMITED error or HTTP 403 rate-limit response.
-    RateLimited { reset_epoch: Option<u64> },
+    /// GraphQL RATE_LIMITED error or HTTP 403/429 rate-limit response.
+    /// `reset_epoch` is `x-ratelimit-reset` (Unix seconds) and
+    /// `retry_after_secs` is `retry-after`, each when GitHub sent it; core
+    /// reads no clock, so the caller turns them into a wait with
+    /// [`rate_limit::rate_limited_wait_secs`].
+    RateLimited {
+        reset_epoch: Option<u64>,
+        retry_after_secs: Option<u64>,
+    },
     /// GraphQL `errors[]` present without usable data.
     GraphqlErrors(Vec<String>),
     /// The scoped `owner/name` does not exist or the `gh` account cannot see it
@@ -49,9 +56,13 @@ impl fmt::Display for GhError {
                 f,
                 "not signed in to GitHub — run `gh auth login`, or `prmarmot-cli auth login`"
             ),
-            GhError::RateLimited { reset_epoch } => match reset_epoch {
-                Some(t) => write!(f, "GitHub rate limited (resets at epoch {t})"),
-                None => write!(f, "GitHub rate limited"),
+            GhError::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            } => match (reset_epoch, retry_after_secs) {
+                (_, Some(secs)) => write!(f, "GitHub rate limited (retry after {secs}s)"),
+                (Some(t), None) => write!(f, "GitHub rate limited (resets at epoch {t})"),
+                (None, None) => write!(f, "GitHub rate limited"),
             },
             GhError::GraphqlErrors(msgs) => {
                 write!(

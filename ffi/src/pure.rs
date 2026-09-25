@@ -594,6 +594,23 @@ pub fn backoff_secs(reset_epoch: Option<u64>, now_epoch: u64) -> u64 {
     prmarmot_core::github::rate_limit::backoff_secs(reset_epoch, now_epoch)
 }
 
+/// How long to wait after a request failed with `FfiError::RateLimited`, in
+/// seconds: `retry_after_secs` when GitHub sent it, otherwise until
+/// `reset_epoch`, between a minute and fifteen. The desktop waits by the same
+/// function. A clock before 1970 reads as 1970.
+#[uniffi::export]
+pub fn rate_limited_wait_secs(
+    reset_epoch: Option<u64>,
+    retry_after_secs: Option<u64>,
+    now_epoch: i64,
+) -> u64 {
+    prmarmot_core::github::rate_limit::rate_limited_wait_secs(
+        reset_epoch,
+        retry_after_secs,
+        u64::try_from(now_epoch).unwrap_or(0),
+    )
+}
+
 /// Whether to stop fetching to leave GitHub's budget for the person's own
 /// tools, and until when: the epoch second to wait until, or `None` to fetch.
 ///

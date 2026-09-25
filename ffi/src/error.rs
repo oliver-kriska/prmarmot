@@ -20,10 +20,15 @@ pub enum FfiError {
     /// No usable token: the caller must sign in again.
     #[error("not signed in to GitHub")]
     NotAuthenticated,
-    /// GitHub's API budget is spent. `reset_epoch` is Unix seconds when it
-    /// refills, when GitHub said so.
-    #[error("GitHub's API rate limit is spent")]
-    RateLimited { reset_epoch: Option<u64> },
+    /// GitHub is rate limiting requests: the hourly budget is spent, or a
+    /// secondary limit applies. `reset_epoch` is Unix seconds when a spent
+    /// budget refills and `retry_after_secs` is GitHub's `retry-after`, each
+    /// when GitHub said so. Pass both to `rate_limited_wait_secs` for the wait.
+    #[error("GitHub is rate limiting requests")]
+    RateLimited {
+        reset_epoch: Option<u64>,
+        retry_after_secs: Option<u64>,
+    },
     /// The repository does not exist, or this account cannot see it.
     #[error("repository not found: {repo}")]
     RepositoryNotFound { repo: String },
@@ -53,7 +58,13 @@ impl From<GhError> for FfiError {
             // `gh` is a desktop concept. On iPad there is no CLI to install,
             // so a missing one can only mean "you are not signed in".
             GhError::NotInstalled => Self::NotAuthenticated,
-            GhError::RateLimited { reset_epoch } => Self::RateLimited { reset_epoch },
+            GhError::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            } => Self::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            },
             GhError::RepositoryNotFound(repo) => Self::RepositoryNotFound { repo },
             GhError::PullRequestNotFound(pull_request) => {
                 Self::PullRequestNotFound { pull_request }
@@ -77,7 +88,13 @@ impl From<FfiError> for GhError {
     fn from(error: FfiError) -> Self {
         match error {
             FfiError::NotAuthenticated => Self::NotAuthenticated,
-            FfiError::RateLimited { reset_epoch } => Self::RateLimited { reset_epoch },
+            FfiError::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            } => Self::RateLimited {
+                reset_epoch,
+                retry_after_secs,
+            },
             FfiError::RepositoryNotFound { repo } => Self::RepositoryNotFound(repo),
             FfiError::PullRequestNotFound { pull_request } => {
                 Self::PullRequestNotFound(pull_request)
@@ -127,6 +144,26 @@ impl FfiError {
 mod tests {
     use super::FfiError;
     use uniffi::{LiftReturn, UnexpectedUniFFICallbackError};
+
+    /// Both directions keep the two rate-limit numbers in their places: a
+    /// swap would turn a reset epoch into a wait of fifty years.
+    #[test]
+    fn a_rate_limit_crosses_both_ways_with_its_fields_in_place() {
+        use prmarmot_core::github::GhError;
+        let core = GhError::RateLimited {
+            reset_epoch: Some(1_750),
+            retry_after_secs: Some(30),
+        };
+        let ffi = FfiError::from(core.clone());
+        assert_eq!(
+            ffi,
+            FfiError::RateLimited {
+                reset_epoch: Some(1_750),
+                retry_after_secs: Some(30),
+            }
+        );
+        assert_eq!(GhError::from(ffi), core);
+    }
 
     /// The path UniFFI takes when a Swift callback throws something that is
     /// not an `FfiError`. Without the `From` impl it panicked, and the iOS
