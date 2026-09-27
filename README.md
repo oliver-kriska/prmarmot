@@ -6,6 +6,50 @@
 
 # PR Marmot
 
+**Know which pull request needs you next.** PR Marmot is a desktop dashboard for
+GitHub pull requests, for macOS and Linux: the open ones that involve you, across
+your repositories, with a plain-language **Note** on each saying what it needs.
+You act on GitHub; PR Marmot never changes anything there. Free and open source
+(MIT).
+
+![The PR Marmot board: open pull requests from two repositories grouped into Approved, Needs action, Awaiting review and Drafts, each with a Note such as "CI failing", "merge conflict — rebase" or "assign alex + sam"](assets/screenshots/board.png)
+
+*Involving me, across all repositories. Every repository, person and pull
+request shown is fictional.*
+
+## Get it
+
+```sh
+brew install --cask oliver-kriska/tap/prmarmot
+```
+
+Or, without Homebrew:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install.sh | sh
+```
+
+Signed and notarized for Apple-silicon Macs. Linux and Intel Macs build from
+source; see [Install](#install).
+
+## Three views
+
+- **Involving me** — open PRs you opened, are assigned to, commented on or were
+  mentioned in, across your repositories, sorted by what they need (**My PRs**
+  for one repository).
+- **Review queue** — what was requested from you, and what nobody was asked to
+  review yet and is free to pick up.
+- **All open** — every open PR in one repository, whoever opened it, in the same
+  sections.
+
+For scripts and coding agents, `prmarmot-cli` prints the same views as a table,
+Markdown or JSON (schema in [`cli/schema/`](cli/schema/)), `watch` streams one
+event per line, and `watch --pr OWNER/NAME#N --until ci-pass` blocks until the
+condition is met (`prmarmot-cli skill install` teaches your agent to use it).
+See [Terminal and agent CLI](#terminal-and-agent-cli).
+
+## What it does
+
 **A native desktop dashboard for deciding what to do next on GitHub pull
 requests.** PR Marmot turns CI, review requests, completed reviews, unresolved
 threads, conflicts, labels, linked issues, and GitHub stacks into focused
@@ -772,7 +816,7 @@ change golden expectations to make a failing implementation pass.
 
 ```sh
 cargo build
-scripts/demo.sh             # fictional My PRs
+scripts/demo.sh             # fictional Involving me (board.png: 1440×628 window)
 scripts/demo.sh --review    # fictional Review queue
 scripts/demo.sh --fail-once # exercise the initial error and Retry recovery
 scripts/demo.sh --update-available # show a fictional stable update banner
