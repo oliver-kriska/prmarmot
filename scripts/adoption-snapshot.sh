@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Append one row per run to measurements/adoption.csv — no telemetry, only what GitHub
 # already counts: stars, release-asset downloads, 14-day traffic, waitlist signals
-# (unique commenters + 👍 reactors on the pinned waitlist Discussion) and the top Ideas
-# by upvotes. Run weekly (cron/launchd) or by hand. Needs `gh` logged in as the owner
+# (unique commenters + 👍 reactors on the pinned waitlist Discussion), the top Ideas
+# by upvotes and forks. `forks` is the last column because it came last (2026-09-25):
+# a file from before it gets the column added, with the older rows left empty. Run weekly (cron/launchd) or by hand. Needs `gh` logged in as the owner
 # (traffic requires push access).
 set -euo pipefail
 REPO="${PRMARMOT_REPO_SLUG:-oliver-kriska/prmarmot}"
@@ -22,6 +23,7 @@ fi
 
 today=$(date -u +%F)
 stars=$(gh api "repos/$REPO" --jq '.stargazers_count')
+forks=$(gh api "repos/$REPO" --jq '.forks_count')
 downloads=$(gh api "repos/$REPO/releases" --paginate --jq '[.[].assets[].download_count] | add // 0')
 # Traffic needs push access; on any failure record an empty cell, never the error body.
 views=$(gh api "repos/$REPO/traffic/views" --jq '.uniques' 2>/dev/null) || views=""
@@ -57,7 +59,13 @@ ideas=$(gh api graphql -f query='query($o:String!,$n:String!){ repository(owner:
   -f o="$OWNER" -f n="$NAME" --jq '[.data.repository.discussions.nodes[] | select(.category.name=="Ideas")]
   | sort_by(-.upvoteCount) | map("\(.title)=\(.upvoteCount)") | join("; ")') || { echo "Ideas query failed" >&2; exit 1; }
 
+HEADER="date,stars,release_downloads,views_14d_uniques,clones_14d_uniques,stranger_issues,waitlist_signals,ideas_by_upvotes,forks"
 mkdir -p "$(dirname "$OUT")"
-[[ -s "$OUT" ]] || echo "date,stars,release_downloads,views_14d_uniques,clones_14d_uniques,stranger_issues,waitlist_signals,ideas_by_upvotes" > "$OUT"
-printf '%s,%s,%s,%s,%s,%s,%s,"%s"\n' "$today" "$stars" "$downloads" "$views" "$clones" "$stranger_issues" "$waitlist" "${ideas//\"/\"\"}" >> "$OUT"
+if [[ ! -s "$OUT" ]]; then
+  echo "$HEADER" > "$OUT"
+elif [[ "$(head -1 "$OUT")" != "$HEADER" ]]; then
+  # A file from before `forks`: add the column, empty in the rows that predate it.
+  { echo "$HEADER"; tail -n +2 "$OUT" | sed 's/$/,/'; } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
+fi
+printf '%s,%s,%s,%s,%s,%s,%s,"%s",%s\n' "$today" "$stars" "$downloads" "$views" "$clones" "$stranger_issues" "$waitlist" "${ideas//\"/\"\"}" "$forks" >> "$OUT"
 tail -1 "$OUT"
