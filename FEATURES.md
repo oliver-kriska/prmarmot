@@ -22,8 +22,7 @@ values in the code. New features get the next free number in their area.
   Available to review since v0.3.0_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
-  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_ (Needs
-    attention and In progress, with no Available to review, through v0.11.0)
+  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
   - All open: Approved, Requested from you, Needs action, Available to review, Awaiting review, Drafts.
     _since v0.12.0_
@@ -72,10 +71,9 @@ values in the code. New features get the next free number in their area.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
     Dock badge's rule in every view: your own PRs under Needs action plus Requested from you. Other people's PRs
     under Needs action (Involving me, All open) and Available to review (optional: nobody asked you) never count.
-    _since v0.12.0_ Until then the Review queue counted Available to review, and Involving me counted other people's
-    PRs under Needs action.
+    _since v0.12.0_
   - How many PRs in this view you watch or snoozed. The explanation says how many of every PR you follow, in any
-    view, each refresh checked (up to 50 at a time). _since v0.12.0_ Until then the line gave that app-wide number.
+    view, each refresh checked (up to 50 at a time). _since v0.12.0_
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
   _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
