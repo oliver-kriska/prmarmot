@@ -31,7 +31,9 @@ uncommitted until Oliver tests them.** The desktop's behaviour does not change.
   error keeps the Swift signatures the iPad already calls.
 - **A matched issue ID is percent-encoded into its link** (b887d5b): an ID
   with a space, `#`, `?` or `/` no longer breaks the URL; `PROJ-123` links are
-  byte-identical.
+  byte-identical. This diverges from the shell prototype, which substitutes the
+  ID raw; Oliver approved it as a port-only divergence, recorded in
+  `core/tests/parity.rs` (the goldens stay as they are).
 - **A refused request waits as long as GitHub says.** `retry-after` (seconds)
   is parsed and travels in `GhError::RateLimited { reset_epoch,
   retry_after_secs }` (and `FfiError`), because core reads no clock; the

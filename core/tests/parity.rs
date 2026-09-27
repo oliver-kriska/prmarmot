@@ -11,6 +11,13 @@
 //! `core/src/pickup.rs`) is an extension in both as well (fixtures 101–106,
 //! 117–118, 201–205, 211–212), and so is the size band (`sizeBand`,
 //! `core/src/size.rs`; fixtures 101–106 and 201–203 carry change counts).
+//!
+//! One divergence is in the port only, approved by Oliver on 2026-09-25 (since
+//! v0.12.1): the issue link percent-encodes the matched ID, where the jq
+//! oracle substitutes it raw. The goldens cannot show it, because every
+//! fixture's `PROJ-<digits>` has nothing to encode and so reads the same both
+//! ways; `board::tests::a_matched_issue_id_is_percent_encoded_into_the_link`
+//! pins the encoding instead. Leave the oracle raw rather than adding `@uri`.
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;
