@@ -12,6 +12,10 @@ your repositories, with a plain-language **Note** on each saying what it needs.
 You act on GitHub; PR Marmot never changes anything there. Free and open source
 (MIT).
 
+Your GitHub token stays on your machine (in the keychain on macOS), with no PR
+Marmot account, no server and no telemetry. The app talks only to GitHub, and
+every line of it is here to read.
+
 ![The PR Marmot board: open pull requests from two repositories grouped into Approved, Needs action, Awaiting review and Drafts, each with a Note such as "CI failing", "merge conflict — rebase" or "assign alex + sam"](assets/screenshots/board.png)
 
 *Involving me, across all repositories. Every repository, person and pull
@@ -47,6 +51,10 @@ Markdown or JSON (schema in [`cli/schema/`](cli/schema/)), `watch` streams one
 event per line, and `watch --pr OWNER/NAME#N --until ci-pass` blocks until the
 condition is met (`prmarmot-cli skill install` teaches your agent to use it).
 See [Terminal and agent CLI](#terminal-and-agent-cli).
+
+**PR Marmot for iPad** is coming to the App Store: free for seven days, then
+bought once, with no subscription. Get notified:
+[github.com/oliver-kriska/prmarmot/discussions/8](https://github.com/oliver-kriska/prmarmot/discussions/8)
 
 ## What it does
 
