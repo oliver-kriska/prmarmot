@@ -85,6 +85,56 @@ pub fn layout_ordered(
     .collect()
 }
 
+/// [`layout_ordered`] where each section in `collapsed` keeps its header and
+/// members but shows no rows: a person's collapsed sections, Snoozed among
+/// them when it is collapsed. A section not in `collapsed` shows its rows,
+/// Snoozed too. Stack sub-headers never collapse.
+#[uniffi::export]
+pub fn layout_collapsible(
+    rows: Vec<PullRequest>,
+    mode: Mode,
+    all_repos: bool,
+    snoozed: Vec<String>,
+    collapsed: Vec<SectionKind>,
+    sort: Sort,
+    section_order: Vec<String>,
+) -> Vec<BoardItem> {
+    let rows = into_rows(rows);
+    let snoozed: HashSet<String> = snoozed.into_iter().collect();
+    let collapsed: Vec<core_layout::SectionKind> = collapsed.into_iter().map(Into::into).collect();
+    core_layout::layout_collapsible(
+        &rows,
+        mode.into(),
+        all_repos,
+        &snoozed,
+        &collapsed,
+        sort.into(),
+        &core_layout::SectionOrder::from_keys(&section_order).0,
+    )
+    .into_iter()
+    .map(BoardItem::from)
+    .collect()
+}
+
+/// What a collapsed section holds, in at most two facts ("2 failing CI ·
+/// 1 merge conflict", "longest wait 4d · 3 small"), for its header. `rows`
+/// are the section's members; `None` when none of its facts apply.
+#[uniffi::export]
+pub fn section_summary(
+    mode: Mode,
+    kind: SectionKind,
+    rows: Vec<PullRequest>,
+    now_epoch: i64,
+) -> Result<Option<String>, FfiError> {
+    let rows = into_rows(rows);
+    Ok(core_layout::section_summary(
+        mode.into(),
+        kind.into(),
+        &rows,
+        instant(now_epoch)?,
+    ))
+}
+
 /// A section order as stored keys: every section, each once.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SectionOrderChoice {
@@ -383,6 +433,44 @@ pub fn snoozed_toggle_text(on: bool, count: u32) -> String {
     core_status::snoozed_toggle_tooltip(on, count as usize)
 }
 
+/// The Needs you quick filter's label.
+#[uniffi::export]
+pub fn needs_you_toggle_label() -> String {
+    core_status::NEEDS_YOU_TOGGLE_LABEL.into()
+}
+
+/// What the Needs you quick filter says it will do. `count` is the header's
+/// "need you" (see `row_needs_you`, snoozed rows excluded).
+#[uniffi::export]
+pub fn needs_you_toggle_text(on: bool, count: u32) -> String {
+    core_status::needs_you_toggle_tooltip(on, count as usize)
+}
+
+/// The Stale quick filter's label; it adds or removes the `is:stale` chip.
+#[uniffi::export]
+pub fn stale_toggle_label() -> String {
+    core_status::STALE_TOGGLE_LABEL.into()
+}
+
+/// What the Stale quick filter says it will do, for the configured
+/// `stale_after_days`.
+#[uniffi::export]
+pub fn stale_toggle_text(on: bool, count: u32, stale_after_days: u64) -> String {
+    core_status::stale_toggle_tooltip(on, count as usize, stale_after_days)
+}
+
+/// The sync status's hover text, after the status itself.
+#[uniffi::export]
+pub fn sync_status_note() -> String {
+    core_status::SYNC_STATUS_NOTE.into()
+}
+
+/// What refreshing does to rows fetched with Load more.
+#[uniffi::export]
+pub fn refresh_note() -> String {
+    core_status::REFRESH_NOTE.into()
+}
+
 /// The blue marker's explanation: what changed, and how to clear it.
 #[uniffi::export]
 pub fn changed_marker_text(changes: Vec<String>) -> String {
@@ -507,6 +595,8 @@ pub enum DetailKind {
     Labels,
     Issue,
     Stack,
+    /// No longer sent: the sentence moved to `sync_status_note`. Kept so
+    /// Swift code matching on it still compiles; drop it once the iPad has.
     Snapshot,
 }
 
@@ -552,6 +642,37 @@ pub fn detail_items(
             .map(|(kind, text)| DetailLine {
                 kind: kind.into(),
                 text,
+            })
+            .collect(),
+    )
+}
+
+/// One fact of the Details panel as a label and a value, for a two-column
+/// inspector. The Note and the closing snapshot line have no label.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DetailField {
+    pub kind: DetailKind,
+    pub label: Option<String>,
+    pub value: String,
+}
+
+/// The same facts as [`detail_items`], as label and value: the desktop's
+/// right-hand panel lays them out this way.
+#[uniffi::export]
+pub fn detail_fields(
+    row: PullRequest,
+    mode: Mode,
+    now_epoch: i64,
+    tz_offset_secs: i32,
+) -> Result<Vec<DetailField>, FfiError> {
+    let now = instant(now_epoch)?;
+    Ok(
+        core_detail::detail_fields(&row.into_row(), mode.into(), now, tz_offset_secs)
+            .into_iter()
+            .map(|field| DetailField {
+                kind: field.kind.into(),
+                label: field.label.map(str::to_owned),
+                value: field.value,
             })
             .collect(),
     )
@@ -635,6 +756,14 @@ pub fn reserve_pause_until(rate: RateLimit, now_epoch: i64) -> Option<i64> {
 #[uniffi::export]
 pub fn rate_limit_reserve() -> u32 {
     prmarmot_core::github::rate_limit::RATE_LIMIT_RESERVE
+}
+
+/// Whether the budget readout should be drawn as a warning: less than a tenth
+/// of the hourly budget is left. The desktop colours "API n/limit" with its
+/// warning colour then; fetching still goes on until [`rate_limit_reserve`].
+#[uniffi::export]
+pub fn rate_budget_is_low(rate: RateLimit) -> bool {
+    prmarmot_core::github::rate_limit::budget_is_low(rate.remaining, rate.limit)
 }
 
 /// The label a section header shows for a category, e.g. "Needs action".

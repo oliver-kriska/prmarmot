@@ -26,6 +26,18 @@ impl RateLimitInfo {
     pub fn pause_until(&self, now_epoch: u64) -> Option<u64> {
         reserve_pause_until(self.remaining, self.reset_epoch(), now_epoch)
     }
+
+    /// [`budget_is_low`] for this budget.
+    pub fn is_low(&self) -> bool {
+        budget_is_low(self.remaining, self.limit)
+    }
+}
+
+/// Whether the budget readout is drawn as a warning: less than a tenth of the
+/// hourly budget is left. It only warns; fetching pauses later, at
+/// [`RATE_LIMIT_RESERVE`]. A limit of 0 (unknown) never warns.
+pub fn budget_is_low(remaining: u32, limit: u32) -> bool {
+    limit > 0 && u64::from(remaining) * 10 < u64::from(limit)
 }
 
 /// Skip refreshes when fewer points than this remain — the rest of the hourly
@@ -90,6 +102,16 @@ pub fn reserve_pause_until(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_budget_under_a_tenth_is_low() {
+        assert!(!budget_is_low(5000, 5000));
+        assert!(!budget_is_low(500, 5000)); // exactly a tenth
+        assert!(budget_is_low(499, 5000));
+        assert!(budget_is_low(0, 5000));
+        assert!(!budget_is_low(0, 0)); // unknown limit
+        assert!(budget_is_low(u32::MAX / 11, u32::MAX)); // no overflow
+    }
 
     #[test]
     fn backoff_is_clamped() {

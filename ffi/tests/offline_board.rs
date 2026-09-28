@@ -427,6 +427,36 @@ fn a_board_lays_out_into_sections_and_shares_as_text() {
         items
     );
 
+    // Collapsing the first section keeps its header and drops its rows; the
+    // summary is core's, for its members.
+    let first_kind = match &items[0] {
+        prmarmot_ffi::BoardItem::Header { kind, .. } => *kind,
+        other => panic!("expected a header first, got {other:?}"),
+    };
+    let collapsed = prmarmot_ffi::layout_collapsible(
+        board.rows.clone(),
+        Mode::Review,
+        false,
+        Vec::new(),
+        vec![first_kind],
+        Sort::Wait,
+        Vec::new(),
+    );
+    assert!(collapsed
+        .get(1)
+        .is_none_or(|item| matches!(item, prmarmot_ffi::BoardItem::Header { .. })));
+    assert_eq!(
+        collapsed.iter().filter_map(label).count(),
+        default_labels.len()
+    );
+    assert_eq!(
+        prmarmot_ffi::section_summary(Mode::Review, first_kind, board.rows.clone(), NOW)
+            .unwrap()
+            .as_deref()
+            .map(|summary| summary.starts_with("longest wait")),
+        Some(true)
+    );
+
     let payload = prmarmot_ffi::share_group(
         "Requested from you".into(),
         board.rows.clone(),

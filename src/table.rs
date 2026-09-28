@@ -11,7 +11,7 @@
 //! Nothing here may animate: the table sits idle between refreshes and any
 //! continuous animation would defeat the idle-GPU half of the spike gate.
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, AnyElement, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
@@ -28,7 +28,8 @@ use prmarmot_core::cells::{
     common_labels, label_order, note_presentation, review_cell, NotePresentation, ReviewCell, Tone,
 };
 use prmarmot_core::layout::{
-    layout_ordered, section_explanation, LayoutItem, SectionKind, SectionOrder, Sort,
+    layout_collapsible, section_explanation, section_summary, LayoutItem, SectionKind,
+    SectionOrder, Sort,
 };
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
@@ -44,6 +45,10 @@ use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 /// for them, and keyboard selection bounces off them (see `app.rs`).
 enum DisplayRow {
     Header {
+        kind: SectionKind,
+        /// A top-level section whose rows are hidden; `detail` is then its
+        /// summary.
+        collapsed: bool,
         label: String,
         count: Option<usize>,
         detail: Option<String>,
@@ -68,7 +73,7 @@ pub enum TableWidthClass {
 }
 
 /// Below this the layout is Compact (Labels column dropped).
-const COMPACT_MAX: f32 = 1120.0;
+pub const COMPACT_MAX: f32 = 1120.0;
 /// At/above this the layout is Wide.
 const WIDE_MIN: f32 = 1360.0;
 
@@ -127,6 +132,8 @@ const CELL_FONT_REM: f32 = 0.875;
 /// the title/note/review cells, needed for the elision width math.
 const GAP_1: f32 = 4.0;
 const GAP_1P5: f32 = 6.0;
+/// The least room a Note's muted tail is drawn in; less would show only "…".
+const TAIL_MIN: f32 = 24.0;
 /// A hair of slack so the appended "…" never lands under the cell's overflow
 /// clip (our measured width can differ from the painted width by sub-pixels).
 const ELIDE_SAFETY: f32 = 4.0;
@@ -292,17 +299,12 @@ pub fn columns_for(
         Mode::AllOpen => PR_W + CI_W + author_w + all_open_review_w + labels_w + repo_w,
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
-    let title_min = if all_repos && compact {
-        // Reserve room for the always-visible watch control at the 900px floor.
-        168.0
-    } else {
-        TITLE_MIN
-    };
-    let note_min = if all_repos && compact {
-        224.0
-    } else {
-        NOTE_MIN
-    };
+    // Every repository adds the Repo column, which the full minimums don't
+    // leave room for at the narrowest Compact or Medium table (a Medium table
+    // can be as narrow as 1120px beside the Details panel); Title keeps room for
+    // the always-visible watch control.
+    let title_min = if all_repos { 168.0 } else { TITLE_MIN };
+    let note_min = if all_repos { 224.0 } else { NOTE_MIN };
     let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(title_min + note_min);
     let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM).max(title_min);
     let mut note_w = (flexible - title_w).max(note_min);
@@ -413,12 +415,14 @@ fn size_text(size: ChangeSize) -> String {
 
 /// Full, unelided snapshot details; no secondary network request or hidden
 /// cache. The lines themselves are core's, so the iPad shows the same ones.
+#[cfg(test)]
 pub fn detail_text(row: &BoardRow, mode: Mode) -> String {
     detail_text_at(row, mode, Utc::now())
 }
 
 /// [`detail_text`] with the wait measured at `now`.
-fn detail_text_at(row: &BoardRow, mode: Mode, now: DateTime<Utc>) -> String {
+#[cfg(test)]
+fn detail_text_at(row: &BoardRow, mode: Mode, now: chrono::DateTime<Utc>) -> String {
     prmarmot_core::detail::detail_text(row, mode, now, local_offset_secs())
 }
 
@@ -439,6 +443,7 @@ pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)>
 type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;
 type FilterClickHandler = Rc<dyn Fn(FilterChip, &mut Window, &mut App)>;
 type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
+type SectionToggleHandler = Rc<dyn Fn(SectionKind, &mut Window, &mut App)>;
 
 /// A board group rendered for the clipboard, ready for `app.rs` to write.
 pub struct GroupCopy {
@@ -468,7 +473,8 @@ pub struct BoardTableDelegate {
     changed: HashMap<String, SharedString>,
     watched: HashSet<String>,
     snoozed: HashSet<String>,
-    show_snoozed: bool,
+    /// Top-level sections whose rows are hidden (Snoozed by default).
+    collapsed: Vec<SectionKind>,
     /// A wait this many days long shows as stale.
     stale_after_days: u64,
     /// The order inside the review queue's pickup sections.
@@ -482,6 +488,8 @@ pub struct BoardTableDelegate {
     pub on_group_copy: Option<GroupCopyHandler>,
     /// A label, author, or repository was clicked: add it to the search.
     pub on_filter_click: Option<FilterClickHandler>,
+    /// A section header was clicked: collapse or expand that section.
+    pub on_section_toggle: Option<SectionToggleHandler>,
     /// Display index of the header whose Copy menu is open, so its button
     /// stays visible while the pointer is over the menu instead of the header.
     copy_menu_open: Rc<Cell<Option<usize>>>,
@@ -503,7 +511,7 @@ impl BoardTableDelegate {
             changed: HashMap::new(),
             watched: HashSet::new(),
             snoozed: HashSet::new(),
-            show_snoozed: false,
+            collapsed: vec![SectionKind::Snoozed],
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             sort: Sort::Wait,
             sections: SectionOrder::default(),
@@ -511,6 +519,7 @@ impl BoardTableDelegate {
             on_row_action: None,
             on_group_copy: None,
             on_filter_click: None,
+            on_section_toggle: None,
             copy_menu_open: Rc::new(Cell::new(None)),
         }
     }
@@ -577,30 +586,30 @@ impl BoardTableDelegate {
         changed: HashMap<String, SharedString>,
         watched: HashSet<String>,
         snoozed: HashSet<String>,
-        show_snoozed: bool,
+        collapsed: Vec<SectionKind>,
     ) {
         self.changed = changed;
         self.watched = watched;
         self.snoozed = snoozed;
-        self.show_snoozed = show_snoozed;
+        self.collapsed = collapsed;
         self.rebuild_display();
     }
 
     /// Rebuild display rows from the shared core layout (sections, the Approved
     /// split, stacks, Snoozed), adding the window's own Snoozed wording.
     fn rebuild_display(&mut self) {
-        let show_snoozed = self.show_snoozed;
+        let now = Utc::now();
         self.common_labels = if self.mode == Mode::AllOpen {
             common_labels(&self.rows)
         } else {
             Vec::new()
         };
-        self.display = layout_ordered(
+        self.display = layout_collapsible(
             &self.rows,
             self.mode,
             self.all_repos,
             &self.snoozed,
-            show_snoozed,
+            &self.collapsed,
             self.sort,
             &self.sections,
         )
@@ -613,21 +622,29 @@ impl BoardTableDelegate {
                 count,
                 detail,
                 members,
-            } => DisplayRow::Header {
-                label,
-                count,
-                explanation: section_explanation(self.mode, kind, self.all_repos).map(Into::into),
-                detail: if kind == SectionKind::Snoozed {
-                    Some(if show_snoozed {
-                        "shown · use Snoozed to collapse".into()
+            } => {
+                let collapsed = count.is_some() && self.collapsed.contains(&kind);
+                DisplayRow::Header {
+                    kind,
+                    collapsed,
+                    label,
+                    count,
+                    explanation: section_explanation(self.mode, kind, self.all_repos)
+                        .map(Into::into),
+                    // Collapsed, a section says what it holds instead.
+                    detail: if collapsed {
+                        section_summary(
+                            self.mode,
+                            kind,
+                            members.iter().filter_map(|&ix| self.rows.get(ix)),
+                            now,
+                        )
                     } else {
-                        "collapsed · use Snoozed to show".into()
-                    })
-                } else {
-                    detail
-                },
-                members,
-            },
+                        detail
+                    },
+                    members,
+                }
+            }
         })
         .collect();
     }
@@ -658,11 +675,62 @@ impl BoardTableDelegate {
         }
     }
 
-    /// True when the display index is a non-selectable section header.
+    /// True when the display index is a section header.
+    #[cfg(test)]
     pub fn is_header(&self, display_ix: usize) -> bool {
         matches!(
             self.display.get(display_ix),
             Some(DisplayRow::Header { .. })
+        )
+    }
+
+    /// Whether selection may rest on this display index: a PR, or a folded
+    /// section's header, so `c` can unfold it from the keyboard. Every other
+    /// header is skipped.
+    pub fn is_selectable(&self, display_ix: usize) -> bool {
+        matches!(
+            self.display.get(display_ix),
+            Some(DisplayRow::Pr(_))
+                | Some(DisplayRow::Header {
+                    collapsed: true,
+                    ..
+                })
+        )
+    }
+
+    /// The section whose folded header is at this display index.
+    pub fn folded_section_at(&self, display_ix: usize) -> Option<SectionKind> {
+        match self.display.get(display_ix)? {
+            DisplayRow::Header {
+                kind,
+                collapsed: true,
+                ..
+            } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    /// The top-level section a display row belongs to (a stack sub-header
+    /// belongs to the section above it).
+    pub fn section_at(&self, display_ix: usize) -> Option<SectionKind> {
+        self.display
+            .get(..=display_ix)?
+            .iter()
+            .rev()
+            .find_map(|d| match d {
+                DisplayRow::Header {
+                    kind,
+                    count: Some(_),
+                    ..
+                } => Some(*kind),
+                _ => None,
+            })
+    }
+
+    /// The display index of a top-level section's header.
+    pub fn header_index(&self, kind: SectionKind) -> Option<usize> {
+        self.display.iter().position(
+            |d| matches!(d, DisplayRow::Header { kind: k, count: Some(_), .. } if *k == kind),
         )
     }
 
@@ -904,6 +972,8 @@ impl TableDelegate for BoardTableDelegate {
             // label drawn as an absolute overlay (cells render empty on this
             // row so nothing paints over it — see the module note).
             Some(DisplayRow::Header {
+                kind,
+                collapsed,
                 label,
                 count,
                 detail,
@@ -932,46 +1002,87 @@ impl TableDelegate for BoardTableDelegate {
                         .items_center()
                         .gap_1p5()
                         .child(
-                            div()
-                                .id(("section-title", row_ix))
-                                .text_size(px(if count.is_some() { 12. } else { 11. }))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.secondary_foreground)
-                                .child(label.clone())
-                                // What puts a PR here, on hover over the title
-                                // only, so it never covers the Copy menu. The text
-                                // is capped so it wraps rather than runs off a
-                                // narrow window (a cap on the tooltip box doesn't wrap).
-                                .when_some(explanation.clone(), |title, text| {
-                                    title.tooltip(move |window, cx| {
-                                        let text = text.clone();
-                                        Tooltip::element(move |_, _| {
-                                            div().max_w(px(460.)).child(text.clone())
-                                        })
-                                        .build(window, cx)
-                                    })
+                            h_flex()
+                                .id(("section-toggle", row_ix))
+                                .items_center()
+                                .gap_1p5()
+                                // A top-level header is its section's
+                                // disclosure: the chevron swaps glyphs, nothing
+                                // animates.
+                                .when_some(
+                                    count.and(self.on_section_toggle.clone()),
+                                    |toggle, handler| {
+                                        let kind = *kind;
+                                        toggle
+                                            .cursor_pointer()
+                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                cx.stop_propagation()
+                                            })
+                                            .on_click(move |_, window, cx| {
+                                                cx.stop_propagation();
+                                                handler(kind, window, cx);
+                                            })
+                                            .child(
+                                                // The glyph draws well under its
+                                                // font size: a larger size on a
+                                                // fixed line keeps the row height.
+                                                div()
+                                                    .w(px(14.))
+                                                    .text_size(px(17.))
+                                                    .line_height(px(14.))
+                                                    .text_color(theme.secondary_foreground)
+                                                    .child(if *collapsed { "▸" } else { "▾" }),
+                                            )
+                                    },
+                                )
+                                .child(
+                                    div()
+                                        .id(("section-title", row_ix))
+                                        .text_size(px(if count.is_some() { 12. } else { 11. }))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.secondary_foreground)
+                                        .child(label.clone())
+                                        // What puts a PR here, on hover over the title
+                                        // only, so it never covers the Copy menu. The text
+                                        // is capped so it wraps rather than runs off a
+                                        // narrow window (a cap on the tooltip box doesn't wrap).
+                                        .when_some(explanation.clone(), |title, text| {
+                                            title.tooltip(move |window, cx| {
+                                                let text = text.clone();
+                                                Tooltip::element(move |_, _| {
+                                                    div().max_w(px(460.)).child(text.clone())
+                                                })
+                                                .build(window, cx)
+                                            })
+                                        }),
+                                )
+                                .when_some(*count, |header, count| {
+                                    header.child(
+                                        div()
+                                            .px(px(6.))
+                                            .rounded(px(4.))
+                                            .bg(theme.background)
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.muted_foreground)
+                                            .child(count.to_string()),
+                                    )
+                                })
+                                .when_some(detail.clone(), |header, detail| {
+                                    // Folded, the summary is the section's
+                                    // content: read, not greyed out.
+                                    header.child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(if *collapsed {
+                                                theme.secondary_foreground
+                                            } else {
+                                                theme.muted_foreground
+                                            })
+                                            .child(format!("· {detail}")),
+                                    )
                                 }),
                         )
-                        .when_some(*count, |header, count| {
-                            header.child(
-                                div()
-                                    .px(px(6.))
-                                    .rounded(px(4.))
-                                    .bg(theme.background)
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.muted_foreground)
-                                    .child(count.to_string()),
-                            )
-                        })
-                        .when_some(detail.clone(), |header, detail| {
-                            header.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(theme.muted_foreground)
-                                    .child(format!("· {detail}")),
-                            )
-                        })
                         // Revealed on header hover (a style swap, no animation)
                         // and held while its menu is open.
                         .when(count.is_some() && !members.is_empty(), |header| {
@@ -1570,35 +1681,44 @@ impl TableDelegate for BoardTableDelegate {
                 if let Some(color) = dot_color {
                     cell = cell.child(status_dot(color));
                 }
-                // Primary never truncates away; the muted tail absorbs the
-                // ellipsis when the row is narrow. Elide the tail to the space
-                // the dot + primary leave (a real "…", see `elide`).
+                // The muted tail absorbs the ellipsis when the row is narrow;
+                // the wait and size never elide. The primary is shortened only
+                // when it cannot fit beside them on its own: a calm note is
+                // one whole sentence, and clipped it would hide the wait.
+                // (A real "…", see `elide`.)
                 let dot_region = if dot_color.is_some() {
                     STATUS_DOT + GAP_1P5
                 } else {
                     0.0
                 };
-                let primary_w = measure_width(window, &primary);
                 let wait_w = wait
                     .as_ref()
                     .map_or(px(0.), |(label, _)| measure_width(window, label));
                 let size_w = size
                     .as_ref()
                     .map_or(px(0.), |label| measure_width(window, label));
+                let room = self.columns[col_ix].width
+                    - wait_w
+                    - size_w
+                    - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
+                let mut primary_w = measure_width(window, &primary);
+                let primary = if primary_w > room {
+                    let shortened = elide(window, &primary, room);
+                    primary_w = measure_width(window, &shortened);
+                    shortened
+                } else {
+                    primary
+                };
                 cell = cell.child(
                     div()
                         .flex_shrink_0()
                         .text_color(primary_color)
                         .child(primary),
                 );
-                if !tail.is_empty() {
-                    let col_w = self.columns[col_ix].width;
-                    let avail = col_w
-                        - primary_w
-                        - wait_w
-                        - size_w
-                        - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
-                    let tail = elide(window, &tail, avail);
+                let tail_room = room - primary_w;
+                // Below a few characters' room the tail would be a bare "…".
+                if !tail.is_empty() && tail_room >= px(TAIL_MIN) {
+                    let tail = elide(window, &tail, tail_room);
                     cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
                 }
                 if let Some((label, stale)) = wait {
@@ -1663,7 +1783,7 @@ mod tests {
 
     fn rule() -> StaleRule {
         StaleRule {
-            now: DateTime::parse_from_rfc3339("2026-09-15T12:00:00Z")
+            now: chrono::DateTime::parse_from_rfc3339("2026-09-15T12:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
             after_days: 3,
@@ -1937,7 +2057,7 @@ mod tests {
             HashMap::new(),
             HashSet::new(),
             HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
-            false,
+            vec![SectionKind::Snoozed],
         );
         assert!(delegate
             .display_index_of_url("https://github.com/acme/widgets/pull/1")
@@ -1945,11 +2065,36 @@ mod tests {
         assert!(delegate
             .display_index_of_url("https://github.com/acme/widgets/pull/2")
             .is_some());
-        delegate.show_snoozed = true;
+        delegate.collapsed.clear();
         delegate.rebuild_display();
         assert!(delegate
             .display_index_of_url("https://github.com/acme/widgets/pull/1")
             .is_some());
+    }
+
+    #[test]
+    fn a_folded_header_is_selectable_and_names_its_section() {
+        let action = SectionKind::Category(Category::Action);
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        delegate.set_rows(vec![
+            row(1, Category::Action),
+            row(2, Category::Action),
+            row(3, Category::Await),
+        ]);
+        delegate.set_attention(HashMap::new(), HashSet::new(), HashSet::new(), vec![]);
+        // Open: headers are skipped, rows name the section above them.
+        let action_ix = delegate.header_index(action).unwrap();
+        assert!(!delegate.is_selectable(action_ix));
+        assert!(delegate.is_selectable(action_ix + 1));
+        assert_eq!(delegate.section_at(action_ix + 2), Some(action));
+        assert_eq!(delegate.folded_section_at(action_ix), None);
+        // Folded: the header is where the selection can rest.
+        delegate.set_attention(HashMap::new(), HashSet::new(), HashSet::new(), vec![action]);
+        let action_ix = delegate.header_index(action).unwrap();
+        assert!(delegate.is_selectable(action_ix));
+        assert_eq!(delegate.folded_section_at(action_ix), Some(action));
+        assert!(delegate.is_header(action_ix + 1));
+        assert!(!delegate.is_selectable(action_ix + 1));
     }
 
     #[test]
@@ -2018,7 +2163,7 @@ mod tests {
             HashMap::new(),
             HashSet::new(),
             HashSet::from(["https://github.com/acme/widgets/pull/1".into()]),
-            false,
+            vec![SectionKind::Snoozed],
         );
         let copy = d.group_copy("Snoozed", ShareFormat::Markdown).unwrap();
         assert_eq!(copy.count, 1);
@@ -2285,7 +2430,7 @@ mod tests {
         r.title = "Fix login".into();
         r.waiting_since = Some("2026-09-12T12:00:00Z".into());
         assert!(filtered(&r, "IS:Stale login"));
-        let since = DateTime::parse_from_rfc3339("2026-09-12T12:00:00Z")
+        let since = chrono::DateTime::parse_from_rfc3339("2026-09-12T12:00:00Z")
             .unwrap()
             .with_timezone(&Local)
             .format("%Y-%m-%d %H:%M");
@@ -2448,17 +2593,25 @@ mod tests {
 
     #[test]
     fn columns_fit_within_viewport_budgets() {
-        for &w in &[900.0_f32, 1100.0, 1120.0, 1360.0, 1440.0, 1920.0] {
+        // Every width a table can have, in steps: the window's, or the window's
+        // less the Details panel (a Medium table from 1120px up).
+        let widths = (0..=87)
+            .map(|i| 900.0 + 8.0 * i as f32)
+            .chain([1919.0, 1920.0]);
+        for w in widths {
             let class = TableWidthClass::from_width(w);
             for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-                let cols = columns_for(mode, class, w, false);
-                // Column widths + scrollbar margin must stay within the viewport;
-                // Note is last, so overflow would push it offscreen.
-                assert!(
-                    total_width(&cols) + SCROLLBAR_MARGIN <= w + 1.0,
-                    "mode {mode:?} at {w}px: total {} overflows",
-                    total_width(&cols)
-                );
+                // All open always shows one repository.
+                for all_repos in [false, mode != Mode::AllOpen] {
+                    let cols = columns_for(mode, class, w, all_repos);
+                    // Column widths + scrollbar margin must stay within the
+                    // viewport; Note is last, so overflow would push it offscreen.
+                    assert!(
+                        total_width(&cols) + SCROLLBAR_MARGIN <= w + 1.0,
+                        "mode {mode:?} all_repos={all_repos} at {w}px: total {} overflows",
+                        total_width(&cols)
+                    );
+                }
             }
         }
     }
@@ -2749,7 +2902,12 @@ mod tests {
                     .collect();
                 shown = shown.max(matching.len());
                 delegate.set_rows(matching);
-                delegate.set_attention(HashMap::new(), watched, snoozed, false);
+                delegate.set_attention(
+                    HashMap::new(),
+                    watched,
+                    snoozed,
+                    vec![SectionKind::Snoozed],
+                );
                 let _ =
                     delegate.display_index_of_url("https://github.com/demo-labs/repo-5/pull/1599");
                 if pass > 0 {

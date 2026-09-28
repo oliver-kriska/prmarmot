@@ -5,8 +5,13 @@
 
 use std::collections::HashSet;
 
-use crate::board::{BoardRow, Category, Mode, ReviewState};
-use crate::size::ChangeSize;
+use chrono::{DateTime, Utc};
+
+use crate::board::{BoardRow, Category, Ci, Mode, ReviewState};
+use crate::cells::unresolved_label;
+use crate::pickup::{wait_label, waiting_secs};
+use crate::size::{ChangeSize, SizeBand};
+use crate::status::row_needs_you;
 
 /// Which band a header introduces. Stack sub-headers sit inside a band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +92,32 @@ pub fn layout(
 /// Available to review, and Awaiting review list the longest pickup wait
 /// first, unless `sort` says otherwise; every other order within a section is
 /// the incoming one.
-pub fn layout_ordered<'a>(
-    rows: &'a [BoardRow],
+pub fn layout_ordered(
+    rows: &[BoardRow],
     mode: Mode,
     all_repos: bool,
     snoozed: &HashSet<String>,
     show_snoozed: bool,
+    sort: Sort,
+    sections: &SectionOrder,
+) -> Vec<LayoutItem> {
+    let collapsed: &[SectionKind] = if show_snoozed {
+        &[]
+    } else {
+        &[SectionKind::Snoozed]
+    };
+    layout_collapsible(rows, mode, all_repos, snoozed, collapsed, sort, sections)
+}
+
+/// [`layout_ordered`], where any top-level section in `collapsed` (Snoozed
+/// included) keeps its header and its `members` but emits no rows. A section
+/// that is not in `collapsed` is expanded, Snoozed too.
+pub fn layout_collapsible<'a>(
+    rows: &'a [BoardRow],
+    mode: Mode,
+    all_repos: bool,
+    snoozed: &HashSet<String>,
+    collapsed: &[SectionKind],
     sort: Sort,
     sections: &SectionOrder,
 ) -> Vec<LayoutItem> {
@@ -205,6 +230,9 @@ pub fn layout_ordered<'a>(
         if let LayoutItem::Header { members, .. } = &mut display[header_ix] {
             *members = emitted;
         }
+        if collapsed.contains(&kind) {
+            display.truncate(header_ix + 1);
+        }
     }
     if !snoozed_order.is_empty() {
         display.push(LayoutItem::Header {
@@ -214,7 +242,7 @@ pub fn layout_ordered<'a>(
             detail: None,
             members: snoozed_order.clone(),
         });
-        if show_snoozed {
+        if !collapsed.contains(&SectionKind::Snoozed) {
             display.extend(snoozed_order.into_iter().map(LayoutItem::Row));
         }
     }
@@ -484,6 +512,85 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
         }
         _ => return None,
     })
+}
+
+/// Every section a person can collapse: the ones they can order, and Snoozed.
+pub const COLLAPSIBLE_SECTIONS: [SectionKind; 8] = [
+    SectionKind::Approved,
+    SectionKind::Category(Category::Todo),
+    SectionKind::Category(Category::Action),
+    SectionKind::Category(Category::Available),
+    SectionKind::Category(Category::Await),
+    SectionKind::Category(Category::Done),
+    SectionKind::Category(Category::Draft),
+    SectionKind::Snoozed,
+];
+
+/// A collapsible section by its JSON key, in any case; `None` for `stack` or
+/// an unknown key.
+pub fn collapsible_section(key: &str) -> Option<SectionKind> {
+    let key = key.trim();
+    COLLAPSIBLE_SECTIONS
+        .into_iter()
+        .find(|kind| kind.key().eq_ignore_ascii_case(key))
+}
+
+/// What a collapsed section holds, in at most two facts, for its header:
+/// "2 failing CI · 1 merge conflict", "longest wait 4d · 3 small". The facts
+/// are the ones that section is read for: what blocks it for Needs action,
+/// how long the wait is where a section is about getting picked up (and, in
+/// the review queue, how many are small), how many need you for Snoozed.
+/// `None` when none of its facts apply, or for a stack sub-header.
+pub fn section_summary<'a>(
+    mode: Mode,
+    kind: SectionKind,
+    members: impl IntoIterator<Item = &'a BoardRow>,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let rows: Vec<&BoardRow> = members.into_iter().collect();
+    let count = |keep: fn(&BoardRow) -> bool| rows.iter().filter(|row| keep(row)).count();
+    let failing = || match count(|row| row.ci == Ci::Fail) {
+        0 => None,
+        n => Some(format!("{n} failing CI")),
+    };
+    let conflicts = || match count(|row| row.conflict) {
+        0 => None,
+        1 => Some("1 merge conflict".to_owned()),
+        n => Some(format!("{n} merge conflicts")),
+    };
+    let unresolved = || match rows.iter().map(|row| row.unresolved).sum() {
+        0 => None,
+        n => Some(unresolved_label(n)),
+    };
+    let longest_wait = || {
+        rows.iter()
+            .filter_map(|row| waiting_secs(row, now))
+            .max()
+            .map(|secs| format!("longest wait {}", wait_label(secs)))
+    };
+    let small = || match count(|row| row.size.is_some_and(|size| size.band() == SizeBand::Small)) {
+        0 => None,
+        n => Some(format!("{n} small")),
+    };
+    let need_you = || match rows.iter().filter(|row| row_needs_you(mode, row)).count() {
+        0 => None,
+        1 => Some("1 needs you".to_owned()),
+        n => Some(format!("{n} need you")),
+    };
+    let facts: Vec<Option<String>> = match kind {
+        SectionKind::Stack => return None,
+        SectionKind::Category(Category::Todo | Category::Available) if mode == Mode::Review => {
+            vec![longest_wait(), small()]
+        }
+        SectionKind::Category(Category::Todo | Category::Available | Category::Await) => {
+            vec![longest_wait(), failing()]
+        }
+        SectionKind::Approved => vec![failing(), conflicts()],
+        SectionKind::Snoozed => vec![need_you(), failing()],
+        SectionKind::Category(_) => vec![failing(), conflicts(), unresolved()],
+    };
+    let facts: Vec<String> = facts.into_iter().flatten().take(2).collect();
+    (!facts.is_empty()).then(|| facts.join(" · "))
 }
 
 #[cfg(test)]
@@ -1031,6 +1138,132 @@ mod tests {
         assert_eq!(
             outline(&rows, &shown),
             ["Awaiting review (1)", "2", "Snoozed (1)", "1"]
+        );
+    }
+
+    /// A collapsed section keeps its header, its count and its members, so
+    /// Copy works on it, and drops its rows; the sections around it stay.
+    #[test]
+    fn a_collapsed_section_keeps_its_header_and_members_and_hides_its_rows() {
+        let mut stacked_rows = vec![
+            stacked(row(3, Category::Action), "acme/widgets", 9, 2, 1),
+            stacked(row(4, Category::Action), "acme/widgets", 9, 2, 2),
+        ];
+        let mut rows = vec![row(1, Category::Await), row(2, Category::Draft)];
+        rows.append(&mut stacked_rows);
+        let snoozed = HashSet::from(["PR_2".to_string()]);
+        let items = layout_collapsible(
+            &rows,
+            Mode::Authored,
+            false,
+            &snoozed,
+            &[SectionKind::Category(Category::Action)],
+            Sort::Wait,
+            &SectionOrder::default(),
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Needs action (2)",
+                "Awaiting review (1)",
+                "1",
+                "Snoozed (1)",
+                "2"
+            ]
+        );
+        match &items[0] {
+            LayoutItem::Header { members, .. } => assert_eq!(members, &vec![2, 3]),
+            other => panic!("expected the Needs action header, got {other:?}"),
+        }
+        // Snoozed collapses the same way, and layout_ordered's flag is that.
+        let both = layout_collapsible(
+            &rows,
+            Mode::Authored,
+            false,
+            &snoozed,
+            &[SectionKind::Snoozed],
+            Sort::Wait,
+            &SectionOrder::default(),
+        );
+        assert_eq!(
+            both,
+            layout(&rows, Mode::Authored, false, &snoozed, false, Sort::Wait)
+        );
+    }
+
+    #[test]
+    fn collapsible_sections_are_the_orderable_ones_and_snoozed_by_key() {
+        assert_eq!(COLLAPSIBLE_SECTIONS[..7], ORDERABLE_SECTIONS);
+        assert_eq!(
+            collapsible_section(" Draft "),
+            Some(SectionKind::Category(Category::Draft))
+        );
+        assert_eq!(collapsible_section("snoozed"), Some(SectionKind::Snoozed));
+        assert_eq!(collapsible_section("stack"), None);
+        assert_eq!(collapsible_section("nope"), None);
+    }
+
+    /// At most two facts, the ones each section is read for.
+    #[test]
+    fn a_collapsed_header_sums_up_its_section_in_two_facts() {
+        let now: DateTime<Utc> = "2026-09-28T10:00:00Z".parse().unwrap();
+        let with = |mut r: BoardRow, edit: fn(&mut BoardRow)| {
+            edit(&mut r);
+            r
+        };
+        let blocked = [
+            with(row(1, Category::Action), |r| r.ci = Ci::Fail),
+            with(row(2, Category::Action), |r| r.ci = Ci::Fail),
+            with(row(3, Category::Action), |r| r.conflict = true),
+            with(row(4, Category::Action), |r| r.unresolved = 3),
+        ];
+        let action = SectionKind::Category(Category::Action);
+        assert_eq!(
+            section_summary(Mode::Authored, action, &blocked, now).as_deref(),
+            Some("2 failing CI · 1 merge conflict")
+        );
+        assert_eq!(
+            section_summary(Mode::Authored, action, &blocked[3..], now).as_deref(),
+            Some("3 unresolved")
+        );
+        let waits = [
+            waiting(row(5, Category::Todo), Some("2026-09-24T09:00:00Z")),
+            with(
+                waiting(row(6, Category::Todo), Some("2026-09-27T10:00:00Z")),
+                |r| {
+                    r.size = Some(ChangeSize {
+                        additions: 20,
+                        deletions: 5,
+                        changed_files: 2,
+                    })
+                },
+            ),
+        ];
+        let todo = SectionKind::Category(Category::Todo);
+        assert_eq!(
+            section_summary(Mode::Review, todo, &waits, now).as_deref(),
+            Some("longest wait 4d · 1 small")
+        );
+        assert_eq!(
+            section_summary(Mode::AllOpen, todo, &waits, now).as_deref(),
+            Some("longest wait 4d")
+        );
+        assert_eq!(
+            section_summary(Mode::Authored, SectionKind::Snoozed, &waits[..1], now).as_deref(),
+            Some("1 needs you")
+        );
+        assert_eq!(
+            section_summary(
+                Mode::Authored,
+                SectionKind::Category(Category::Draft),
+                &[row(7, Category::Draft)],
+                now
+            ),
+            None
+        );
+        assert_eq!(
+            section_summary(Mode::Authored, SectionKind::Stack, &blocked, now),
+            None
         );
     }
 

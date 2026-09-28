@@ -151,6 +151,11 @@ impl From<AppConfig> for FileConfig {
             automatic_update_checks: config.automatic_update_checks,
             stale_after_days: config.stale_after_days,
             section_order: config.section_order,
+            // The iPad keeps no collapsed sections yet; the desktop's live in
+            // its own config.toml.
+            collapsed_sections: BTreeMap::new(),
+            // A desktop layout choice; the iPad has its own inspector.
+            details_position: None,
             auth: config.auth.map(|auth| AuthSection {
                 host: auth.host,
                 client_id: auth.client_id,

@@ -566,10 +566,8 @@ fn the_details_panel_and_its_copy_menu_come_from_core_not_from_swift() {
     assert!(lines[1].contains(" · CI: "));
     assert!(lines[2].starts_with("Requested reviewers: "));
     assert!(lines[3].starts_with("Reviews: "));
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some("Details reflect the loaded snapshot; refresh restarts pagination.")
-    );
+    // The snapshot sentence left the panel for the sync status's hover text.
+    assert!(!lines.iter().any(|line| line.contains("snapshot")));
 
     let items = copy_items(row.clone(), Mode::Authored, NOW, 0).unwrap();
     assert_eq!(
@@ -599,18 +597,24 @@ fn the_details_panel_says_what_each_line_is_so_swift_never_matches_words() {
             .iter()
             .map(|item| item.text.clone())
             .collect::<Vec<_>>(),
-        detail_lines(row, Mode::Review, NOW, 0).unwrap()
+        detail_lines(row.clone(), Mode::Review, NOW, 0).unwrap()
     );
     assert_eq!(items[0].kind, prmarmot_ffi::DetailKind::Note);
     assert_eq!(items[1].kind, prmarmot_ffi::DetailKind::Facts);
-    assert_eq!(
-        items.last().map(|item| item.kind),
-        Some(prmarmot_ffi::DetailKind::Snapshot)
-    );
+    assert!(items
+        .iter()
+        .all(|item| item.kind != prmarmot_ffi::DetailKind::Snapshot));
     assert_eq!(
         prmarmot_ffi::attention_line(true, true),
         "Attention: changed · watched"
     );
+    // The two-column layout: the same facts, a label and a value apiece.
+    let fields = prmarmot_ffi::detail_fields(row, Mode::Review, NOW, 0).unwrap();
+    assert_eq!(fields[0].label, None);
+    assert_eq!(fields[1].label.as_deref(), Some("Author"));
+    assert!(fields
+        .iter()
+        .all(|field| field.kind != prmarmot_ffi::DetailKind::Snapshot));
 }
 
 #[test]
@@ -846,6 +850,22 @@ fn the_ipad_pauses_on_the_same_budget_numbers_as_the_desktop() {
 }
 
 #[test]
+fn the_budget_warns_under_a_tenth_well_before_it_pauses() {
+    let rate = |remaining, limit| prmarmot_ffi::RateLimit {
+        limit,
+        remaining,
+        cost: 3,
+        reset_epoch: NOW + 300,
+    };
+    let low = prmarmot_ffi::rate_budget_is_low;
+    assert!(!low(rate(500, 5_000)));
+    assert!(low(rate(499, 5_000)));
+    assert!(low(rate(prmarmot_ffi::rate_limit_reserve(), 5_000)));
+    // A board that never learned the limit does not warn.
+    assert!(!low(rate(0, 0)));
+}
+
+#[test]
 fn a_build_says_which_commit_it_came_from() {
     let build = prmarmot_ffi::core_build();
     assert_eq!(build.version, prmarmot_ffi::core_version());
@@ -896,4 +916,28 @@ fn a_refused_request_waits_as_long_as_github_says() {
     assert_eq!(wait(Some(3_700), Some(60), 1_000), 60);
     // A clock before 1970 does not trap.
     assert_eq!(wait(None, Some(300), -5), 300);
+}
+
+#[test]
+fn the_quick_filters_use_cores_words() {
+    assert_eq!(prmarmot_ffi::needs_you_toggle_label(), "Needs you");
+    assert_eq!(prmarmot_ffi::stale_toggle_label(), "Stale");
+    let note = " The count includes all loaded PRs, including those hidden by your search.";
+    assert_eq!(
+        prmarmot_ffi::needs_you_toggle_text(false, 2),
+        format!("Show only PRs that need you.{note}")
+    );
+    assert_eq!(
+        prmarmot_ffi::stale_toggle_text(false, 1, 3),
+        format!("Show only PRs waiting 3 days or longer for a reviewer.{note}")
+    );
+    assert_eq!(
+        prmarmot_ffi::stale_toggle_text(true, 1, 3),
+        format!("Turn off this filter.{note}")
+    );
+    assert_eq!(
+        prmarmot_ffi::sync_status_note(),
+        "The board and details show information from the last successful sync."
+    );
+    assert!(prmarmot_ffi::refresh_note().starts_with("Refresh the board."));
 }

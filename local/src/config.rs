@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule};
+use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule, Mode};
 use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
-use prmarmot_core::layout::SectionOrder;
+use prmarmot_core::layout::{collapsible_section, SectionKind, SectionOrder, COLLAPSIBLE_SECTIONS};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,11 +59,20 @@ pub struct FileConfig {
     /// order; empty is the default order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub section_order: Vec<String>,
+    /// Where Details opens: `auto` (the default: on the right when the window
+    /// is wide enough, otherwise at the bottom), `bottom` or `right`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details_position: Option<String>,
     // TOML requires plain keys before tables, so these come last.
     /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
     /// (`"acme/api"`), used before `default_reviewers`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub repo_reviewers: BTreeMap<String, Vec<String>>,
+    /// `[collapsed_sections]`: per view (`my_prs`, `involving_me`, `review`,
+    /// `all_open`), the section keys shown collapsed. A view left out has
+    /// only Snoozed collapsed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collapsed_sections: BTreeMap<String, Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_link: Option<IssueLinkSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +98,7 @@ impl Default for FileConfig {
             view: None,
             default_reviewers: Vec::new(),
             repo_reviewers: BTreeMap::new(),
+            collapsed_sections: BTreeMap::new(),
             issue_link: None,
             window: None,
             notifications: true,
@@ -98,6 +108,7 @@ impl Default for FileConfig {
             automatic_update_checks: true,
             stale_after_days: None,
             section_order: Vec::new(),
+            details_position: None,
             auth: None,
         }
     }
@@ -248,6 +259,8 @@ pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     let mut warnings = Vec::new();
     board_rules(file, &mut warnings);
     warnings.extend(SectionOrder::from_keys(&file.section_order).1);
+    collapsed_section_warnings(file, &mut warnings);
+    warnings.extend(details_position_warning(file));
     auth_settings(file, None, None, &mut warnings);
     warnings
 }
@@ -256,6 +269,104 @@ pub fn ignored_values(file: &FileConfig) -> Vec<String> {
 /// could not is in [`ignored_values`].
 pub fn section_order(file: &FileConfig) -> SectionOrder {
     SectionOrder::from_keys(&file.section_order).0
+}
+
+/// Where the Details panel opens (`details_position`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DetailsPosition {
+    /// On the right when the window is wide enough, otherwise at the bottom.
+    #[default]
+    Auto,
+    Bottom,
+    Right,
+}
+
+impl DetailsPosition {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Bottom, Self::Right];
+
+    /// The `details_position` value.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Bottom => "bottom",
+            Self::Right => "right",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|position| position.key().eq_ignore_ascii_case(key.trim()))
+    }
+}
+
+/// Where the file says Details opens; an unknown value is `auto`, and
+/// [`ignored_values`] names it.
+pub fn details_position(file: &FileConfig) -> DetailsPosition {
+    file.details_position
+        .as_deref()
+        .and_then(DetailsPosition::from_key)
+        .unwrap_or_default()
+}
+
+fn details_position_warning(file: &FileConfig) -> Option<String> {
+    let value = file.details_position.as_deref()?;
+    DetailsPosition::from_key(value)
+        .is_none()
+        .then(|| format!("ignoring details_position = {value:?}: use auto, bottom or right"))
+}
+
+/// The views whose collapsed sections are kept apart, as their
+/// `[collapsed_sections]` keys: My PRs and Involving me are both the authored
+/// view, of one repository and of all of them.
+pub const COLLAPSE_VIEWS: [&str; 4] = ["my_prs", "involving_me", "review", "all_open"];
+
+/// The `[collapsed_sections]` key of the view on screen.
+pub fn collapse_view(mode: Mode, all_repos: bool) -> &'static str {
+    match (mode, all_repos) {
+        (Mode::Authored, false) => "my_prs",
+        (Mode::Authored, true) => "involving_me",
+        (Mode::Review, _) => "review",
+        (Mode::AllOpen, _) => "all_open",
+    }
+}
+
+/// What a view shows collapsed when the file says nothing about it.
+pub const DEFAULT_COLLAPSED: [SectionKind; 1] = [SectionKind::Snoozed];
+
+/// The sections `view` shows collapsed: what the file lists for it, the keys
+/// it could use, each once, or [`DEFAULT_COLLAPSED`] when it lists nothing.
+pub fn collapsed_sections(file: &FileConfig, view: &str) -> Vec<SectionKind> {
+    let Some(keys) = file.collapsed_sections.get(view) else {
+        return DEFAULT_COLLAPSED.to_vec();
+    };
+    let mut kinds = Vec::new();
+    for kind in keys.iter().filter_map(|key| collapsible_section(key)) {
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    kinds
+}
+
+fn collapsed_section_warnings(file: &FileConfig, warnings: &mut Vec<String>) {
+    for (view, keys) in &file.collapsed_sections {
+        if !COLLAPSE_VIEWS.contains(&view.as_str()) {
+            warnings.push(format!(
+                "ignoring [collapsed_sections] {view:?}: use {}",
+                COLLAPSE_VIEWS.join(", ")
+            ));
+            continue;
+        }
+        for key in keys {
+            if collapsible_section(key).is_none() {
+                warnings.push(format!(
+                    "ignoring [collapsed_sections] {view} entry {key:?}: use {}",
+                    COLLAPSIBLE_SECTIONS.map(|kind| kind.key()).join(", ")
+                ));
+            }
+        }
+    }
 }
 
 fn board_rules(file: &FileConfig, warnings: &mut Vec<String>) -> BoardConfig {
@@ -552,6 +663,56 @@ mod tests {
         }
         assert_eq!(lines.len(), 6, "one line each, not joined: {lines:#?}");
         assert!(ignored_values(&FileConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn details_position_reads_its_three_words_and_names_anything_else() {
+        assert_eq!(
+            details_position(&FileConfig::default()),
+            DetailsPosition::Auto
+        );
+        let right: FileConfig = toml::from_str("details_position = \"Right\"").unwrap();
+        assert_eq!(details_position(&right), DetailsPosition::Right);
+        assert!(ignored_values(&right).is_empty());
+        let side: FileConfig = toml::from_str("details_position = \"side\"").unwrap();
+        assert_eq!(details_position(&side), DetailsPosition::Auto);
+        assert_eq!(
+            ignored_values(&side),
+            ["ignoring details_position = \"side\": use auto, bottom or right"]
+        );
+    }
+
+    #[test]
+    fn collapsed_sections_are_read_per_view_and_default_to_snoozed() {
+        use prmarmot_core::board::Category;
+        assert_eq!(
+            collapsed_sections(&FileConfig::default(), "my_prs"),
+            [SectionKind::Snoozed]
+        );
+        let file: FileConfig = toml::from_str(
+            "[collapsed_sections]\nmy_prs = [\"draft\", \"DRAFT\", \"later\"]\nreview = []\nnope = [\"draft\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            collapsed_sections(&file, "my_prs"),
+            [SectionKind::Category(Category::Draft)]
+        );
+        // Listed and empty: nothing collapsed, Snoozed included.
+        assert!(collapsed_sections(&file, "review").is_empty());
+        assert_eq!(
+            collapsed_sections(&file, "all_open"),
+            [SectionKind::Snoozed]
+        );
+        let warnings = ignored_values(&file);
+        assert!(warnings.contains(&"ignoring [collapsed_sections] \"nope\": use my_prs, involving_me, review, all_open".to_string()), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.starts_with("ignoring [collapsed_sections] my_prs entry \"later\"")),
+            "{warnings:?}"
+        );
+        assert_eq!(collapse_view(Mode::Authored, true), "involving_me");
+        assert_eq!(collapse_view(Mode::Review, true), "review");
     }
 
     #[test]

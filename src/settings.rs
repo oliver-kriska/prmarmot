@@ -20,6 +20,7 @@ use prmarmot_local::session::Connection;
 
 use crate::config::{self, SettingsUpdate};
 use crate::theme::ThemePref;
+use prmarmot_local::config::DetailsPosition;
 
 /// A token PR Marmot stored on this Mac, in words.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +138,9 @@ pub struct SettingsView {
     /// order only when they differ, so a hand-written list stays as written.
     section_order: SectionOrder,
     saved_section_order: SectionOrder,
+    /// Where Details opens, and what the file holds: saved only when changed.
+    details_position: DetailsPosition,
+    saved_details_position: DetailsPosition,
     advanced: bool,
     error: Option<String>,
     error_field: Option<&'static str>,
@@ -180,6 +184,7 @@ impl SettingsView {
         };
         let account = stored_account(&auth);
         let section_order = prmarmot_local::config::section_order(&file);
+        let details_position = prmarmot_local::config::details_position(&file);
         let issue = env.issue_link.clone().or_else(|| {
             file.issue_link
                 .map(|rule| (rule.pattern, rule.url_template))
@@ -207,6 +212,8 @@ impl SettingsView {
             automatic_update_checks: file.automatic_update_checks,
             saved_section_order: section_order.clone(),
             section_order,
+            details_position,
+            saved_details_position: details_position,
             advanced: false,
             error: None,
             error_field: None,
@@ -292,6 +299,8 @@ impl SettingsView {
             automatic_update_checks: Some(self.automatic_update_checks),
             section_order: (self.section_order != self.saved_section_order)
                 .then(|| self.section_order.clone()),
+            details_position: (self.details_position != self.saved_details_position)
+                .then_some(self.details_position),
         };
         match config::save_settings(&update) {
             Ok(()) => {
@@ -608,6 +617,37 @@ impl Render for SettingsView {
                                         };
                                         cx.notify();
                                     })),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child("Details position")
+                            .child(
+                                ButtonGroup::new("settings-details-position")
+                                    .small()
+                                    .compact()
+                                    .children(DetailsPosition::ALL.into_iter().enumerate().map(|(ix, position)| {
+                                        Button::new(("settings-details", ix))
+                                            .label(match position {
+                                                DetailsPosition::Auto => "Automatic",
+                                                DetailsPosition::Bottom => "Bottom",
+                                                DetailsPosition::Right => "Right",
+                                            })
+                                            .selected(self.details_position == position)
+                                    }))
+                                    .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
+                                        if let Some(&ix) = selected.first() {
+                                            this.details_position = DetailsPosition::ALL[ix];
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Automatic puts Details on the right when the window is wide enough to keep the full table beside it."),
                             ),
                     )
                     .child(self.render_section_order(cx))

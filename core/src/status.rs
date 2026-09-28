@@ -34,6 +34,18 @@ pub fn row_needs_you(_mode: Mode, row: &BoardRow) -> bool {
     row.category == Category::Todo || (row.category == Category::Action && !row.blockers.is_empty())
 }
 
+/// How many of these rows need you, snoozed ones excluded: the header's "need
+/// you" and the Needs you quick filter's count, which must be one number.
+pub fn need_you_count<'a>(
+    mode: Mode,
+    rows: impl IntoIterator<Item = &'a BoardRow>,
+    snoozed: impl Fn(&BoardRow) -> bool,
+) -> usize {
+    rows.into_iter()
+        .filter(|row| row_needs_you(mode, row) && !snoozed(row))
+        .count()
+}
+
 /// The numbers behind the header's count line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeaderCounts {
@@ -185,25 +197,79 @@ pub fn upper_first(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The Changed toggle's tooltip.
-pub fn changed_toggle_tooltip(on: bool, count: usize) -> String {
-    match (on, count) {
-        (true, _) => "Showing only PRs that changed since you looked. Click to show all.".into(),
-        (false, 0) => "No loaded PRs changed since you looked".into(),
-        (false, 1) => "Show only the PR that changed since you looked".into(),
-        (false, n) => format!("Show only the {n} PRs that changed since you looked"),
-    }
+/// What every quick-filter tooltip ends with: its count is over every loaded
+/// PR, so a number beside a table the search has emptied is not a mistake.
+pub const QUICK_FILTER_COUNT_NOTE: &str =
+    "The count includes all loaded PRs, including those hidden by your search.";
+
+/// What a quick filter's tooltip says while it is on. Not "show all": a
+/// search or another filter may still be narrowing the board. No "click":
+/// the iPad reads these sentences to VoiceOver on a touch screen.
+pub const QUICK_FILTER_OFF: &str = "Turn off this filter.";
+
+/// One quick-filter tooltip: the sentence, then [`QUICK_FILTER_COUNT_NOTE`].
+fn quick_filter_tooltip(sentence: &str) -> String {
+    format!("{sentence} {QUICK_FILTER_COUNT_NOTE}")
 }
 
-/// The Snoozed toggle's tooltip.
-pub fn snoozed_toggle_tooltip(on: bool, count: usize) -> String {
-    match (on, count) {
-        (true, _) => "Collapse the snoozed PRs".into(),
-        (false, 0) => "No snoozed PRs here".into(),
-        (false, 1) => "Show the snoozed PR".into(),
-        (false, n) => format!("Show the {n} snoozed PRs"),
-    }
+/// The Changed toggle's tooltip.
+pub fn changed_toggle_tooltip(on: bool, count: usize) -> String {
+    quick_filter_tooltip(match (on, count) {
+        (true, _) => QUICK_FILTER_OFF,
+        (false, 0) => "No loaded PRs changed since you looked.",
+        (false, _) => "Show only PRs changed since you looked.",
+    })
 }
+
+/// The Snoozed toggle's tooltip. Snoozed shows or folds its group rather
+/// than filtering, so it says that.
+pub fn snoozed_toggle_tooltip(on: bool, count: usize) -> String {
+    quick_filter_tooltip(match (on, count) {
+        (true, _) => "Collapse the snoozed PRs.",
+        (false, 0) => "No snoozed PRs here.",
+        (false, _) => "Show the snoozed PRs.",
+    })
+}
+
+/// The quick filter that keeps only the rows counted in the header's "need
+/// you" ([`row_needs_you`], snoozed rows excluded).
+pub const NEEDS_YOU_TOGGLE_LABEL: &str = "Needs you";
+
+/// The quick filter that adds or removes the `is:stale` search chip.
+pub const STALE_TOGGLE_LABEL: &str = "Stale";
+
+/// The Needs you toggle's tooltip. `count` is the header's "need you".
+pub fn needs_you_toggle_tooltip(on: bool, count: usize) -> String {
+    quick_filter_tooltip(match (on, count) {
+        (true, _) => QUICK_FILTER_OFF,
+        (false, 0) => "Nothing loaded here needs you.",
+        (false, _) => "Show only PRs that need you.",
+    })
+}
+
+/// The Stale toggle's tooltip: `is:stale`, said in words. `count` is how many
+/// loaded rows have waited `stale_after_days` or longer for a reviewer.
+pub fn stale_toggle_tooltip(on: bool, count: usize, stale_after_days: u64) -> String {
+    let days = match stale_after_days {
+        1 => "a day".to_owned(),
+        n => format!("{n} days"),
+    };
+    quick_filter_tooltip(&match (on, count) {
+        (true, _) => QUICK_FILTER_OFF.to_owned(),
+        (false, 0) => format!("No loaded PR has waited {days} or longer for a reviewer."),
+        (false, _) => format!("Show only PRs waiting {days} or longer for a reviewer."),
+    })
+}
+
+/// The sync status's hover text, after the status itself: what Details and
+/// the board are drawn from.
+pub const SYNC_STATUS_NOTE: &str =
+    "The board and details show information from the last successful sync.";
+
+/// What refreshing does to rows fetched with Load more, on the Load more
+/// button and in the shortcut list.
+pub const REFRESH_NOTE: &str =
+    "Refresh the board. Extra results loaded with Load more are cleared; use Load more again to fetch them.";
 
 /// The blue marker's hover text: what changed, and how to clear it.
 pub fn changed_marker_tooltip(changes: &[String]) -> String {
@@ -641,6 +707,25 @@ mod tests {
         assert!(!needs_you_here(Mode::AllOpen, Category::Available));
     }
 
+    /// The header's "need you" and the Needs you filter's count are one
+    /// number: the rows `row_needs_you` counts, minus the snoozed ones.
+    #[test]
+    fn the_need_you_count_leaves_out_snoozed_rows() {
+        let rows = [
+            row(Category::Action, true),
+            row(Category::Todo, false),
+            row(Category::Available, false),
+        ];
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            assert_eq!(need_you_count(mode, &rows, |_| false), 2, "{mode:?}");
+            assert_eq!(
+                need_you_count(mode, &rows, |row| row.category == Category::Todo),
+                1,
+                "{mode:?}"
+            );
+        }
+    }
+
     /// Once both views have loaded, the badge is the total, but the header
     /// still counts only the view on screen.
     #[test]
@@ -762,27 +847,66 @@ mod tests {
     }
 
     #[test]
-    fn the_toggles_say_what_they_will_do_and_how_many_it_is_about() {
+    fn the_toggles_say_what_they_will_do_and_that_they_count_everything_loaded() {
+        let note = " The count includes all loaded PRs, including those hidden by your search.";
+        let said = |sentence: &str| format!("{sentence}{note}");
         assert_eq!(
             changed_toggle_tooltip(false, 0),
-            "No loaded PRs changed since you looked"
-        );
-        assert_eq!(
-            changed_toggle_tooltip(false, 1),
-            "Show only the PR that changed since you looked"
+            said("No loaded PRs changed since you looked.")
         );
         assert_eq!(
             changed_toggle_tooltip(false, 4),
-            "Show only the 4 PRs that changed since you looked"
+            said("Show only PRs changed since you looked.")
         );
         assert_eq!(
             changed_toggle_tooltip(true, 4),
-            "Showing only PRs that changed since you looked. Click to show all."
+            said("Turn off this filter.")
         );
-        assert_eq!(snoozed_toggle_tooltip(false, 0), "No snoozed PRs here");
-        assert_eq!(snoozed_toggle_tooltip(false, 1), "Show the snoozed PR");
-        assert_eq!(snoozed_toggle_tooltip(false, 3), "Show the 3 snoozed PRs");
-        assert_eq!(snoozed_toggle_tooltip(true, 3), "Collapse the snoozed PRs");
+        // Snoozed folds its group rather than filtering.
+        assert_eq!(
+            snoozed_toggle_tooltip(false, 0),
+            said("No snoozed PRs here.")
+        );
+        assert_eq!(
+            snoozed_toggle_tooltip(false, 3),
+            said("Show the snoozed PRs.")
+        );
+        assert_eq!(
+            snoozed_toggle_tooltip(true, 3),
+            said("Collapse the snoozed PRs.")
+        );
+    }
+
+    #[test]
+    fn the_quick_filters_say_what_they_will_do_and_that_they_count_everything_loaded() {
+        let note = " The count includes all loaded PRs, including those hidden by your search.";
+        let said = |sentence: &str| format!("{sentence}{note}");
+        assert_eq!(NEEDS_YOU_TOGGLE_LABEL, "Needs you");
+        assert_eq!(STALE_TOGGLE_LABEL, "Stale");
+        assert_eq!(
+            needs_you_toggle_tooltip(false, 0),
+            said("Nothing loaded here needs you.")
+        );
+        assert_eq!(
+            needs_you_toggle_tooltip(false, 5),
+            said("Show only PRs that need you.")
+        );
+        assert_eq!(
+            needs_you_toggle_tooltip(true, 5),
+            said("Turn off this filter.")
+        );
+        assert_eq!(
+            stale_toggle_tooltip(false, 0, 3),
+            said("No loaded PR has waited 3 days or longer for a reviewer.")
+        );
+        assert_eq!(
+            stale_toggle_tooltip(false, 1, 1),
+            said("Show only PRs waiting a day or longer for a reviewer.")
+        );
+        assert_eq!(
+            stale_toggle_tooltip(true, 4, 7),
+            said("Turn off this filter.")
+        );
     }
 
     #[test]

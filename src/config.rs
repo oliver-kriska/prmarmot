@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use prmarmot_core::board::BoardScope;
-use prmarmot_core::layout::SectionOrder;
+use prmarmot_core::layout::{SectionKind, SectionOrder};
 
 pub use prmarmot_local::config::{
     config_path, load, load_reporting, normalized_pins, resolve_scope, FileConfig, MAX_PINNED_REPOS,
@@ -31,6 +31,8 @@ pub struct SettingsUpdate {
     /// `Some` writes `section_order`, and the default order removes it;
     /// `None` leaves whatever the file says as it was written.
     pub section_order: Option<SectionOrder>,
+    /// `Some` writes `details_position`, and `auto` (the default) removes it.
+    pub details_position: Option<prmarmot_local::config::DetailsPosition>,
 }
 
 /// Save editable settings while preserving comments and unrelated keys.
@@ -84,6 +86,13 @@ fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> 
         } else {
             doc["section_order"] =
                 toml_edit::value(order.keys().into_iter().collect::<toml_edit::Array>());
+        }
+    }
+    if let Some(position) = update.details_position {
+        if position == prmarmot_local::config::DetailsPosition::default() {
+            doc.remove("details_position");
+        } else {
+            doc["details_position"] = toml_edit::value(position.key());
         }
     }
     for (key, value) in [
@@ -318,6 +327,37 @@ fn set_auth_host(doc: &mut toml_edit::DocumentMut, host: &str) {
         doc["auth"] = toml_edit::table();
     }
     doc["auth"]["host"] = toml_edit::value(host);
+}
+
+/// Persist which sections `view` shows collapsed under `[collapsed_sections]`.
+/// The default (only Snoozed) removes the view's entry, and the table goes
+/// once it is empty, so an untouched file stays as it was.
+pub fn persist_collapsed(view: &str, kinds: &[SectionKind]) {
+    persist(|doc| set_collapsed(doc, view, kinds));
+}
+
+fn set_collapsed(doc: &mut toml_edit::DocumentMut, view: &str, kinds: &[SectionKind]) {
+    if kinds == prmarmot_local::config::DEFAULT_COLLAPSED {
+        if let Some(table) = doc
+            .get_mut("collapsed_sections")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            table.remove(view);
+            if table.is_empty() {
+                doc.remove("collapsed_sections");
+            }
+        }
+        return;
+    }
+    if doc.get("collapsed_sections").is_none() {
+        doc["collapsed_sections"] = toml_edit::table();
+    }
+    doc["collapsed_sections"][view] = toml_edit::value(
+        kinds
+            .iter()
+            .map(SectionKind::key)
+            .collect::<toml_edit::Array>(),
+    );
 }
 
 /// Persist the window size under `[window]`.
@@ -593,6 +633,50 @@ mod tests {
         let saved: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!saved.automatic_update_checks);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn details_position_is_written_and_automatic_removes_it() {
+        use prmarmot_local::config::DetailsPosition;
+        let path = temp_config("details-position");
+        std::fs::write(&path, "# mine\n[repo_reviewers]\n\"acme\" = [\"olga\"]\n").unwrap();
+        let save = |position| {
+            save_settings_at(
+                &path,
+                &SettingsUpdate {
+                    details_position: Some(position),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            std::fs::read_to_string(&path).unwrap()
+        };
+        let saved = save(DetailsPosition::Right);
+        let parsed: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(
+            prmarmot_local::config::details_position(&parsed),
+            DetailsPosition::Right
+        );
+        assert!(!save(DetailsPosition::Auto).contains("details_position"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn collapsed_sections_are_written_per_view_and_the_default_removes_them() {
+        use prmarmot_core::board::Category;
+        let mut doc: toml_edit::DocumentMut = "# mine\ntheme = \"light\"\n".parse().unwrap();
+        let draft = SectionKind::Category(Category::Draft);
+        set_collapsed(&mut doc, "my_prs", &[draft, SectionKind::Snoozed]);
+        set_collapsed(&mut doc, "review", &[]);
+        let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(
+            prmarmot_local::config::collapsed_sections(&parsed, "my_prs"),
+            [draft, SectionKind::Snoozed]
+        );
+        assert!(prmarmot_local::config::collapsed_sections(&parsed, "review").is_empty());
+        set_collapsed(&mut doc, "my_prs", &[SectionKind::Snoozed]);
+        set_collapsed(&mut doc, "review", &[SectionKind::Snoozed]);
+        assert_eq!(doc.to_string(), "# mine\ntheme = \"light\"\n");
     }
 
     #[test]

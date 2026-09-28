@@ -23,18 +23,18 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IndexPath, Sizable, TitleBar, WindowExt,
 };
-use prmarmot_core::board::{BoardScope, Mode};
-use prmarmot_core::layout::{SectionOrder, Sort};
+use prmarmot_core::board::{BoardRow, BoardScope, Mode};
+use prmarmot_core::layout::{SectionKind, SectionOrder, Sort, COLLAPSIBLE_SECTIONS};
 use prmarmot_core::search::{local_only_terms, RemoteFilter};
 use prmarmot_core::status::{
     all_open_local_filter_notice, all_open_needs_repository, all_open_no_match_text,
 };
+use prmarmot_local::config::{collapse_view, DetailsPosition, DEFAULT_COLLAPSED};
 
 use crate::state::{AppState, SetupStatus};
 use crate::table::{
-    changed_marker_tooltip, columns_for, detail_text, label_chip, matches_search,
-    take_filter_chips, with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule,
-    TableWidthClass,
+    changed_marker_tooltip, columns_for, label_chip, matches_search, take_filter_chips,
+    with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule, TableWidthClass,
 };
 use crate::theme::ThemePref;
 use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
@@ -82,6 +82,27 @@ pub struct Launch {
     pub config_warnings: crate::config::ConfigWarnings,
     /// `section_order` from the file.
     pub section_order: SectionOrder,
+    /// `[collapsed_sections]` from the file, per view.
+    pub collapsed: CollapsedSections,
+    /// `details_position` from the file.
+    pub details_position: DetailsPosition,
+}
+
+/// The right-hand Details panel's width (the iPad's inspector is 360–400 pt).
+const DETAILS_PANEL_WIDTH: f32 = 360.;
+/// The label column of its rows: "Requested reviewers" on one line.
+const DETAILS_LABEL_WIDTH: f32 = 124.;
+
+/// Which sections each view shows collapsed, keyed by the
+/// `[collapsed_sections]` view names; bounded by the four views.
+pub type CollapsedSections = HashMap<&'static str, Vec<SectionKind>>;
+
+/// Every view's collapsed sections as the file says.
+pub fn collapsed_from(file: &prmarmot_local::config::FileConfig) -> CollapsedSections {
+    prmarmot_local::config::COLLAPSE_VIEWS
+        .into_iter()
+        .map(|view| (view, prmarmot_local::config::collapsed_sections(file, view)))
+        .collect()
 }
 
 #[derive(Clone)]
@@ -148,7 +169,13 @@ pub struct RootView {
     /// = 12 entries.
     col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
     changed_only: bool,
-    snoozed_expanded: bool,
+    /// The Needs you quick filter: only the rows the header counts as "need
+    /// you". Like Changed, it holds across views.
+    needs_you_only: bool,
+    /// Which sections each view shows collapsed (`[collapsed_sections]`).
+    collapsed: CollapsedSections,
+    /// Where Details opens (`details_position`, Settings).
+    details_position: DetailsPosition,
     /// Review queue: list the smallest changes first instead of the longest
     /// wait.
     smallest_first: bool,
@@ -158,6 +185,10 @@ pub struct RootView {
     changed_count: usize,
     /// Snoozed PRs among the rows the table shows.
     snoozed_count: usize,
+    /// Loaded PRs that need you, snoozed ones excluded: the header's number.
+    needs_you_count: usize,
+    /// Loaded PRs that `is:stale` matches.
+    stale_count: usize,
     suppress_ack_for: Option<String>,
     automatic_update_checks: bool,
     update_paths: crate::config::UpdatePaths,
@@ -197,6 +228,10 @@ impl RootView {
             let mut delegate = BoardTableDelegate::new(mode, all_repos);
             let group_view = view.clone();
             let filter_view = view.clone();
+            let section_view = view.clone();
+            delegate.on_section_toggle = Some(std::rc::Rc::new(move |kind, _, cx| {
+                let _ = section_view.update(cx, |this, cx| this.toggle_section(kind, cx));
+            }));
             delegate.on_filter_click = Some(std::rc::Rc::new(move |chip, window, cx| {
                 let _ = filter_view.update(cx, |this, cx| this.filter_by(chip, window, cx));
             }));
@@ -478,11 +513,15 @@ impl RootView {
             viewport_width: initial_width,
             col_overrides: HashMap::new(),
             changed_only: false,
-            snoozed_expanded: false,
+            needs_you_only: false,
+            collapsed: launch.collapsed,
+            details_position: launch.details_position,
             smallest_first: false,
             section_order: launch.section_order,
             changed_count: 0,
             snoozed_count: 0,
+            needs_you_count: 0,
+            stale_count: 0,
             suppress_ack_for: None,
             automatic_update_checks: launch.automatic_update_checks,
             update_paths: launch.update_paths,
@@ -573,6 +612,101 @@ impl RootView {
         }
     }
 
+    /// The sections the view on screen shows collapsed.
+    fn collapsed_here(&self, state: &AppState) -> &[SectionKind] {
+        let view = collapse_view(state.mode, state.scope.is_all());
+        self.collapsed
+            .get(view)
+            .map(Vec::as_slice)
+            .unwrap_or(&DEFAULT_COLLAPSED)
+    }
+
+    /// Collapse or expand one section of the view on screen, from its
+    /// header's chevron or (for Snoozed) the tools-bar pill, and remember it.
+    /// A selected PR that collapses away hands the selection to the next PR
+    /// still shown, and the scroll stays where it is.
+    fn toggle_section(&mut self, kind: SectionKind, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let view = collapse_view(state.mode, state.scope.is_all());
+        let kinds = self
+            .collapsed
+            .entry(view)
+            .or_insert_with(|| DEFAULT_COLLAPSED.to_vec());
+        if let Some(ix) = kinds.iter().position(|k| *k == kind) {
+            kinds.remove(ix);
+        } else {
+            kinds.push(kind);
+        }
+        crate::config::persist_collapsed(view, kinds);
+        let had_selection = self.table.read(cx).selected_row().is_some();
+        self.sync_table(cx);
+        // A selection inside the section it folded now rests on the folded
+        // header; one on the header it unfolded moves to the section's first
+        // PR. Either way `c` again undoes it.
+        let lost = had_selection
+            && self
+                .table
+                .read(cx)
+                .selected_row()
+                .is_none_or(|ix| !self.table.read(cx).delegate().is_selectable(ix));
+        if lost {
+            let next = {
+                let delegate = self.table.read(cx).delegate();
+                delegate.header_index(kind).and_then(|header| {
+                    let len = delegate.display_len();
+                    (header..len)
+                        .chain((0..header).rev())
+                        .find(|&ix| delegate.is_selectable(ix))
+                })
+            };
+            if let Some(ix) = next {
+                self.last_selected = ix;
+                self.table.update(cx, |table, cx| {
+                    table.set_selected_row(ix, cx);
+                    table.scroll_to_row(ix, cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    /// `c`: fold the selected PR's section, or unfold the selected folded
+    /// section.
+    fn toggle_selected_section(&mut self, cx: &mut Context<Self>) {
+        let kind = {
+            let table = self.table.read(cx);
+            table.selected_row().and_then(|ix| {
+                let delegate = table.delegate();
+                delegate
+                    .folded_section_at(ix)
+                    .or_else(|| delegate.section_at(ix))
+            })
+        };
+        if let Some(kind) = kind.filter(|kind| COLLAPSIBLE_SECTIONS.contains(kind)) {
+            self.toggle_section(kind, cx);
+        }
+    }
+
+    /// Whether the search holds the `is:stale` chip: the Stale pill is on.
+    fn stale_filtering(&self) -> bool {
+        let chip = stale_chip();
+        self.filter_chips.iter().any(|held| held.same_as(&chip))
+    }
+
+    /// The Stale pill adds the `is:stale` chip, or removes it, as if typed.
+    fn toggle_stale_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chip = stale_chip();
+        if let Some(index) = self
+            .filter_chips
+            .iter()
+            .position(|held| held.same_as(&chip))
+        {
+            self.remove_filter_chip(index, window, cx);
+        } else {
+            self.filter_by(chip, window, cx);
+        }
+    }
+
     /// A label, author, or repository was clicked: filter by it, show the
     /// search box, and keep the keyboard on the board.
     fn filter_by(&mut self, chip: FilterChip, window: &mut Window, cx: &mut Context<Self>) {
@@ -601,13 +735,20 @@ impl RootView {
             .iter()
             .filter(|row| matches_search(row, &self.filter_text, &self.filter_chips, stale))
             .collect();
-        self.changed_count = matching
+        // The quick filters count every loaded row, so each pill's number is
+        // the header's (Needs you), what the chip would match on its own
+        // (Stale), or every changed PR whatever the search (Changed).
+        self.changed_count = state
+            .rows
             .iter()
             .filter(|row| state.is_changed(&row.id))
             .count();
+        self.needs_you_count = need_you_count_of(state);
+        self.stale_count = state.rows.iter().filter(|row| stale.is_stale(row)).count();
         let rows: Vec<_> = matching
             .into_iter()
             .filter(|row| !self.changed_only || state.is_changed(&row.id))
+            .filter(|row| !self.needs_you_only || needs_you_now(state, row))
             .cloned()
             .collect();
         let changed: HashMap<_, _> = rows
@@ -629,11 +770,27 @@ impl RootView {
             .map(|row| row.id.clone())
             .collect();
         self.visible_count = rows.len();
-        self.snoozed_count = snoozed.len();
+        // Like the other buttons, Snoozed counts every loaded snoozed PR.
+        self.snoozed_count = state
+            .rows
+            .iter()
+            .filter(|row| state.snooze_description(&row.id).is_some())
+            .count();
+        let collapsed = self.collapsed_here(state).to_vec();
         let switching = self.pending_restore.take();
         let target_url = match switching {
             Some(mode) => self.selections.get(&mode).cloned(),
             None => self.selected_row_url(cx),
+        };
+        // A selected folded header stays selected while it stays folded.
+        let target_header = match switching {
+            Some(_) => None,
+            None => {
+                let table = self.table.read(cx);
+                table
+                    .selected_row()
+                    .and_then(|ix| table.delegate().folded_section_at(ix))
+            }
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_stale_after_days(stale.after_days);
@@ -648,7 +805,7 @@ impl RootView {
             table.delegate_mut().set_rows(rows);
             table
                 .delegate_mut()
-                .set_attention(changed, watched, snoozed, self.snoozed_expanded);
+                .set_attention(changed, watched, snoozed, collapsed);
             table.refresh(cx);
             if let Some(ix) = target_url.and_then(|u| table.delegate().display_index_of_url(&u)) {
                 self.suppress_ack_for = table.delegate().row(ix).map(|row| row.id.clone());
@@ -656,12 +813,17 @@ impl RootView {
                 if switching.is_some() {
                     table.scroll_to_row(ix, cx);
                 }
+            } else if let Some(ix) = target_header
+                .and_then(|kind| table.delegate().header_index(kind))
+                .filter(|&ix| table.delegate().is_selectable(ix))
+            {
+                table.set_selected_row(ix, cx);
             } else {
                 table.clear_selection(cx);
             }
         });
-        if self.selected_row_url(cx).is_none() {
-            self.details_open = false;
+        if self.table.read(cx).selected_row().is_none() {
+            self.set_details_open(false, cx);
         }
         cx.notify();
     }
@@ -674,7 +836,7 @@ impl RootView {
         self.selections.clear();
         self.pending_restore = None;
         self.last_selected = 0;
-        self.details_open = false;
+        self.set_details_open(false, cx);
         let all_repos = scope.is_all();
         self.state.update(cx, |s, cx| s.switch_scope(scope, cx));
         // All repositories has no All open; the state fell back to My PRs.
@@ -726,9 +888,16 @@ impl RootView {
                 // The order is the window's alone, so a change to it redraws
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
-                if this.section_order != sections {
+                let collapsed = collapsed_from(&file);
+                if this.section_order != sections || this.collapsed != collapsed {
                     this.section_order = sections;
+                    this.collapsed = collapsed;
                     this.sync_table(cx);
+                }
+                let position = prmarmot_local::config::details_position(&file);
+                if this.details_position != position {
+                    this.details_position = position;
+                    this.fit_columns(cx);
                 }
                 let refresh = crate::state::refresh_interval(file.refresh_secs);
                 if this.refresh != refresh {
@@ -1088,7 +1257,7 @@ impl RootView {
     /// responsive default for this window width.
     fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
         let all_repos = self.state.read(cx).scope.is_all();
-        let mut cols = columns_for(mode, self.width_class, self.viewport_width, all_repos);
+        let mut cols = columns_for(mode, self.width_class, self.table_width(), all_repos);
         if let Some(widths) = self.col_overrides.get(&(mode, self.width_class, all_repos)) {
             if widths.len() == cols.len() {
                 for (col, w) in cols.iter_mut().zip(widths) {
@@ -1105,11 +1274,48 @@ impl RootView {
     /// no-op rebuild (the quantized widths didn't move) is skipped so a resize
     /// drag doesn't thrash the table.
     fn relayout(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let width: f32 = window.viewport_size().width.into();
+        self.viewport_width = window.viewport_size().width.into();
+        self.fit_columns(cx);
+    }
+
+    /// Open or close Details. A right-hand panel takes its width from the
+    /// table, so the columns are laid out again.
+    fn set_details_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.details_open != open {
+            self.details_open = open;
+            self.fit_columns(cx);
+        }
+    }
+
+    /// Whether Details sits on the right: always for `right`, never for
+    /// `bottom`, and for `auto` when the table keeps a Medium or Wide layout
+    /// beside it.
+    fn details_on_right(&self) -> bool {
+        match self.details_position {
+            DetailsPosition::Right => true,
+            DetailsPosition::Bottom => false,
+            DetailsPosition::Auto => {
+                self.viewport_width - DETAILS_PANEL_WIDTH >= crate::table::COMPACT_MAX
+            }
+        }
+    }
+
+    /// The width the table has: the window's, less an open right-hand panel.
+    fn table_width(&self) -> f32 {
+        if self.details_open && self.details_on_right() {
+            (self.viewport_width - DETAILS_PANEL_WIDTH).max(0.)
+        } else {
+            self.viewport_width
+        }
+    }
+
+    /// Lay the columns out for the table's width: its width class, and the
+    /// flexible Title and Note, follow the table rather than the window.
+    fn fit_columns(&mut self, cx: &mut Context<Self>) {
+        let width = self.table_width();
         let new_class = TableWidthClass::from_width(width);
         let class_changed = new_class != self.width_class;
         self.width_class = new_class;
-        self.viewport_width = width;
         let mode = self.state.read(cx).mode;
         let all_repos = self.state.read(cx).scope.is_all();
         if !class_changed
@@ -1146,14 +1352,16 @@ impl RootView {
         }
     }
 
-    /// Keep keyboard/mouse selection off the section-header pseudo-rows: when a
-    /// header gets selected, bounce to the nearest PR in the direction of
+    /// Keep keyboard/mouse selection off the section-header pseudo-rows (a
+    /// folded section's header excepted, so `c` can unfold it): when one gets
+    /// selected, bounce to the nearest selectable row in the direction of
     /// travel (`set_selected_row` re-emits `SelectRow`, but the bounced-to row
     /// is a real PR, so it settles in one hop).
     fn on_select_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
-        let delegate_is_header =
-            |i: usize, this: &Self, cx: &Context<Self>| this.table.read(cx).delegate().is_header(i);
-        if !delegate_is_header(row_ix, self, cx) {
+        let skipped = |i: usize, this: &Self, cx: &Context<Self>| {
+            !this.table.read(cx).delegate().is_selectable(i)
+        };
+        if !skipped(row_ix, self, cx) {
             self.last_selected = row_ix;
             if let Some(pr_id) = self
                 .table
@@ -1174,10 +1382,8 @@ impl RootView {
         }
         let len = self.table.read(cx).delegate().display_len();
         let going_down = row_ix >= self.last_selected;
-        let down = (row_ix + 1..len).find(|&i| !delegate_is_header(i, self, cx));
-        let up = (0..row_ix)
-            .rev()
-            .find(|&i| !delegate_is_header(i, self, cx));
+        let down = (row_ix + 1..len).find(|&i| !skipped(i, self, cx));
+        let up = (0..row_ix).rev().find(|&i| !skipped(i, self, cx));
         let target = if going_down { down.or(up) } else { up.or(down) };
         if let Some(t) = target {
             self.last_selected = t;
@@ -1196,7 +1402,7 @@ impl RootView {
             return;
         }
         if event.keystroke.key == "escape" {
-            self.details_open = false;
+            self.set_details_open(false, cx);
             self.table.focus_handle(cx).focus(window, cx);
             cx.notify();
             return;
@@ -1273,6 +1479,7 @@ impl RootView {
             }
             "w" if !platform && table_focused => self.toggle_watch(cx),
             "s" if !platform && table_focused => self.show_snooze_menu(window, cx),
+            "c" if !platform && table_focused => self.toggle_selected_section(cx),
             _ => {}
         }
     }
@@ -1372,7 +1579,7 @@ impl RootView {
                 if let Some(index) = index {
                     self.table
                         .update(cx, |table, cx| table.set_selected_row(index, cx));
-                    self.details_open = true;
+                    self.set_details_open(true, cx);
                     cx.notify();
                 }
             }
@@ -1528,7 +1735,7 @@ impl RootView {
 
     fn toggle_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.details_open {
-            self.details_open = false;
+            self.set_details_open(false, cx);
         } else {
             if self.selected_row_url(cx).is_none() {
                 self.table.update(cx, |table, cx| {
@@ -1540,7 +1747,8 @@ impl RootView {
                     }
                 });
             }
-            self.details_open = self.selected_row_url(cx).is_some();
+            let open = self.selected_row_url(cx).is_some();
+            self.set_details_open(open, cx);
         }
         self.table.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -1548,6 +1756,8 @@ impl RootView {
 
     fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
+        // The pill and the Snoozed header's chevron are one switch.
+        let snoozed_shown = !self.collapsed_here(state).contains(&SectionKind::Snoozed);
         let current_repo = state.scope.repository();
         let pinned = self
             .pinned_repos
@@ -1634,7 +1844,9 @@ impl RootView {
             .when(self.search_open, |bar| {
                 bar.child(self.render_search_box(cx))
             })
-            .when(self.filtering() || self.changed_only, |bar| {
+            .when(
+                self.filtering() || self.changed_only || self.needs_you_only,
+                |bar| {
                 bar.child(
                     div()
                         .text_size(px(12.))
@@ -1655,6 +1867,24 @@ impl RootView {
             )
             .child(
                 view_toggle(
+                    "needs-you-filter",
+                    NEEDS_YOU_TOGGLE_LABEL,
+                    self.needs_you_count,
+                    self.needs_you_only,
+                    None,
+                    cx,
+                )
+                .tooltip(needs_you_toggle_tooltip(
+                    self.needs_you_only,
+                    self.needs_you_count,
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.needs_you_only = !this.needs_you_only;
+                    this.sync_table(cx);
+                })),
+            )
+            .child(
+                view_toggle(
                     "changed-filter",
                     "Changed",
                     self.changed_count,
@@ -1671,22 +1901,37 @@ impl RootView {
                     this.sync_table(cx);
                 })),
             )
+            .child({
+                let stale_on = self.stale_filtering();
+                view_toggle(
+                    "stale-filter",
+                    STALE_TOGGLE_LABEL,
+                    self.stale_count,
+                    stale_on,
+                    None,
+                    cx,
+                )
+                .tooltip(stale_toggle_tooltip(
+                    stale_on,
+                    self.stale_count,
+                    state.config.stale_after_days,
+                ))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_stale_filter(window, cx);
+                }))
+            })
             .child(
                 view_toggle(
                     "snoozed-toggle",
                     "Snoozed",
                     self.snoozed_count,
-                    self.snoozed_expanded,
+                    snoozed_shown,
                     None,
                     cx,
                 )
-                .tooltip(snoozed_toggle_tooltip(
-                    self.snoozed_expanded,
-                    self.snoozed_count,
-                ))
+                .tooltip(snoozed_toggle_tooltip(snoozed_shown, self.snoozed_count))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.snoozed_expanded = !this.snoozed_expanded;
-                    this.sync_table(cx);
+                    this.toggle_section(SectionKind::Snoozed, cx);
                 })),
             )
             .when(state.mode == Mode::Review, |bar| {
@@ -1727,11 +1972,21 @@ impl RootView {
                             "Refresh to retry"
                         })
                         .disabled(!state.can_load_more())
+                        .tooltip(REFRESH_NOTE)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.state.update(cx, |state, cx| state.load_more(cx))
                         })),
                 )
             })
+            // Details changes the layout, not the rows: set apart from the
+            // filters.
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .flex_shrink_0()
+                    .bg(cx.theme().border),
+            )
             .child(
                 Button::new("show-details")
                     .small()
@@ -1747,7 +2002,108 @@ impl RootView {
             )
     }
 
-    fn render_details(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Details' rows: core's facts as a muted label beside its value (the
+    /// Note first, unlabelled), a hairline between them, then the attention
+    /// and snooze lines, muted. Labels are the chip row above, so their fact
+    /// is left out here. `columns` (the wide, short bottom pane) puts who is
+    /// involved in one group and the PR's health in another, side by side.
+    fn detail_field_rows(
+        &self,
+        row: &BoardRow,
+        mode: Mode,
+        columns: bool,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let theme = cx.theme();
+        let state = self.state.read(cx);
+        let fields = prmarmot_core::detail::detail_fields(
+            row,
+            mode,
+            Utc::now(),
+            crate::table::local_offset_secs(),
+        );
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut health: Vec<AnyElement> = Vec::new();
+        for (ix, field) in fields.into_iter().enumerate() {
+            use prmarmot_core::detail::DetailKind;
+            // Author, reviewers, reviews, issue and stack say who and where;
+            // CI, threads, the wait and the size say how the PR stands.
+            let is_health = matches!(field.kind, DetailKind::Waiting | DetailKind::Size)
+                || (field.kind == DetailKind::Facts && field.label != Some("Author"));
+            let group = if columns && is_health {
+                &mut health
+            } else {
+                &mut rows
+            };
+            match (field.kind, field.label) {
+                (DetailKind::Labels, _) => {}
+                (DetailKind::Snapshot, _) => {}
+                (_, None) => rows.push(
+                    div()
+                        .pb(px(6.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(px(13.))
+                        .child(SelectableText::new(("detail-field", ix), field.value))
+                        .into_any_element(),
+                ),
+                (_, Some(label)) => group.push(
+                    h_flex()
+                        .items_start()
+                        .gap_2()
+                        .pb(px(6.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .w(px(DETAILS_LABEL_WIDTH))
+                                .flex_shrink_0()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(13.))
+                                .child(SelectableText::new(("detail-field", ix), field.value)),
+                        )
+                        .into_any_element(),
+                ),
+            }
+        }
+        if columns {
+            // The Note (unlabelled) stays above both groups.
+            let people: Vec<AnyElement> = rows.drain(1.min(rows.len())..).collect();
+            rows.push(
+                h_flex()
+                    .items_start()
+                    .gap_6()
+                    .child(v_flex().flex_1().min_w_0().gap_2().children(people))
+                    .child(v_flex().flex_1().min_w_0().gap_2().children(health))
+                    .into_any_element(),
+            );
+        }
+        let mut closing = vec![prmarmot_core::detail::attention_line(
+            state.is_changed(&row.id),
+            state.is_watched(&row.id),
+        )];
+        closing.extend(state.snooze_description(&row.id));
+        rows.extend(closing.into_iter().map(|line| {
+            div()
+                .text_size(px(12.))
+                .text_color(theme.muted_foreground)
+                .child(line)
+                .into_any_element()
+        }));
+        rows
+    }
+
+    /// Details at the bottom (`right` false: a 210 px pane, the facts as
+    /// sentences) or on the right (a full-height panel, the facts as label and
+    /// value rows). Both read core's `detail` module, so they say the same.
+    fn render_details(&self, right: bool, cx: &Context<Self>) -> impl IntoElement {
         let table = self.table.read(cx);
         let selected = table
             .selected_row()
@@ -1756,10 +2112,65 @@ impl RootView {
         let mode = self.state.read(cx).mode;
         let theme = cx.theme();
         let (hover_border, hover_text) = (theme.muted_foreground, theme.foreground);
+        let field_rows: Vec<AnyElement> = selected
+            .as_ref()
+            .map(|row| self.detail_field_rows(row, mode, !right, cx))
+            .unwrap_or_default();
+        // The PR's title and its labels as chips, on one line when they fit;
+        // a chip click filters by the label, as in the table. It heads the
+        // right panel, and takes the place of "PR details" in the bottom pane
+        // so the short pane keeps room for the facts.
+        let heading = selected.as_ref().map(|row| {
+            h_flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x_3()
+                .gap_y_1()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SelectableText::new(
+                            "detail-title",
+                            format!("#{}  {}", row.number, row.title),
+                        )),
+                )
+                .when(!row.labels.is_empty(), |heading| {
+                    heading.child(h_flex().flex_wrap().gap_1().text_size(px(13.)).children(
+                        row.labels.iter().enumerate().map(|(ix, label)| {
+                            let target = FilterChip::new(Qualifier::Label, label);
+                            let tip = format!("Filter by {}", target.term());
+                            label_chip(theme)
+                                .id(("detail-label", ix))
+                                .cursor_pointer()
+                                .text_color(theme.secondary_foreground)
+                                .hover(|style| {
+                                    style.border_color(hover_border).text_color(hover_text)
+                                })
+                                .child(label.clone())
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tip.clone()).build(window, cx)
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.filter_by(target.clone(), window, cx)
+                                }))
+                        }),
+                    ))
+                })
+        });
+        let (bar_heading, content_heading) = if right {
+            (None, heading)
+        } else {
+            (heading, None)
+        };
         v_flex()
-            .h(px(210.))
+            .map(|panel| {
+                if right {
+                    panel.w(px(DETAILS_PANEL_WIDTH)).h_full().border_l_1()
+                } else {
+                    panel.h(px(210.)).border_t_1()
+                }
+            })
             .flex_shrink_0()
-            .border_t_1()
             .border_color(theme.border)
             .bg(theme.background)
             .px(px(16.))
@@ -1768,12 +2179,13 @@ impl RootView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("PR details"),
-                    )
+                    .child(div().flex_1().min_w_0().map(|title| match bar_heading {
+                        Some(heading) => title.child(heading),
+                        None if !right => {
+                            title.font_weight(FontWeight::SEMIBOLD).child("PR details")
+                        }
+                        None => title,
+                    }))
                     .when_some(selected.clone(), |bar, row| {
                         let copy_row = row.clone();
                         let view = cx.entity().downgrade();
@@ -1815,7 +2227,7 @@ impl RootView {
                             .small()
                             .label("Close · Esc")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.details_open = false;
+                                this.set_details_open(false, cx);
                                 this.table.focus_handle(cx).focus(window, cx);
                                 cx.notify();
                             })),
@@ -1829,72 +2241,7 @@ impl RootView {
                     .overflow_y_scroll()
                     .gap_2()
                     .map(|content| match selected {
-                        Some(row) => content
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(
-                                SelectableText::new(
-                                    "detail-title",
-                                    format!("#{}  {}", row.number, row.title),
-                                ),
-                            ))
-                            // Labels as chips: a click filters by the label, as in the table.
-                            .when(!row.labels.is_empty(), |content| {
-                                content.child(
-                                    h_flex()
-                                        .flex_wrap()
-                                        .gap_1()
-                                        .text_size(px(13.))
-                                        .child("Labels:")
-                                        .children(row.labels.iter().enumerate().map(
-                                            |(ix, label)| {
-                                                let target =
-                                                    FilterChip::new(Qualifier::Label, label);
-                                                let tip = format!("Filter by {}", target.term());
-                                                label_chip(theme)
-                                                    .id(("detail-label", ix))
-                                                    .cursor_pointer()
-                                                    .text_color(theme.secondary_foreground)
-                                                    .hover(|style| {
-                                                        style
-                                                            .border_color(hover_border)
-                                                            .text_color(hover_text)
-                                                    })
-                                                    .child(label.clone())
-                                                    .tooltip(move |window, cx| {
-                                                        Tooltip::new(tip.clone()).build(window, cx)
-                                                    })
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.filter_by(
-                                                                target.clone(),
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    ))
-                                            },
-                                        )),
-                                )
-                            })
-                            .child(div().text_size(px(13.)).child(SelectableText::new(
-                                "detail-body",
-                                {
-                                    // The labels line is the chip row above.
-                                    let mut text = detail_text(&row, mode).replace(
-                                        &format!("\nLabels: {}", row.labels.join(", ")),
-                                        "",
-                                    );
-                                    let state = self.state.read(cx);
-                                    text.push('\n');
-                                    text.push_str(&prmarmot_core::detail::attention_line(
-                                        state.is_changed(&row.id),
-                                        state.is_watched(&row.id),
-                                    ));
-                                    if let Some(snooze) = state.snooze_description(&row.id) {
-                                        text.push_str(&format!("\n{snooze}"));
-                                    }
-                                    text
-                                },
-                            ))),
+                        Some(_) => content.children(content_heading).children(field_rows),
                         None => content.child("Select a PR to inspect its details."),
                     }),
             )
@@ -1913,13 +2260,7 @@ impl RootView {
             truncated: state.truncated,
             mode: state.mode,
             all_repos: state.scope.is_all(),
-            need_you: state
-                .rows
-                .iter()
-                .filter(|row| {
-                    row_needs_you(state.mode, row) && state.snooze_description(&row.id).is_none()
-                })
-                .count(),
+            need_you: need_you_count_of(state),
             badge: state.badge_count,
             badge_complete: state.badge_coverage_complete,
             followed: state
@@ -1960,10 +2301,14 @@ impl RootView {
                 theme.muted_foreground,
             )
         };
-        let budget = state
-            .rate
-            .as_ref()
-            .map(|r| format!("API {}/{}", r.remaining, r.limit));
+        // Under a tenth of the hourly budget left, the readout turns the
+        // warning colour well before fetching pauses at the reserve.
+        let budget = state.rate.as_ref().map(|r| {
+            div()
+                .flex_shrink_0()
+                .when(r.is_low(), |this| this.text_color(theme.warning))
+                .child(format!("API {}/{}", r.remaining, r.limit))
+        });
         let selected_mode = match state.mode {
             Mode::Authored => 0,
             Mode::Review => 1,
@@ -2080,10 +2425,11 @@ impl RootView {
                             .text_color(status_color)
                             .child(status_text.clone())
                             .tooltip(move |window, cx| {
-                                Tooltip::new(status_text.clone()).build(window, cx)
+                                Tooltip::new(format!("{status_text}\n{SYNC_STATUS_NOTE}"))
+                                    .build(window, cx)
                             }),
                     )
-                    .when_some(budget, |this, b| this.child(div().flex_shrink_0().child(b))),
+                    .when_some(budget, |this, b| this.child(b)),
             )
     }
 
@@ -2463,6 +2809,7 @@ impl RootView {
                 ("Copy selected PR's group as a list", "Y"),
                 ("Watch / unwatch selected PR", "w"),
                 ("Snooze selected PR", "s"),
+                ("Fold / unfold the selected section", "c"),
                 ("My PRs / Review queue / All open", "1 / 2 / 3"),
                 ("Switch queue", "v"),
                 ("Refresh", "r"),
@@ -2526,6 +2873,8 @@ fn view_toggle(
             h_flex()
                 .gap_1p5()
                 .items_center()
+                // On is said by a mark too, not by colour alone.
+                .when(on, |row| row.child(div().text_size(px(11.)).child("✓")))
                 .when_some(dot.filter(|_| count > 0), |row, color| {
                     row.child(
                         div()
@@ -2553,9 +2902,28 @@ fn view_toggle(
 // live in `prmarmot_core::status`, so the iPad shows the same words.
 use prmarmot_core::status::{
     changed_toggle_tooltip, header_counts as core_header_counts, human_duration, loaded_more_text,
-    queue_loading_text, queue_sync_text as core_queue_sync_text, relative, row_needs_you,
-    snoozed_toggle_tooltip, BadgeName, HeaderCounts,
+    need_you_count, needs_you_toggle_tooltip, queue_loading_text,
+    queue_sync_text as core_queue_sync_text, relative, row_needs_you, snoozed_toggle_tooltip,
+    stale_toggle_tooltip, BadgeName, HeaderCounts, NEEDS_YOU_TOGGLE_LABEL, REFRESH_NOTE,
+    STALE_TOGGLE_LABEL, SYNC_STATUS_NOTE,
 };
+
+/// Whether this row is one the header counts as "need you" right now.
+fn needs_you_now(state: &AppState, row: &BoardRow) -> bool {
+    row_needs_you(state.mode, row) && state.snooze_description(&row.id).is_none()
+}
+
+/// The header's "need you", which the Needs you filter shows as its count.
+fn need_you_count_of(state: &AppState) -> usize {
+    need_you_count(state.mode, &state.rows, |row| {
+        state.snooze_description(&row.id).is_some()
+    })
+}
+
+/// The `is:stale` chip the Stale quick filter adds and removes.
+fn stale_chip() -> FilterChip {
+    FilterChip::new(Qualifier::Is, "stale")
+}
 
 /// The header's count line and the tooltip that explains it, with the badge
 /// called by its desktop name.
@@ -2717,7 +3085,7 @@ impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
         if self.selected_row_url(cx).is_none() {
-            self.details_open = false;
+            self.set_details_open(false, cx);
         }
         // The view can change without a window at hand (a scope change falls
         // back from All open), so the placeholder follows it here.
@@ -2766,6 +3134,7 @@ impl Render for RootView {
                 BodyState::Loading(queue_loading_text(s.mode, s.scope.is_all()).to_string())
             }
         };
+        let details_right = self.details_open && self.details_on_right();
 
         v_flex()
             .size_full()
@@ -2776,7 +3145,7 @@ impl Render for RootView {
                 view.key_context("PrmarmotDetails")
             })
             .on_action(cx.listener(|this, _: &CloseDetails, window, cx| {
-                this.details_open = false;
+                this.set_details_open(false, cx);
                 this.table.focus_handle(cx).focus(window, cx);
                 cx.notify();
             }))
@@ -2803,63 +3172,83 @@ impl Render for RootView {
             .child(self.render_update_banners(cx))
             .child(self.render_tools(cx))
             // Full-bleed table (spec §5): the window IS the table; 13 px
-            // cells at Size::Small density.
+            // cells at Size::Small density. A right-hand Details panel sits
+            // beside it and takes its width from the table's.
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_h_0()
-                    .text_size(px(crate::design::TABLE_TEXT_PX))
-                    .map(|this| match body {
-                        // bordered defaults to TRUE — at full bleed the outer
-                        // border + rounded corners fight the window edge
-                        // (spec §5: header border is the only separator). Once
-                        // loaded, the delegate's own render_empty shows the
-                        // queue-specific "nothing here" — correct, because we
-                        // now KNOW the queue is empty.
-                        BodyState::Loaded if self.visible_count == 0 && self.filtering() => this
-                            .child(
-                                h_flex()
-                                    .size_full()
-                                    .justify_center()
-                                    .text_color(theme.muted_foreground)
-                                    .child(no_match),
-                            ),
-                        BodyState::Loaded => this.child(
-                            DataTable::new(&self.table)
-                                .small()
-                                .stripe(false)
-                                .bordered(false),
-                        ),
-                        BodyState::Setup(setup) => this.child(self.render_setup(setup, cx)),
-                        BodyState::Loading(text) | BodyState::Paused(text) => this.child(
-                            h_flex()
-                                .size_full()
-                                .justify_center()
-                                .text_color(theme.muted_foreground)
-                                .child(text),
-                        ),
-                        BodyState::Failed(text) => this.child(
-                            v_flex()
-                                .size_full()
-                                .gap_3()
-                                .items_center()
-                                .justify_center()
-                                .px_4()
-                                .child(div().max_w(px(640.)).text_color(theme.danger).child(text))
-                                .child(
-                                    Button::new("retry-board")
-                                        .label("Retry")
-                                        .tooltip("Retry loading this queue · r")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.state.update(cx, |state, cx| state.refresh(cx));
-                                            this.focus_handle.focus(window, cx);
-                                        })),
+                    .items_start()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .text_size(px(crate::design::TABLE_TEXT_PX))
+                            .map(|this| match body {
+                                // bordered defaults to TRUE — at full bleed the outer
+                                // border + rounded corners fight the window edge
+                                // (spec §5: header border is the only separator). Once
+                                // loaded, the delegate's own render_empty shows the
+                                // queue-specific "nothing here" — correct, because we
+                                // now KNOW the queue is empty.
+                                BodyState::Loaded
+                                    if self.visible_count == 0 && self.filtering() =>
+                                {
+                                    this.child(
+                                        h_flex()
+                                            .size_full()
+                                            .justify_center()
+                                            .text_color(theme.muted_foreground)
+                                            .child(no_match),
+                                    )
+                                }
+                                BodyState::Loaded => this.child(
+                                    DataTable::new(&self.table)
+                                        .small()
+                                        .stripe(false)
+                                        .bordered(false),
                                 ),
-                        ),
+                                BodyState::Setup(setup) => this.child(self.render_setup(setup, cx)),
+                                BodyState::Loading(text) | BodyState::Paused(text) => this.child(
+                                    h_flex()
+                                        .size_full()
+                                        .justify_center()
+                                        .text_color(theme.muted_foreground)
+                                        .child(text),
+                                ),
+                                BodyState::Failed(text) => this.child(
+                                    v_flex()
+                                        .size_full()
+                                        .gap_3()
+                                        .items_center()
+                                        .justify_center()
+                                        .px_4()
+                                        .child(
+                                            div()
+                                                .max_w(px(640.))
+                                                .text_color(theme.danger)
+                                                .child(text),
+                                        )
+                                        .child(
+                                            Button::new("retry-board")
+                                                .label("Retry")
+                                                .tooltip("Retry loading this queue · r")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.state
+                                                        .update(cx, |state, cx| state.refresh(cx));
+                                                    this.focus_handle.focus(window, cx);
+                                                })),
+                                        ),
+                                ),
+                            }),
+                    )
+                    .when(details_right, |row| {
+                        row.child(self.render_details(true, cx))
                     }),
             )
-            .when(self.details_open, |this| {
-                this.child(self.render_details(cx))
+            .when(self.details_open && !details_right, |this| {
+                this.child(self.render_details(false, cx))
             })
             .child(self.render_footer(cx))
             .children(dialog_layer)

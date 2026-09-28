@@ -66,7 +66,9 @@ pub enum DetailKind {
     Labels,
     Issue,
     Stack,
-    /// That the panel shows what was loaded, always last.
+    /// No longer emitted: the snapshot sentence moved to the sync status's
+    /// hover text (`status::SYNC_STATUS_NOTE`). Kept until the iPad stops
+    /// matching on it, so its build keeps compiling.
     Snapshot,
 }
 
@@ -86,55 +88,94 @@ pub fn detail_lines(
         .collect()
 }
 
-/// [`detail_lines`], each with what it is.
+/// [`detail_lines`], each with what it is: [`detail_fields`] written out as
+/// the sentences the bottom pane and the iPad show.
 pub fn detail_items(
     row: &BoardRow,
     mode: Mode,
     now: DateTime<Utc>,
     tz_offset_secs: i32,
 ) -> Vec<(DetailKind, String)> {
-    let mut lines = vec![
-        (DetailKind::Note, strip_note_glyphs(&row.note)),
-        (
+    let fields = detail_fields(row, mode, now, tz_offset_secs);
+    let mut lines: Vec<(DetailKind, String)> = Vec::with_capacity(fields.len());
+    for field in fields {
+        let line = match (field.kind, field.label) {
+            (DetailKind::Waiting, _) => format!("Waiting for a reviewer for {}", field.value),
+            (DetailKind::Stack, _) => format!("Stack {}", field.value),
+            (_, Some(label)) => format!("{label}: {}", field.value),
+            (_, None) => field.value,
+        };
+        // Author, CI and the open threads share one line.
+        match lines.last_mut() {
+            Some((DetailKind::Facts, facts)) if field.kind == DetailKind::Facts => {
+                facts.push_str(" · ");
+                facts.push_str(&line);
+            }
+            _ => lines.push((field.kind, line)),
+        }
+    }
+    lines
+}
+
+/// One fact of the Details panel as a label and a value, for a panel that
+/// lays them out in two columns. The Note and the closing snapshot line have
+/// no label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailField {
+    pub kind: DetailKind,
+    pub label: Option<&'static str>,
+    pub value: String,
+}
+
+/// Every fact of the panel, in the order it is shown: the one source of
+/// [`detail_items`], so the two layouts cannot say different things.
+pub fn detail_fields(
+    row: &BoardRow,
+    mode: Mode,
+    now: DateTime<Utc>,
+    tz_offset_secs: i32,
+) -> Vec<DetailField> {
+    let field = |kind, label, value: String| DetailField { kind, label, value };
+    let mut fields = vec![
+        field(DetailKind::Note, None, strip_note_glyphs(&row.note)),
+        field(
             DetailKind::Facts,
-            format!(
-                "Author: {} · CI: {} · Unresolved threads: {}",
-                row.author.as_deref().unwrap_or("unknown"),
-                row.ci.as_str(),
-                row.unresolved
-            ),
+            Some("Author"),
+            row.author.as_deref().unwrap_or("unknown").to_owned(),
         ),
-        (
+        field(DetailKind::Facts, Some("CI"), row.ci.as_str().to_owned()),
+        field(
+            DetailKind::Facts,
+            Some("Unresolved threads"),
+            row.unresolved.to_string(),
+        ),
+        field(
             DetailKind::RequestedReviewers,
-            format!(
-                "Requested reviewers: {}",
-                if row.requested.is_empty() {
-                    "none".into()
-                } else {
-                    row.requested.join(", ")
-                }
-            ),
+            Some("Requested reviewers"),
+            if row.requested.is_empty() {
+                "none".into()
+            } else {
+                row.requested.join(", ")
+            },
         ),
-        (
+        field(
             DetailKind::Reviews,
-            format!(
-                "Reviews: {}",
-                if row.reviews.is_empty() {
-                    "none".into()
-                } else {
-                    row.reviews
-                        .iter()
-                        .map(|review| {
-                            format!(
-                                "{} — {}",
-                                review.login.as_deref().unwrap_or("deleted user"),
-                                review_state_words(&review.state)
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-            ),
+            Some("Reviews"),
+            if row.reviews.is_empty() {
+                "none".into()
+            } else {
+                row.reviews
+                    .iter()
+                    .map(|review| {
+                        format!(
+                            "{} — {}",
+                            review.login.as_deref().unwrap_or("deleted user"),
+                            review_state_words(&review.state)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
         ),
     ];
     // Your own PR has no review of yours to show.
@@ -144,7 +185,11 @@ pub fn detail_items(
         .filter(|_| mode == Mode::Review)
         .and_then(my_review_text)
     {
-        lines.push((DetailKind::YourReview, format!("Your review: {review}")));
+        fields.push(field(
+            DetailKind::YourReview,
+            Some("Your review"),
+            review.to_owned(),
+        ));
     }
     // Like the Note's "· 4d", with the start in the reader's time zone.
     let since = row
@@ -155,32 +200,35 @@ pub fn detail_items(
         let zone = FixedOffset::east_opt(tz_offset_secs).unwrap_or_else(|| {
             FixedOffset::east_opt(0).expect("UTC is always a valid fixed offset")
         });
-        lines.push((
+        fields.push(field(
             DetailKind::Waiting,
+            Some("Waiting"),
             format!(
-                "Waiting for a reviewer for {} (since {})",
+                "{} (since {})",
                 wait_label(secs),
                 since.with_timezone(&zone).format("%Y-%m-%d %H:%M")
             ),
         ));
     }
     if let Some(size) = row.size {
-        lines.push((DetailKind::Size, format!("Size: {}", size_text(size))));
+        fields.push(field(DetailKind::Size, Some("Size"), size_text(size)));
     }
     if !row.labels.is_empty() {
-        lines.push((
+        fields.push(field(
             DetailKind::Labels,
-            format!("Labels: {}", row.labels.join(", ")),
+            Some("Labels"),
+            row.labels.join(", "),
         ));
     }
     if let Some(issue) = &row.issue {
-        lines.push((DetailKind::Issue, format!("Issue: {issue}")));
+        fields.push(field(DetailKind::Issue, Some("Issue"), issue.clone()));
     }
     if let Some(stack) = &row.stack {
-        lines.push((
+        fields.push(field(
             DetailKind::Stack,
+            Some("Stack"),
             format!(
-                "Stack #{} · Layer {} of {} · Base: {}",
+                "#{} · Layer {} of {} · Base: {}",
                 stack.number,
                 stack
                     .position
@@ -191,11 +239,7 @@ pub fn detail_items(
             ),
         ));
     }
-    lines.push((
-        DetailKind::Snapshot,
-        "Details reflect the loaded snapshot; refresh restarts pagination.".into(),
-    ));
-    lines
+    fields
 }
 
 /// "Attention: changed · watched" — the Details panel's line about this PR's
@@ -298,7 +342,6 @@ mod tests {
                 "Author: alice · CI: pass · Unresolved threads: 0",
                 "Requested reviewers: none",
                 "Reviews: none",
-                "Details reflect the loaded snapshot; refresh restarts pagination.",
             ]
         );
     }
@@ -352,7 +395,37 @@ mod tests {
                 "Labels: backend, bug",
                 "Issue: ACME-7",
                 "Stack #70 · Layer 2 of 3 · Base: main",
-                "Details reflect the loaded snapshot; refresh restarts pagination.",
+            ]
+        );
+    }
+
+    /// The two-column panel reads the same facts as the sentences, split into
+    /// a label and a value; the Note has no label.
+    #[test]
+    fn every_fact_is_a_label_and_a_value() {
+        let fields = detail_fields(&full_row(), Mode::Review, now(), 0);
+        let pairs: Vec<(Option<&str>, &str)> = fields
+            .iter()
+            .map(|field| (field.label, field.value.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (None, "⏳ Waiting for your review"),
+                (Some("Author"), "alice"),
+                (Some("CI"), "pass"),
+                (Some("Unresolved threads"), "0"),
+                (Some("Requested reviewers"), "bob, kim"),
+                (
+                    Some("Reviews"),
+                    "bob — changes requested, deleted user — approved"
+                ),
+                (Some("Your review"), "commented"),
+                (Some("Waiting"), "3d (since 2026-09-02 09:30)"),
+                (Some("Size"), "Small · 42 changed lines in 3 files (+40 −2)"),
+                (Some("Labels"), "backend, bug"),
+                (Some("Issue"), "ACME-7"),
+                (Some("Stack"), "#70 · Layer 2 of 3 · Base: main"),
             ]
         );
     }
@@ -374,7 +447,6 @@ mod tests {
                 DetailKind::Labels,
                 DetailKind::Issue,
                 DetailKind::Stack,
-                DetailKind::Snapshot,
             ]
         );
         assert_eq!(
@@ -392,7 +464,6 @@ mod tests {
                 DetailKind::Facts,
                 DetailKind::RequestedReviewers,
                 DetailKind::Reviews,
-                DetailKind::Snapshot,
             ]
         );
     }
