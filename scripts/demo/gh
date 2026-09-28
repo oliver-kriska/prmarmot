@@ -36,7 +36,8 @@ def ago(hours):
 
 def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
        mergeable="MERGEABLE", labels=(), requested=(), teams=(), reviews=(), unresolved=0,
-       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None, size=None):
+       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None, size=None,
+       updated=None):
     reviewers = [{"__typename": "User", "login": login} for login in requested] + [
         {"__typename": "Team", "slug": slug} for slug in teams
     ]
@@ -71,7 +72,7 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
         "id": f"PR_demo_{repo.replace('/', '_')}_{number}",
         "url": f"https://github.com/{repo}/pull/{number}",
         "repository": {"nameWithOwner": repo},
-        "updatedAt": f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
+        "updatedAt": updated or f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
         "headRefOid": head_oid,
         "state": "OPEN",
         "merged": False,
@@ -107,6 +108,11 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
 
 
 AUTHORED = [
+    # The README's opening example: approved, yet blocked by a red build and
+    # two open threads.
+    pr(1842, "Retry failed payment webhooks", labels=("bug",), decision="APPROVED",
+       reviews=(("alex", "APPROVED"),), unresolved=2, ci="FAILURE",
+       repo="demo-labs/payments", updated="2026-09-11T14:00:00Z"),
     pr(418, "[DEMO-418] Repair offline cache reconciliation", labels=("bug",),
        requested=("alex",), unresolved=2, ci="FAILURE", waited=20),
     pr(417, "Resolve atlas navigation conflicts", mergeable="CONFLICTING",
@@ -441,7 +447,7 @@ def write_fixtures(root):
     repos = [{"full_name": name} for name in (
         "demo-labs/atlas", "demo-labs/mobile", "demo-labs/web", "demo-labs/infra",
         "demo-labs/docs", "demo-labs/design-system", "demo-labs/billing",
-        "demo-labs/analytics", "acme/widgets", "acme/api", "acme/legacy",
+        "demo-labs/payments", "demo-labs/analytics", "acme/widgets", "acme/api", "acme/legacy",
         "personal/dotfiles")]
     path = root / "repos.json"
     path.write_text(json.dumps(repos, indent=2) + "\n")
@@ -580,7 +586,7 @@ class FixtureTests(unittest.TestCase):
     def test_numbers_are_unique_and_views_are_distinct(self):
         authored = {item["number"] for item in AUTHORED}
         review = {item["number"] for item in REQUESTED + AVAILABLE}
-        self.assertEqual(len(authored), 11)
+        self.assertEqual(len(authored), 12)
         self.assertTrue(authored.isdisjoint(review))
 
     def test_native_stack_has_three_ordered_layers(self):
@@ -700,7 +706,7 @@ class FixtureTests(unittest.TestCase):
             find(again, 418)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"],
             "FAILURE",
             "step 1 was edited by step 2 — the copies are shared")
-        self.assertEqual(second["authored"][0]["number"], 418)
+        self.assertIn(418, [node["number"] for node in second["authored"]])
 
     def test_a_watched_pr_that_leaves_the_board_is_still_answerable_by_id(self):
         views, index = scenario_step("watching", 2)

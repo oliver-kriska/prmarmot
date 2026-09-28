@@ -6,11 +6,15 @@
 
 # PR Marmot
 
-**Know which pull request needs you next.** PR Marmot is a desktop dashboard for
-GitHub pull requests, for macOS and Linux: the open ones that involve you, across
-your repositories, with a plain-language **Note** on each saying what it needs.
-You act on GitHub; PR Marmot never changes anything there. Free and open source
-(MIT).
+**40 open pull requests. Which one needs you?** Thought they were all green? One
+is approved but blocked by failing CI and two unresolved threads. PR Marmot is a
+desktop dashboard for GitHub pull requests, for macOS and Linux: the open ones
+that involve you, across your repositories, with a plain-language **Note** on
+each saying where it stands, kept there until that changes. You act on GitHub;
+PR Marmot never changes anything there. Free and open source (MIT).
+
+Built for leads, maintainers, and anyone whose coding agents open pull requests
+for them.
 
 Your GitHub token stays on your machine (in the keychain on macOS), with no PR
 Marmot account, no server and no telemetry. The app talks only to GitHub, and
