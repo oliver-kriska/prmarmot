@@ -7,7 +7,7 @@
 # PR Marmot
 
 **40 open pull requests. Which one needs you?** Thought they were all green? One
-is approved but blocked by failing CI and two unresolved threads. PR Marmot is a
+is approved but blocked by failing CI and two unresolved comments. PR Marmot is a
 desktop dashboard for GitHub pull requests, for macOS and Linux: the open ones
 that involve you, across your repositories, with a plain-language **Note** on
 each saying where it stands, kept there until that changes. You act on GitHub;
@@ -20,7 +20,7 @@ Your GitHub token stays on your machine (in the keychain on macOS), with no PR
 Marmot account, no server and no telemetry. The app talks only to GitHub, and
 every line of it is here to read.
 
-![The PR Marmot board: open pull requests from two repositories grouped into Approved, Needs action, Awaiting review and Drafts, each with a Note such as "CI failing", "merge conflict — rebase" or "assign alex + sam"](assets/screenshots/board.png)
+![PR Marmot's board: the Approved section, then Needs action opening with #1842, approved but blocked by failing CI and two unresolved comments; each pull request has a Note such as "CI failing", "merge conflict — rebase" or "assign alex + sam"](assets/screenshots/board.png)
 
 *Involving me, across all repositories. Every repository, person and pull
 request shown is fictional.*
