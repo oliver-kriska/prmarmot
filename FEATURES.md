@@ -42,9 +42,9 @@ values in the code. New features get the next free number in their area.
   Grouping uses GitHub's stack data, never labels or guessed branch relationships. _since v0.3.0_
 - **F-board-7** Columns fit the table in three width classes.
   - Below 1,120 px wide the Labels column is hidden; from 1,360 px it gets wider.
-  - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _unreleased_
+  - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _since v0.13.0_
   - With All repositories, Title and Note may narrow to 168 and 224 px to leave room for the Repo column, so the
-    columns never run past the table's edge. _unreleased_
+    columns never run past the table's edge. _since v0.13.0_
   - Note always gets at least as much room as Title.
   - A width you drag is kept for that queue and width class until you quit.
   - Columns can't be sorted or reordered.
@@ -67,7 +67,7 @@ values in the code. New features get the next free number in their area.
   - whether it is changed, watched, or snoozed.
 
   It makes no extra request, and `Esc` closes it. _since v0.3.0_ It sits below the table or beside it
-  (F-board-16). _unreleased_
+  (F-board-16). _since v0.13.0_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_
 - **F-board-12** The header counts:
@@ -108,7 +108,7 @@ values in the code. New features get the next free number in their area.
   - What is folded is remembered for each view (My PRs, Involving me, Review queue, All open) as
     `[collapsed_sections]` in config.toml. By default only **Snoozed** is folded, and it too is remembered.
 
-  _unreleased_
+  _since v0.13.0_
 - **F-board-16** Settings → **Details position** puts Details below the table or beside it on the right.
   - **Automatic** (the default) puts it on the right when the table keeps at least 1,120 px beside it, so from a
     1,480 px window; narrower windows keep it below.
@@ -118,7 +118,7 @@ values in the code. New features get the next free number in their area.
     column; below it keeps 210 px and puts who is involved and how the PR stands in two columns, scrolling inside.
   - Saved as `details_position` = `"auto"`, `"bottom"` or `"right"` in config.toml.
 
-  _unreleased_
+  _since v0.13.0_
 
 ## Categorization and notes
 
@@ -201,7 +201,7 @@ values in the code. New features get the next free number in their area.
   - **Needs you** keeps the PRs the header counts as needing you (F-board-12); its number is the header's.
   - **Stale** adds or removes the `is:stale` chip (F-search-3), as if typed.
 
-  _unreleased_
+  _since v0.13.0_
 
 ## Change tracking
 
@@ -215,13 +215,13 @@ values in the code. New features get the next free number in their area.
   PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_
 - **F-track-2** **Changed** filters the loaded rows to changed PRs and shows how many match the search. A
   selection restored at launch doesn't clear a marker. _since v0.6.0; the count since v0.8.0_ The count is every
-  changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _unreleased_
+  changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _since v0.13.0_
 - **F-track-3** **Watch** (`w`) follows a PR even outside the current view. Up to 50 watches are kept; a 51st drops
   the oldest, and the footer says which. Watched and snoozed PRs refresh in the same request as the board, at most
   50 per refresh, taking turns when there are more. _since v0.6.0_
 - **F-track-4** **Snooze** (`s`) moves a PR to a collapsed **Snoozed** group, where it adds no alerts or counts
   until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches
-  (_unreleased_).
+  (_since v0.13.0_).
   - **One hour**.
   - **Until tomorrow**, which is 24 hours from now.
   - **Waiting for CI** wakes when checks change to passing or failing.
@@ -322,7 +322,7 @@ values in the code. New features get the next free number in their area.
   go below 30 seconds. _since v0.1.0_
 - **F-refresh-2** The header shows "synced Xm ago" and the live GraphQL rate-limit budget, updated once a minute.
   _since v0.1.0_ The budget turns the warning colour when less than a tenth of it is left, well before refreshes
-  pause (F-refresh-5). _unreleased_
+  pause (F-refresh-5). _since v0.13.0_
 - **F-refresh-3** Each refresh is one GraphQL request.
   - My PRs and Involving me return up to 60 PRs and cost about 4 points.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
@@ -352,7 +352,7 @@ values in the code. New features get the next free number in their area.
   - notifications and their sound;
   - the Dock badge and automatic update checks;
   - the section order. _since v0.12.0_
-  - where Details sits (F-board-16). _unreleased_
+  - where Details sits (F-board-16). _since v0.13.0_
 
   **Advanced** holds issue links, whether every PR entering Needs action notifies, and the config file's path.
   **Save** checks each field and puts any error beside it, and **Cancel** discards your edits. Reviewer names must
@@ -365,7 +365,7 @@ values in the code. New features get the next free number in their area.
   until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
   `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _since v0.12.0_ a `section_order`
-  entry that is not a section; _unreleased_ a `[collapsed_sections]` view or section it doesn't know, and a
+  entry that is not a section; _since v0.13.0_ a `[collapsed_sections]` view or section it doesn't know, and a
   `details_position` other than `auto`, `bottom` or `right`), from the file or the environment.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
