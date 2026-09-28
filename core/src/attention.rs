@@ -223,7 +223,7 @@ impl Snapshot {
         }
         if old.unresolved != new.unresolved {
             changes.push(format!(
-                "Unresolved threads {} → {}",
+                "Unresolved comments {} → {}",
                 old.unresolved, new.unresolved
             ));
         }
@@ -1044,7 +1044,7 @@ mod tests {
                 "Merge conflict",
                 "reviewer approved",
                 "Review requested from bob",
-                "Unresolved threads 0 → 2",
+                "Unresolved comments 0 → 2",
             ]
         );
     }

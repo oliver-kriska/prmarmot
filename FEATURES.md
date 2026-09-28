@@ -113,7 +113,7 @@ values in the code. New features get the next free number in their area.
   - **Automatic** (the default) puts it on the right when the table keeps at least 1,120 px beside it, so from a
     1,480 px window; narrower windows keep it below.
   - **Bottom** or **Right** always put it there.
-  - Both list each fact as a label and a value (Author, CI, Unresolved threads, Requested reviewers, Reviews,
+  - Both list each fact as a label and a value (Author, CI, Unresolved comments, Requested reviewers, Reviews,
     Waiting, Size, Issue, Stack), under the PR's title and label chips. Beside the table it is 360 px wide and one
     column; below it keeps 210 px and puts who is involved and how the PR stands in two columns, scrolling inside.
   - Saved as `details_position` = `"auto"`, `"bottom"` or `"right"` in config.toml.

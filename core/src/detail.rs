@@ -146,7 +146,7 @@ pub fn detail_fields(
         field(DetailKind::Facts, Some("CI"), row.ci.as_str().to_owned()),
         field(
             DetailKind::Facts,
-            Some("Unresolved threads"),
+            Some("Unresolved comments"),
             row.unresolved.to_string(),
         ),
         field(
@@ -339,7 +339,7 @@ mod tests {
             detail_lines(&row(), Mode::Review, now(), 0),
             vec![
                 "⏳ Waiting for your review",
-                "Author: alice · CI: pass · Unresolved threads: 0",
+                "Author: alice · CI: pass · Unresolved comments: 0",
                 "Requested reviewers: none",
                 "Reviews: none",
             ]
@@ -386,7 +386,7 @@ mod tests {
             detail_lines(&full_row(), Mode::Review, now(), 0),
             vec![
                 "⏳ Waiting for your review",
-                "Author: alice · CI: pass · Unresolved threads: 0",
+                "Author: alice · CI: pass · Unresolved comments: 0",
                 "Requested reviewers: bob, kim",
                 "Reviews: bob — changes requested, deleted user — approved",
                 "Your review: commented",
@@ -414,7 +414,7 @@ mod tests {
                 (None, "⏳ Waiting for your review"),
                 (Some("Author"), "alice"),
                 (Some("CI"), "pass"),
-                (Some("Unresolved threads"), "0"),
+                (Some("Unresolved comments"), "0"),
                 (Some("Requested reviewers"), "bob, kim"),
                 (
                     Some("Reviews"),
