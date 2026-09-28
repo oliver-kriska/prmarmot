@@ -60,6 +60,24 @@ fn scope_label(scope: &BoardScope) -> String {
     }
 }
 
+/// The footer's repository count: the repositories in the picker, not
+/// counting its "All repositories" entry.
+fn repo_count_status(count: usize, truncated: bool) -> String {
+    format!(
+        "{count} {}{}",
+        if count == 1 {
+            "repository"
+        } else {
+            "repositories"
+        },
+        if truncated {
+            " · discovery limit reached"
+        } else {
+            ""
+        }
+    )
+}
+
 fn scope_from_label(label: &str) -> BoardScope {
     if label == ALL_REPOS_LABEL {
         BoardScope::AllRepositories
@@ -975,16 +993,8 @@ impl RootView {
                         }
                         repos.sort_unstable_by_key(|r| r.to_lowercase());
                         repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                        this.repo_status = repo_count_status(repos.len(), discovery.truncated);
                         repos.insert(0, ALL_REPOS_LABEL.to_owned());
-                        this.repo_status = format!(
-                            "{} repositories{}",
-                            repos.len(),
-                            if discovery.truncated {
-                                " · discovery limit reached"
-                            } else {
-                                ""
-                            }
-                        );
                         this.repo_select.update(cx, |select, cx| {
                             select.set_items(SearchableVec::new(repos), window, cx);
                             select.set_selected_value(&current, window, cx);
@@ -3252,5 +3262,20 @@ impl Render for RootView {
             })
             .child(self.render_footer(cx))
             .children(dialog_layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_count_status;
+
+    #[test]
+    fn the_repository_count_leaves_out_all_repositories_and_says_one_repository() {
+        assert_eq!(repo_count_status(1, false), "1 repository");
+        assert_eq!(repo_count_status(3, false), "3 repositories");
+        assert_eq!(
+            repo_count_status(1000, true),
+            "1000 repositories · discovery limit reached"
+        );
     }
 }
