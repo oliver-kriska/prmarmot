@@ -31,7 +31,7 @@ values in the code. New features get the next free number in their area.
   review and nobody has reviewed is under Available to review, as in the Review queue, rather than under Awaiting
   review, where it would wait on nobody. _since v0.12.0_
 
-  Snoozed PRs follow in their own group. Within Needs action, approved PRs come first. _since v0.2.0; Approved since
+  Snoozed PRs follow in their own group. Any section folds (F-board-15). Within Needs action, approved PRs come first. _since v0.2.0; Approved since
   v0.5.1_ Hover a section's title for one sentence on what puts a PR there; the CLI's JSON carries the same sentence
   as each section's `explanation`. _since v0.12.0_ You can put the sections in your own order (F-settings-8).
   _since v0.12.0_
@@ -40,8 +40,11 @@ values in the code. New features get the next free number in their area.
   - The stack header reads "3 layers", or "2 of 3 layers shown" when part of the stack is elsewhere.
 
   Grouping uses GitHub's stack data, never labels or guessed branch relationships. _since v0.3.0_
-- **F-board-7** Columns fit the window in three width classes.
+- **F-board-7** Columns fit the table in three width classes.
   - Below 1,120 px wide the Labels column is hidden; from 1,360 px it gets wider.
+  - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _unreleased_
+  - With All repositories, Title and Note may narrow to 168 and 224 px to leave room for the Repo column, so the
+    columns never run past the table's edge. _unreleased_
   - Note always gets at least as much room as Title.
   - A width you drag is kept for that queue and width class until you quit.
   - Columns can't be sorted or reordered.
@@ -63,7 +66,8 @@ values in the code. New features get the next free number in their area.
   - stack layer and base branch;
   - whether it is changed, watched, or snoozed.
 
-  It makes no extra request, and `Esc` closes it. _since v0.3.0_
+  It makes no extra request, and `Esc` closes it. _since v0.3.0_ It sits below the table or beside it
+  (F-board-16). _unreleased_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_
 - **F-board-12** The header counts:
@@ -96,6 +100,25 @@ values in the code. New features get the next free number in their area.
     asking for your review, and ones another view already follows, and the Dock badge never counts this view.
 
   _since v0.12.0_
+- **F-board-15** Click a section's header, or press `c`, to fold it. A folded section keeps its header and count
+  and says what it holds in at most two facts, such as "1 failing CI · 1 merge conflict", "longest wait 4d", or "1
+  needs you".
+  - `c` folds the selected PR's section. A folded header can be selected with `↑` / `↓`, and `c` there unfolds it.
+  - Folding never changes a count, a filter, or what notifies.
+  - What is folded is remembered for each view (My PRs, Involving me, Review queue, All open) as
+    `[collapsed_sections]` in config.toml. By default only **Snoozed** is folded, and it too is remembered.
+
+  _unreleased_
+- **F-board-16** Settings → **Details position** puts Details below the table or beside it on the right.
+  - **Automatic** (the default) puts it on the right when the table keeps at least 1,120 px beside it, so from a
+    1,480 px window; narrower windows keep it below.
+  - **Bottom** or **Right** always put it there.
+  - Both list each fact as a label and a value (Author, CI, Unresolved threads, Requested reviewers, Reviews,
+    Waiting, Size, Issue, Stack), under the PR's title and label chips. Beside the table it is 360 px wide and one
+    column; below it keeps 210 px and puts who is involved and how the PR stands in two columns, scrolling inside.
+  - Saved as `details_position` = `"auto"`, `"bottom"` or `"right"` in config.toml.
+
+  _unreleased_
 
 ## Categorization and notes
 
@@ -173,6 +196,12 @@ values in the code. New features get the next free number in their area.
     load, a line under the header names those terms and offers Load more.
 
   _since v0.12.0_
+- **F-search-8** Two buttons beside **Changed** and **Snoozed** narrow the board with one click. Each shows how
+  many loaded PRs it would keep, and its tooltip says what it does.
+  - **Needs you** keeps the PRs the header counts as needing you (F-board-12); its number is the header's.
+  - **Stale** adds or removes the `is:stale` chip (F-search-3), as if typed.
+
+  _unreleased_
 
 ## Change tracking
 
@@ -185,12 +214,14 @@ values in the code. New features get the next free number in their area.
 
   PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_
 - **F-track-2** **Changed** filters the loaded rows to changed PRs and shows how many match the search. A
-  selection restored at launch doesn't clear a marker. _since v0.6.0; the count since v0.8.0_
+  selection restored at launch doesn't clear a marker. _since v0.6.0; the count since v0.8.0_ The count is every
+  changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _unreleased_
 - **F-track-3** **Watch** (`w`) follows a PR even outside the current view. Up to 50 watches are kept; a 51st drops
   the oldest, and the footer says which. Watched and snoozed PRs refresh in the same request as the board, at most
   50 per refresh, taking turns when there are more. _since v0.6.0_
 - **F-track-4** **Snooze** (`s`) moves a PR to a collapsed **Snoozed** group, where it adds no alerts or counts
-  until it wakes. **Snoozed** shows or collapses the group.
+  until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches
+  (_unreleased_).
   - **One hour**.
   - **Until tomorrow**, which is 24 hours from now.
   - **Waiting for CI** wakes when checks change to passing or failing.
@@ -290,7 +321,8 @@ values in the code. New features get the next free number in their area.
 - **F-refresh-1** Refresh runs automatically every 5 minutes by default, and `r` refreshes now. The interval can't
   go below 30 seconds. _since v0.1.0_
 - **F-refresh-2** The header shows "synced Xm ago" and the live GraphQL rate-limit budget, updated once a minute.
-  _since v0.1.0_
+  _since v0.1.0_ The budget turns the warning colour when less than a tenth of it is left, well before refreshes
+  pause (F-refresh-5). _unreleased_
 - **F-refresh-3** Each refresh is one GraphQL request.
   - My PRs and Involving me return up to 60 PRs and cost about 4 points.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
@@ -320,6 +352,7 @@ values in the code. New features get the next free number in their area.
   - notifications and their sound;
   - the Dock badge and automatic update checks;
   - the section order. _since v0.12.0_
+  - where Details sits (F-board-16). _unreleased_
 
   **Advanced** holds issue links, whether every PR entering Needs action notifies, and the config file's path.
   **Save** checks each field and puts any error beside it, and **Cancel** discards your edits. Reviewer names must
@@ -332,7 +365,8 @@ values in the code. New features get the next free number in their area.
   until you dismiss it or a Settings save succeeds. _since v0.9.1_ The same banner lists, one line each, every
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
   `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _since v0.12.0_ a `section_order`
-  entry that is not a section), from the file or the environment.
+  entry that is not a section; _unreleased_ a `[collapsed_sections]` view or section it doesn't know, and a
+  `details_position` other than `auto`, `bottom` or `right`), from the file or the environment.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,

@@ -314,6 +314,12 @@ dock_badge = true                       # macOS; no-op on Linux
 automatic_update_checks = true          # latest stable release, at most daily
 stale_after_days = 3                    # waiting this long for a reviewer is stale
 section_order = ["available", "await"]  # these sections first, the rest in default order
+details_position = "auto"               # auto | bottom | right
+
+# Folded sections, per view (my_prs, involving_me, review, all_open).
+# A view left out folds only Snoozed.
+[collapsed_sections]
+review = ["snoozed", "done"]
 
 # Suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]     # any repository without an entry below
@@ -414,6 +420,14 @@ Every feature, with its limits and the version it shipped in, is listed in
   changes it for every view at once (up and down buttons, **Reset to
   default**), saved as `section_order` in the config file; the CLI follows it.
   Each view shows the sections it has in that order, and Snoozed stays last.
+- **Folding:** click a section's header, or press `c`, to fold it; a folded
+  section keeps its count and says what it holds ("1 failing CI · 1 merge
+  conflict", "longest wait 4d"). Each view remembers what you folded.
+- **Quick filters:** **Needs you**, **Changed**, **Stale** and **Snoozed**
+  beside Search narrow the board with one click, each with its count.
+- **Details beside the table:** on a window 1,480 px or wider, Details opens on
+  the right as a list of labels and values; narrower, it opens below. Settings
+  → **Details position** can pin it to either place.
 - **Size band:** in the **Review queue** and **All open**, the Note ends with
   how big the change is: **Small** (at most 100 changed lines and at most 10
   files), **Large** (more than 400 lines or more than 30 files), or **Medium**
