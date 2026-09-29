@@ -64,7 +64,7 @@ bought once, with no subscription. Get notified:
 
 **A native desktop dashboard for deciding what to do next on GitHub pull
 requests.** PR Marmot turns CI, review requests, completed reviews, unresolved
-threads, conflicts, labels, linked issues, and GitHub stacks into focused
+comments, conflicts, labels, linked issues, and GitHub stacks into focused
 views with a plain-language **Note** on every row.
 
 - **Involving me** is the zero-config, all-repositories default. Your own PRs
@@ -447,7 +447,7 @@ Every feature, with its limits and the version it shipped in, is listed in
   PRs without a band come last, and other sections keep their order. It lasts
   until you quit.
 - **Changes:** a blue row marker survives restarts until you actually select the
-  PR; hover it to see what changed (new commits, CI, reviews, requests, threads).
+  PR; hover it to see what changed (new commits, CI, reviews, requests, comments).
   **Changed** (with the count of changed PRs matching the search) filters the
   loaded rows; a restored selection does not clear it.
 - **Watch:** press `w` on a selected PR. Watches are FIFO-bounded at 50 and are
@@ -637,7 +637,7 @@ text on a terminal and NDJSON (`prmarmot-cli/event@1`) when piped:
 | `type` | When | Payload |
 | --- | --- | --- |
 | `ready` | first successful poll | `count`, `scope`, `interval_secs`, `rate_limit`; with `--pr`, also `until` and `timeout_secs` |
-| `changed` | a semantic transition (commits, CI, conflict, reviews, requests, threads) | `kind` (`merge_conflict`, `changes_requested`, `review_again`, `ci_passed`, `changed`), `title`, `body`, `changes`, full `pr` |
+| `changed` | a semantic transition (commits, CI, conflict, reviews, requests, comments) | `kind` (`merge_conflict`, `changes_requested`, `review_again`, `ci_passed`, `changed`), `title`, `body`, `changes`, full `pr` |
 | `added` | a PR entered the view | full `pr` |
 | `removed` | a PR left the view | `status` (`merged`, `closed`, `open`, `inaccessible`, `unknown`) and `pr` summary |
 | `rate_limited` | budget below the reserve or GitHub refused | `retry_in_secs` (clamped to 60–900) |
@@ -662,7 +662,7 @@ parse events:
 | --- | --- | --- |
 | `ci-pass` | the check rollup is green, or the PR merged | CI fails |
 | `approved` | GitHub's review decision is approved, or the PR merged. Without branch protection there is no decision, so the standing reviews decide: at least one approval, yours included, and no change requests. A comment after an approval doesn't cancel it | changes are requested |
-| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads (the board's "waiting on others" group), and GitHub has finished computing mergeability; or the PR merged | CI fails or changes are requested |
+| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved comments (the board's "waiting on others" group), and GitHub has finished computing mergeability; or the PR merged | CI fails or changes are requested |
 | `merged` | the PR merged | — |
 
 - **When a wait ends early:** a merge ends any wait as met, because there is

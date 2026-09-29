@@ -122,12 +122,12 @@ values in the code. New features get the next free number in their area.
 
 ## Categorization and notes
 
-- **F-note-1** Every PR is sorted into a category from its CI, reviews, review requests, unresolved threads,
+- **F-note-1** Every PR is sorted into a category from its CI, reviews, review requests, unresolved comments,
   conflicts, and draft state: needs action, awaiting review, or draft for your PRs; requested, available, reviewed,
   or draft in the Review queue. The rules are pinned field for field against the original shell prototype by
   golden tests. _since v0.1.0_
 - **F-note-2** Every row has a plain-language **Note** that leads with the exception: a merge conflict, then
-  failing CI, then requested changes, then unresolved threads, then "no reviewers". Only a conflict, failing CI, or
+  failing CI, then requested changes, then unresolved comments, then "no reviewers". Only a conflict, failing CI, or
   requested changes turns it red; routine steps stay muted. Hover the Note for the full text. _since v0.2.0_
 - **F-note-3** In the Review queue, a Note starts with "new commits since your review" when the PR has moved past
   the commit you reviewed. _since v0.6.0_
@@ -209,7 +209,7 @@ values in the code. New features get the next free number in their area.
   the PR. Hovering it says what changed:
   - new commits, or draft and ready-for-review changes;
   - CI, merge conflicts, and the review decision;
-  - reviews and review requests, and unresolved threads;
+  - reviews and review requests, and unresolved comments;
   - "Updated on GitHub (a comment, edit, or label)", or "changed, then changed back".
 
   PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_
@@ -220,12 +220,12 @@ values in the code. New features get the next free number in their area.
   the oldest, and the footer says which. Watched and snoozed PRs refresh in the same request as the board, at most
   50 per refresh, taking turns when there are more. _since v0.6.0_
 - **F-track-4** **Snooze** (`s`) moves a PR to a collapsed **Snoozed** group, where it adds no alerts or counts
-  until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches
-  (_since v0.13.0_).
+  until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches.
+  _since v0.13.0_
   - **One hour**.
   - **Until tomorrow**, which is 24 hours from now.
   - **Waiting for CI** wakes when checks change to passing or failing.
-  - **Review again when changed** wakes on a new commit, review, review request, review decision, unresolved-thread
+  - **Review again when changed** wakes on a new commit, review, review request, review decision, unresolved-comment
     count, or draft change.
   - **Waiting on** the PR's author wakes when the author submits a newer review. It isn't offered on your own PRs,
     where it could never wake. _since v0.9.1_
