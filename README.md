@@ -662,7 +662,7 @@ parse events:
 
 | `--until` | Met (exit 0) when | Unmet (exit 5) when |
 | --- | --- | --- |
-| `ci-pass` | the check rollup is green, or the PR merged | CI fails |
+| `ci-pass` | the checks are green (a cancelled or skipped check doesn't fail them), or the PR merged | CI fails |
 | `approved` | GitHub's review decision is approved, or the PR merged. Without branch protection there is no decision, so the standing reviews decide: at least one approval, yours included, and no change requests. A comment after an approval doesn't cancel it | changes are requested |
 | `mergeable` | approved, CI green, no conflict, not a draft, no unresolved comments (the board's "waiting on others" group), and GitHub reports a clean merge state (nothing blocking, branch up to date); or the PR merged | CI fails or changes are requested |
 | `merged` | the PR merged | — |
@@ -779,7 +779,9 @@ Search and Details operate on the loaded snapshot and make no per-PR request.
 Reviewer, label, thread, and stack information is subject to the GraphQL
 query's per-PR limits. The newest 60 reviews and newest 100 review threads are
 read, and a PR with more threads shows its unresolved count as a minimum
-("5+"). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
+("5+"). CI comes from the latest commit's checks counted by state, so a
+cancelled or skipped check doesn't make it fail (GitHub's own summary reports
+failing CI for any cancelled check). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
 labels or guessed branch relationships—and reports partial stacks when not all
 layers appear in the same loaded section.
 

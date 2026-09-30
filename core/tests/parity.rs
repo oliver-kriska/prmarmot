@@ -38,6 +38,16 @@
 //! both windows hold the same nodes and the goldens cannot show it; the
 //! thread `totalCount` behind "5+ unresolved comments" is pinned by
 //! `board::tests::more_threads_than_the_window_make_the_count_a_lower_bound`.
+//!
+//! A fourth, port-only, approved by Oliver on 2026-09-30: a cancelled check is
+//! not a failing one. GitHub's `statusCheckRollup.state` reads FAILURE when any
+//! check was cancelled, even one no rule requires, and the prototype shows that
+//! as "CI failing". The port also fetches the rollup's per-state counts and,
+//! when the only checks that did not pass were cancelled, skipped, neutral or
+//! stale, reads CI as passing (or running, while something still runs). The
+//! fixtures carry no counts, so the rollup alone decides for them and the
+//! goldens cannot show it; `board::tests::a_cancelled_check_is_not_a_failing_one`
+//! pins it instead.
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;

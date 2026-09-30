@@ -172,7 +172,7 @@ reason:
 
 | `--until` | Met (exit 0) when | Unmet (exit 5) when |
 | --- | --- | --- |
-| `ci-pass` | the check rollup is green | CI fails. A PR with no checks never passes; bound the wait with `--timeout` |
+| `ci-pass` | the checks are green (a cancelled or skipped check doesn't fail them) | CI fails. A PR with no checks never passes; bound the wait with `--timeout` |
 | `approved` | GitHub's review decision is approved. Without branch protection the standing reviews decide: an approval, the user's own included, and no change requests | changes are requested |
 | `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads, and GitHub reports a clean merge state (nothing blocking, branch up to date) | CI fails or changes are requested |
 | `merged` | the PR merged | the PR closed without merging |

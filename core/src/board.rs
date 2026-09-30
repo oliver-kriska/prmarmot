@@ -19,9 +19,10 @@ use crate::github::query::{
     parse_alias_response, parse_pull_request_id, parse_review_response, parse_search_response,
     parse_tracked_response, pull_request_id_query, requested_ids, scope_repository_error,
     search_string, with_page_size, with_requested_ids, with_scope_repository, with_tracked_nodes,
-    RawPr, ReviewNode, PAGE_SIZE, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY,
-    REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
-    REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY, TRACKED_STATUS_QUERY,
+    RawPr, ReviewNode, RollupContexts, StateCount, PAGE_SIZE, PR_SEARCH_PAGE_QUERY,
+    PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
+    REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY,
+    TRACKED_STATUS_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
 use crate::github::{GhError, GithubTransport};
@@ -1639,10 +1640,64 @@ fn derive_ci(pr: &RawPr) -> Ci {
     let state = rollup.and_then(|r| r.state.as_deref()).unwrap_or("NONE");
     match state {
         "SUCCESS" => Ci::Pass,
-        "FAILURE" | "ERROR" => Ci::Fail,
+        "FAILURE" | "ERROR" => rollup
+            .and_then(|r| r.contexts.as_ref())
+            .and_then(ci_without_cancelled)
+            .unwrap_or(Ci::Fail),
         "NONE" => Ci::None,
         _ => Ci::Running, // PENDING / EXPECTED
     }
+}
+
+/// Check-run states that settled without failing. GitHub's rollup reads
+/// FAILURE for a cancelled check too, even one no rule requires; here a
+/// cancelled, skipped, neutral or stale check is not a failure (Oliver,
+/// 2026-09-30). FAILURE, TIMED_OUT, STARTUP_FAILURE and ACTION_REQUIRED still
+/// are, and so is any state this build does not know.
+const SETTLED_CHECK_RUNS: [&str; 6] = [
+    "SUCCESS",
+    "NEUTRAL",
+    "SKIPPED",
+    "CANCELLED",
+    "STALE",
+    "COMPLETED",
+];
+const RUNNING_CHECK_RUNS: [&str; 4] = ["PENDING", "QUEUED", "IN_PROGRESS", "WAITING"];
+
+/// The CI a failing rollup stands for once cancelled checks are set aside:
+/// running while any check or status still is, otherwise passing. `None` —
+/// keep GitHub's failure — when a check or status failed, when a state is one
+/// this build does not know, or when there are no counts to go on.
+fn ci_without_cancelled(contexts: &RollupContexts) -> Option<Ci> {
+    fn present(counts: &Option<Vec<StateCount>>) -> Vec<&str> {
+        counts
+            .iter()
+            .flatten()
+            .filter(|count| count.count > 0)
+            .map(|count| count.state.as_str())
+            .collect()
+    }
+    let runs = present(&contexts.check_run_counts_by_state);
+    let statuses = present(&contexts.status_context_counts_by_state);
+    if runs.is_empty() && statuses.is_empty() {
+        return None;
+    }
+    let mut running = false;
+    for state in runs {
+        if RUNNING_CHECK_RUNS.contains(&state) {
+            running = true;
+        } else if !SETTLED_CHECK_RUNS.contains(&state) {
+            return None;
+        }
+    }
+    for state in statuses {
+        match state {
+            "PENDING" | "EXPECTED" => running = true,
+            "SUCCESS" => {}
+            _ => return None, // ERROR, FAILURE, or unknown
+        }
+    }
+    Some(if running { Ci::Running } else { Ci::Pass })
 }
 
 fn requested_teams(pr: &RawPr) -> Vec<String> {
@@ -2756,6 +2811,63 @@ mod tests {
             derive_one(v, Mode::Authored).note,
             "🟡 draft · 1 unresolved comment"
         );
+    }
+
+    #[test]
+    fn a_cancelled_check_is_not_a_failing_one() {
+        let with_counts = |runs: serde_json::Value, statuses: serde_json::Value| {
+            let mut v = base(11);
+            v["reviewRequests"] =
+                json!({"nodes": [{"requestedReviewer": {"__typename": "User", "login": "alice"}}]});
+            v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {
+                "state": "FAILURE",
+                "contexts": {"checkRunCountsByState": runs, "statusContextCountsByState": statuses}
+            }}}]);
+            derive_one(v, Mode::Authored)
+        };
+        let counts = |pairs: &[(&str, u64)]| {
+            json!(pairs
+                .iter()
+                .map(|(state, count)| json!({"state": state, "count": count}))
+                .collect::<Vec<_>>())
+        };
+
+        // GitHub's rollup said FAILURE because one optional check was
+        // cancelled; every check that ran passed.
+        let row = with_counts(
+            counts(&[("SUCCESS", 11), ("SKIPPED", 9), ("CANCELLED", 1)]),
+            json!([]),
+        );
+        assert_eq!(row.ci, Ci::Pass);
+        assert_eq!(row.category, Category::Await);
+        assert!(!row.note.contains("CI failing"), "{}", row.note);
+
+        // Something still running is running, not passing.
+        let row = with_counts(counts(&[("CANCELLED", 1), ("IN_PROGRESS", 2)]), json!([]));
+        assert_eq!(row.ci, Ci::Running);
+        let row = with_counts(counts(&[("CANCELLED", 1)]), counts(&[("PENDING", 1)]));
+        assert_eq!(row.ci, Ci::Running);
+
+        // A real failure, a failing status, an unknown state, or nothing to go
+        // on keeps GitHub's failure.
+        for (runs, statuses) in [
+            (counts(&[("CANCELLED", 1), ("FAILURE", 1)]), json!([])),
+            (counts(&[("CANCELLED", 1), ("TIMED_OUT", 1)]), json!([])),
+            (counts(&[("ACTION_REQUIRED", 1)]), json!([])),
+            (counts(&[("CANCELLED", 1)]), counts(&[("ERROR", 1)])),
+            (counts(&[("CANCELLED", 1), ("SOMETHING_NEW", 1)]), json!([])),
+            (counts(&[("CANCELLED", 0), ("FAILURE", 0)]), json!([])),
+            (json!(null), json!(null)),
+        ] {
+            let row = with_counts(runs.clone(), statuses.clone());
+            assert_eq!(row.ci, Ci::Fail, "{runs} {statuses}");
+            assert_eq!(row.category, Category::Action, "{runs} {statuses}");
+        }
+
+        // Without counts (the prototype's query) the rollup alone decides.
+        let mut v = base(12);
+        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
+        assert_eq!(derive_one(v, Mode::Authored).ci, Ci::Fail);
     }
 
     #[test]

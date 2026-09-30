@@ -46,10 +46,27 @@ also costs rate-limit points. Changes, unreleased, all Oliver's picks:
   (`Session::login_cached`: the stored login, or `gh api user --cache 10m`).
   The desktop keeps `login()`, which also checks the token.
 
+**FACT: a cancelled check no longer makes CI fail (Oliver, 2026-09-30),
+unreleased.** GitHub's `statusCheckRollup.state` is FAILURE when any check was
+cancelled, even an optional one; a real PR sat in Needs action as "CI failing"
+because one optional review bot's run was cancelled while every other check,
+the required ones included, passed. The rollup now also selects
+`contexts(first:1){ checkRunCountsByState statusContextCountsByState }` (cost
+unchanged: 2 points for 30 rows). `derive_ci` keeps SUCCESS/PENDING/NONE as they
+were and re-reads a FAILURE/ERROR rollup from the counts: FAILURE, TIMED_OUT,
+STARTUP_FAILURE, ACTION_REQUIRED, a failing status or any unknown state keeps it
+failing; otherwise running while something runs, else passing. Rows without
+counts (every fixture) keep the rollup, so the goldens are unchanged; recorded
+as the fourth divergence in `core/tests/parity.rs`. The iPad gets it through
+core's query; no ffi change. Oliver kept the pickup age ("76d") on a PR that is
+blocked on its author.
+
 **OPEN QUESTION:** the three fields are GA on github.com and GHES 3.17–3.22.
 GHES 3.12 and older needed the merge-info preview header, and 3.14–3.16 are
 unverified. There, the query may be rejected. Check one of those servers'
-schemas before claiming support.
+schemas before claiming support. The same goes for the rollup's
+`checkRunCountsByState`/`statusContextCountsByState` (2026-09-30): verified on
+github.com only.
 
 ## Current update — 2026-09-25
 

@@ -180,6 +180,11 @@ values in the code. New features get the next free number in their area.
   rebase" and the PR stays in Approved. If rebase is the only merge method the repository allows, your PR whose
   branch can't be rebased is in Needs action with "can't rebase — rebase locally", and someone else's gets "can't
   rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _unreleased_
+- **F-note-15** A cancelled check doesn't make CI fail. GitHub reports failing CI when any check was cancelled,
+  even one no rule requires, so PR Marmot counts the latest commit's checks by state: only a failed, timed-out,
+  action-required or start-up-failure check, or a failing commit status, makes CI fail. When every other check
+  passed or was skipped, CI shows as passing (running while a check still runs). This applies to the CI column,
+  the Note, the section a PR lands in, notifications and `watch --until`. _unreleased_
 
 ## Search and filters
 

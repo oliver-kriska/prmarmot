@@ -84,7 +84,10 @@ pub fn global_available_search_string(who: &str) -> String {
 /// unresolved count is a lower bound. `mergeStateStatus`, `canBeRebased` and
 /// the repository's allowed merge methods say whether GitHub's merge button
 /// would work (`crate::board::MergeState`); plain fields, no preview header on
-/// github.com or GHES 3.17+.
+/// github.com or GHES 3.17+. The rollup's per-state counts of checks and
+/// statuses let a cancelled check stop reading as a failure
+/// (`crate::board::derive_ci`); they cost nothing extra (2 points for 30 rows
+/// either way, measured 2026-09-30).
 macro_rules! pr_fields {
     () => {
         r#"id url repository { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } updatedAt headRefOid
@@ -98,7 +101,7 @@ macro_rules! pr_fields {
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
   reviews(last:60){ nodes{ author{login} state submittedAt } }
   reviewThreads(last:100){ totalCount nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:1){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } } } } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
     };
 }
@@ -475,10 +478,34 @@ pub struct ThreadNode {
 pub struct StatusCheckRollup {
     #[serde(default)]
     pub state: Option<String>,
+    /// How many of the head commit's checks and statuses are in each state.
+    /// Absent from recorded prototype fixtures, which the rollup `state`
+    /// alone decides.
+    #[serde(default)]
+    pub contexts: Option<RollupContexts>,
     /// GitHub refused the rollup to this token (never part of GitHub's own
     /// answer; written by [`super::access::tolerate_access_errors`]).
     #[serde(default)]
     pub hidden: bool,
+}
+
+/// `StatusCheckRollupContextConnection`'s counts; its nodes are not read.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollupContexts {
+    /// Check runs by `CheckRunState` (`SUCCESS`, `CANCELLED`, `IN_PROGRESS`…).
+    #[serde(default)]
+    pub check_run_counts_by_state: Option<Vec<StateCount>>,
+    /// Commit statuses by `StatusState` (`SUCCESS`, `ERROR`, `PENDING`…).
+    #[serde(default)]
+    pub status_context_counts_by_state: Option<Vec<StateCount>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StateCount {
+    pub state: String,
+    #[serde(default)]
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
