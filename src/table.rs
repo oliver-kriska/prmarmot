@@ -1832,6 +1832,9 @@ mod tests {
             ci: Ci::Pass,
             conflict: false,
             mergeable_unknown: false,
+            merge_state: None,
+            cannot_rebase: false,
+            rebase_only: false,
             review_decision: None,
             // As the derivation leaves any waiting PR in My PRs: a reviewer
             // is asked. One with nobody asked is Available to review.

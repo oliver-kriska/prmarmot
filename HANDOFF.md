@@ -8,6 +8,26 @@
 
 ---
 
+## Current update — 2026-09-29
+
+**FACT: an approved PR is "mergeable" only when GitHub says so,
+unreleased.** The search query now asks for `mergeStateStatus`,
+`canBeRebased` and the repository's merge methods. The approved Note names what
+GitHub is waiting for (waiting for CI, checks not passing, blocked by branch
+rules, branch out of date), or says a plain "approved" while GitHub computes. A
+branch GitHub can't rebase gets "can't rebase", and becomes a red blocker only
+where rebase is the only merge method. `watch --until mergeable` also needs a
+clean merge state. This diverges from the shell prototype, which always says
+"approved — mergeable"; Oliver approved it as a port-only divergence, recorded
+in `core/tests/parity.rs` (the goldens stay as they are; rows without a merge
+state keep the prototype's wording). `DetailKind::Snapshot` is removed from
+core and ffi.
+
+**OPEN QUESTION:** the three fields are GA on github.com and GHES 3.17–3.22.
+GHES 3.12 and older needed the merge-info preview header, and 3.14–3.16 are
+unverified. There, the query may be rejected. Check one of those servers'
+schemas before claiming support.
+
 ## Current update — 2026-09-25
 
 **FACT: three fixes from the iPad's round-5 review, unreleased and

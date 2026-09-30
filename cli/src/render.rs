@@ -104,6 +104,7 @@ fn blocker_json(blocker: &Blocker) -> Value {
             json!({ "type": "no_reviewers", "suggested": suggested })
         }
         Blocker::MergeConflict => json!({ "type": "merge_conflict" }),
+        Blocker::CannotRebase => json!({ "type": "cannot_rebase" }),
         Blocker::CiFailing => json!({ "type": "ci_failing" }),
         Blocker::ChangesRequested => json!({ "type": "changes_requested" }),
         Blocker::UnresolvedComments(count) => {
@@ -321,16 +322,18 @@ pub struct Note {
 fn blocker_rank(blocker: &Blocker) -> u8 {
     match blocker {
         Blocker::MergeConflict => 0,
-        Blocker::CiFailing => 1,
-        Blocker::ChangesRequested => 2,
-        Blocker::UnresolvedComments(_) => 3,
-        Blocker::NoReviewers { .. } => 4,
+        Blocker::CannotRebase => 1,
+        Blocker::CiFailing => 2,
+        Blocker::ChangesRequested => 3,
+        Blocker::UnresolvedComments(_) => 4,
+        Blocker::NoReviewers { .. } => 5,
     }
 }
 
 fn blocker_primary(blocker: &Blocker) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict — rebase".into(),
+        Blocker::CannotRebase => "can't rebase — rebase locally".into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
         Blocker::UnresolvedComments(n) => {
@@ -344,6 +347,7 @@ fn blocker_primary(blocker: &Blocker) -> String {
 fn blocker_context(blocker: &Blocker) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict".into(),
+        Blocker::CannotRebase => "can't rebase".into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
         Blocker::UnresolvedComments(n) => format!("{n} unresolved"),
@@ -365,7 +369,10 @@ pub fn note(row: &BoardRow) -> Note {
             };
             let tone = if matches!(
                 primary,
-                Blocker::MergeConflict | Blocker::CiFailing | Blocker::ChangesRequested
+                Blocker::MergeConflict
+                    | Blocker::CannotRebase
+                    | Blocker::CiFailing
+                    | Blocker::ChangesRequested
             ) {
                 Tone::Danger
             } else {
@@ -1150,6 +1157,12 @@ mod tests {
             view.scope = BoardScope::AllRepositories;
             assert_conforms(Schema::Board, &board_json(&view));
         }
+        // A repository that only rebases, with a branch GitHub can't rebase.
+        let mut view = sample_view(Mode::Authored);
+        view.rows[0].blockers.insert(0, Blocker::CannotRebase);
+        let value = board_json(&view);
+        assert_conforms(Schema::Board, &value);
+        assert!(value.to_string().contains(r#"{"type":"cannot_rebase"}"#));
     }
 
     #[test]

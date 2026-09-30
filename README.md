@@ -662,7 +662,7 @@ parse events:
 | --- | --- | --- |
 | `ci-pass` | the check rollup is green, or the PR merged | CI fails |
 | `approved` | GitHub's review decision is approved, or the PR merged. Without branch protection there is no decision, so the standing reviews decide: at least one approval, yours included, and no change requests. A comment after an approval doesn't cancel it | changes are requested |
-| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved comments (the board's "waiting on others" group), and GitHub has finished computing mergeability; or the PR merged | CI fails or changes are requested |
+| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved comments (the board's "waiting on others" group), and GitHub reports a clean merge state (nothing blocking, branch up to date); or the PR merged | CI fails or changes are requested |
 | `merged` | the PR merged | — |
 
 - **When a wait ends early:** a merge ends any wait as met, because there is

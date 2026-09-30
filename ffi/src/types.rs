@@ -191,11 +191,18 @@ impl From<Queue> for core_board::QueueProvenance {
 /// too — see [`NotePresentation`]. A front end owns only the colour.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum Blocker {
-    NoReviewers { suggested: Vec<String> },
+    NoReviewers {
+        suggested: Vec<String>,
+    },
     MergeConflict,
+    /// GitHub cannot rebase the branch and the repository allows no other
+    /// merge method.
+    CannotRebase,
     CiFailing,
     ChangesRequested,
-    UnresolvedComments { count: u32 },
+    UnresolvedComments {
+        count: u32,
+    },
 }
 
 impl From<&core_board::Blocker> for Blocker {
@@ -205,6 +212,7 @@ impl From<&core_board::Blocker> for Blocker {
                 suggested: suggested.clone(),
             },
             core_board::Blocker::MergeConflict => Self::MergeConflict,
+            core_board::Blocker::CannotRebase => Self::CannotRebase,
             core_board::Blocker::CiFailing => Self::CiFailing,
             core_board::Blocker::ChangesRequested => Self::ChangesRequested,
             core_board::Blocker::UnresolvedComments(count) => Self::UnresolvedComments {
@@ -221,9 +229,49 @@ impl From<&Blocker> for core_board::Blocker {
                 suggested: suggested.clone(),
             },
             Blocker::MergeConflict => Self::MergeConflict,
+            Blocker::CannotRebase => Self::CannotRebase,
             Blocker::CiFailing => Self::CiFailing,
             Blocker::ChangesRequested => Self::ChangesRequested,
             Blocker::UnresolvedComments { count } => Self::UnresolvedComments(*count as usize),
+        }
+    }
+}
+
+/// GitHub's verdict on whether the merge button would work
+/// (`mergeStateStatus`); see core's `MergeState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+pub enum MergeState {
+    Clean,
+    Unstable,
+    Blocked,
+    Behind,
+    Dirty,
+    Unknown,
+}
+
+impl From<core_board::MergeState> for MergeState {
+    fn from(state: core_board::MergeState) -> Self {
+        use core_board::MergeState as Core;
+        match state {
+            Core::Clean => Self::Clean,
+            Core::Unstable => Self::Unstable,
+            Core::Blocked => Self::Blocked,
+            Core::Behind => Self::Behind,
+            Core::Dirty => Self::Dirty,
+            Core::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<MergeState> for core_board::MergeState {
+    fn from(state: MergeState) -> Self {
+        match state {
+            MergeState::Clean => Self::Clean,
+            MergeState::Unstable => Self::Unstable,
+            MergeState::Blocked => Self::Blocked,
+            MergeState::Behind => Self::Behind,
+            MergeState::Dirty => Self::Dirty,
+            MergeState::Unknown => Self::Unknown,
         }
     }
 }
@@ -335,6 +383,19 @@ pub struct PullRequest {
     /// GitHub had not finished computing mergeability, so `conflict == false`
     /// says nothing yet.
     pub mergeable_unknown: bool,
+    /// GitHub's merge-button verdict; `None` when it was not reported.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub merge_state: Option<MergeState>,
+    /// GitHub reports that rebase-and-merge would fail although the
+    /// repository allows it and the PR has no merge conflict.
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub cannot_rebase: bool,
+    /// The repository allows rebase merges and no other method.
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub rebase_only: bool,
     pub review_decision: Option<String>,
     pub review_state: ReviewState,
     pub requested_reviewers: Vec<String>,
@@ -386,6 +447,9 @@ impl PullRequest {
             ci: row.ci.into(),
             conflict: row.conflict,
             mergeable_unknown: row.mergeable_unknown,
+            merge_state: row.merge_state.map(Into::into),
+            cannot_rebase: row.cannot_rebase,
+            rebase_only: row.rebase_only,
             review_decision: row.review_decision.clone(),
             review_state: row.review_state.into(),
             requested_reviewers: row.requested.clone(),
@@ -458,6 +522,9 @@ impl PullRequest {
             ci: self.ci.into(),
             conflict: self.conflict,
             mergeable_unknown: self.mergeable_unknown,
+            merge_state: self.merge_state.map(Into::into),
+            cannot_rebase: self.cannot_rebase,
+            rebase_only: self.rebase_only,
             review_decision: self.review_decision,
             review_state: self.review_state.into(),
             requested: self.requested_reviewers,

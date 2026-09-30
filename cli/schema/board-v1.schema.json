@@ -276,7 +276,7 @@
         {
           "type": "object",
           "required": ["type"],
-          "properties": { "type": { "enum": ["merge_conflict", "ci_failing", "changes_requested"] } }
+          "properties": { "type": { "enum": ["merge_conflict", "cannot_rebase", "ci_failing", "changes_requested"] } }
         },
         {
           "type": "object",

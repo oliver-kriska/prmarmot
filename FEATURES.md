@@ -126,9 +126,11 @@ values in the code. New features get the next free number in their area.
   conflicts, and draft state: needs action, awaiting review, or draft for your PRs; requested, available, reviewed,
   or draft in the Review queue. The rules are pinned field for field against the original shell prototype by
   golden tests. _since v0.1.0_
-- **F-note-2** Every row has a plain-language **Note** that leads with the exception: a merge conflict, then
-  failing CI, then requested changes, then unresolved comments, then "no reviewers". Only a conflict, failing CI, or
-  requested changes turns it red; routine steps stay muted. Hover the Note for the full text. _since v0.2.0_
+- **F-note-2** Every row has a plain-language **Note** that leads with the exception: a merge conflict, then a
+  branch GitHub can't rebase in a repository that allows only rebase merges, then failing CI, then requested
+  changes, then unresolved comments, then "no reviewers". Only a conflict, a branch that can't be rebased there,
+  failing CI, or requested changes turns it red; routine steps stay muted. Hover the Note for the full text. _since
+  v0.2.0_
 - **F-note-3** In the Review queue, a Note starts with "new commits since your review" when the PR has moved past
   the commit you reviewed. _since v0.6.0_
 - **F-note-4** When one of your non-draft PRs has no reviewer requested and no qualifying review, its Note
@@ -165,6 +167,18 @@ values in the code. New features get the next free number in their area.
   title, as is a leading `WIP`. _since v0.1.0_
 - **F-note-13** Labels show as chips, up to 20 per PR, with a `bug` label always first. **+n** opens a menu of the
   labels that didn't fit. _since v0.1.0_
+- **F-note-14** An approved PR's Note says "mergeable" only when GitHub's merge state is clean. Otherwise it names
+  the reason:
+  - "waiting for CI" while checks run.
+  - "checks not passing" when GitHub says a check hasn't passed.
+  - "blocked by branch rules" when a rule such as a required review or check isn't met.
+  - "branch out of date" when the branch must be updated first.
+  - A plain "approved" while GitHub is still working out the merge state.
+
+  When the repository allows rebase merges and GitHub can't rebase an approved PR's branch, the Note adds "can't
+  rebase" and the PR stays in Approved. If rebase is the only merge method the repository allows, your PR whose
+  branch can't be rebased is in Needs action with "can't rebase — rebase locally", and someone else's gets "can't
+  rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _unreleased_
 
 ## Search and filters
 

@@ -18,6 +18,17 @@
 //! fixture's `PROJ-<digits>` has nothing to encode and so reads the same both
 //! ways; `board::tests::a_matched_issue_id_is_percent_encoded_into_the_link`
 //! pins the encoding instead. Leave the oracle raw rather than adding `@uri`.
+//!
+//! A second port-only divergence, approved by Oliver on 2026-09-29: the Note
+//! of an approved PR follows GitHub's merge state (`mergeStateStatus`), so it
+//! says "approved — waiting for CI", "checks not passing", "blocked by branch
+//! rules" or "branch out of date" where the prototype always says "approved —
+//! mergeable", and adds "can't rebase" when `canBeRebased` is false. The
+//! fixtures carry no merge state, so the port keeps the prototype's wording for
+//! them and the goldens cannot show it;
+//! `board::tests::an_approved_pr_is_mergeable_only_when_github_says_so` and
+//! `board::tests::a_branch_github_cannot_rebase_is_named_and_blocks_only_where_rebase_is_the_only_way`
+//! pin it instead. Leave the oracle and the goldens as they are.
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;

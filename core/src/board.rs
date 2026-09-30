@@ -168,6 +168,47 @@ pub enum QueueProvenance {
     Available,
 }
 
+/// GitHub's own verdict on whether the merge button would work
+/// (`mergeStateStatus`). The Note says "mergeable" only when GitHub does;
+/// when GitHub did not report one (prototype fixtures) the prototype's Note
+/// stands. See [`approved_note`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeState {
+    /// Mergeable, checks passing (`CLEAN`, or `HAS_HOOKS`: clean with
+    /// pre-receive hooks).
+    Clean,
+    /// Mergeable, but checks are not all passing yet (`UNSTABLE`).
+    Unstable,
+    /// Branch protection blocks the merge: a required check, review or rule
+    /// (`BLOCKED`).
+    Blocked,
+    /// The base branch moved and the rules require an up-to-date branch
+    /// (`BEHIND`).
+    Behind,
+    /// A merge commit cannot be cleanly created (`DIRTY`).
+    Dirty,
+    /// GitHub has not worked it out yet (`UNKNOWN`), or a value this build
+    /// does not know.
+    Unknown,
+}
+
+impl MergeState {
+    pub fn from_github(status: &str) -> Self {
+        match status {
+            "CLEAN" | "HAS_HOOKS" => Self::Clean,
+            "UNSTABLE" => Self::Unstable,
+            "BLOCKED" => Self::Blocked,
+            "BEHIND" => Self::Behind,
+            "DIRTY" => Self::Dirty,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// The Note's tail when GitHub reports that rebase-and-merge would fail but
+/// another merge method still works.
+pub const CANNOT_REBASE_NOTE: &str = "can't rebase";
+
 /// A single thing keeping an authored PR out of the merge queue, in the
 /// prototype's canonical (most-blocking-first) order. This is the structured
 /// twin of the human `note`: core owns the *facts*, the UI (`src/table.rs`)
@@ -180,6 +221,10 @@ pub enum Blocker {
         suggested: Vec<String>,
     },
     MergeConflict,
+    /// GitHub cannot rebase the branch (e.g. it contains a merge commit or
+    /// conflicts commit by commit) and the repository allows no other merge
+    /// method, so it blocks like a conflict.
+    CannotRebase,
     CiFailing,
     ChangesRequested,
     UnresolvedComments(usize),
@@ -298,6 +343,14 @@ pub struct BoardRow {
     /// so `conflict == false` says nothing. It recomputes lazily, e.g. after
     /// the base branch moves; see [`carry_forward_conflicts`].
     pub mergeable_unknown: bool,
+    /// GitHub's merge-button verdict; `None` when it was not reported.
+    pub merge_state: Option<MergeState>,
+    /// GitHub reports that rebase-and-merge would fail although the
+    /// repository allows it and the PR has no merge conflict.
+    pub cannot_rebase: bool,
+    /// The repository allows rebase merges and no other method, so a PR that
+    /// cannot be rebased cannot be merged at all.
+    pub rebase_only: bool,
     pub review_decision: Option<String>,
     pub review_state: ReviewState,
     /// Requested reviewers: logins and team slugs.
@@ -1193,6 +1246,9 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     if row.conflict {
         facts.push("merge conflict".to_owned());
     }
+    if row.blocks_on_rebase() {
+        facts.push(CANNOT_REBASE_NOTE.to_owned());
+    }
     if row.ci == Ci::Fail {
         facts.push("CI failing".to_owned());
     }
@@ -1233,6 +1289,7 @@ fn classify_authored(row: &mut BoardRow, cfg: &BoardConfig) {
         Category::Draft
     } else if row.ci == Ci::Fail
         || row.conflict
+        || row.blocks_on_rebase()
         || row.review_decision.as_deref() == Some("CHANGES_REQUESTED")
         || row.unresolved > 0
         || row.review_state == ReviewState::None
@@ -1292,6 +1349,20 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     let ci = derive_ci(pr);
     let conflict = pr.mergeable.as_deref() == Some("CONFLICTING");
     let mergeable_unknown = !matches!(pr.mergeable.as_deref(), Some("MERGEABLE" | "CONFLICTING"));
+    let merge_state = pr
+        .merge_state_status
+        .as_deref()
+        .map(MergeState::from_github);
+    let methods = pr.repository.as_ref();
+    let rebase_allowed = methods.and_then(|r| r.rebase_merge_allowed) == Some(true);
+    // Only a known-clean merge says anything about rebasing: a conflict is
+    // already the blocker, and GitHub may not have worked either out yet.
+    let cannot_rebase = rebase_allowed
+        && pr.can_be_rebased == Some(false)
+        && pr.mergeable.as_deref() == Some("MERGEABLE");
+    let rebase_only = rebase_allowed
+        && methods.and_then(|r| r.merge_commit_allowed) == Some(false)
+        && methods.and_then(|r| r.squash_merge_allowed) == Some(false);
     let (issue, issue_url, title) = derive_title(&pr.title, cfg);
     let url = pr.canonical_url(repo);
 
@@ -1324,6 +1395,9 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         ci,
         conflict,
         mergeable_unknown,
+        merge_state,
+        cannot_rebase,
+        rebase_only,
         review_decision: pr.review_decision.clone(),
         review_state: ReviewState::None,
         requested: requested_reviewers(pr),
@@ -1571,6 +1645,9 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
     if row.conflict {
         blockers.push(Blocker::MergeConflict);
     }
+    if row.blocks_on_rebase() {
+        blockers.push(Blocker::CannotRebase);
+    }
     if row.ci == Ci::Fail {
         blockers.push(Blocker::CiFailing);
     }
@@ -1596,6 +1673,7 @@ fn blocker_note(blocker: &Blocker) -> String {
             }
         }
         Blocker::MergeConflict => "🔴 merge conflict — rebase".to_string(),
+        Blocker::CannotRebase => format!("🔴 {CANNOT_REBASE_NOTE} — rebase locally"),
         Blocker::CiFailing => "❌ CI failing".to_string(),
         Blocker::ChangesRequested => "✋ changes requested".to_string(),
         Blocker::UnresolvedComments(n) => format!("🟡 {}", unresolved_comments(*n)),
@@ -1629,6 +1707,49 @@ pub fn strip_note_glyphs(note: &str) -> String {
     }
 }
 
+/// The Note for your own approved PR that nothing blocks. The prototype
+/// says "approved — mergeable" for every one; this port says it only when
+/// GitHub's merge state agrees, and otherwise names what GitHub is waiting
+/// for (a recorded divergence from SKILL.md, Oliver 2026-09-29: an approved PR
+/// with checks still running is not mergeable yet). Rows GitHub reported no
+/// merge state for keep the prototype's wording, which is what the golden
+/// fixtures pin. A branch GitHub cannot rebase, in a repository that allows
+/// other methods, gets [`CANNOT_REBASE_NOTE`] as a tail.
+fn approved_note(row: &BoardRow) -> String {
+    let state = match (row.merge_state, row.ci) {
+        (None, _) => Some("mergeable"),
+        (Some(MergeState::Dirty | MergeState::Unknown), _) => None,
+        (_, Ci::Running) => Some("waiting for CI"),
+        (Some(MergeState::Clean), _) => Some("mergeable"),
+        (Some(MergeState::Unstable), _) => Some("checks not passing"),
+        (Some(MergeState::Blocked), _) => Some("blocked by branch rules"),
+        (Some(MergeState::Behind), _) => Some("branch out of date"),
+    };
+    let mut note = match state {
+        Some(state) => format!("🟢 approved — {state}"),
+        None => "🟢 approved".to_string(),
+    };
+    if row.cannot_rebase {
+        note.push_str(" · ");
+        note.push_str(CANNOT_REBASE_NOTE);
+    }
+    note
+}
+
+impl BoardRow {
+    /// GitHub cannot rebase this branch and the repository allows nothing
+    /// else, so it blocks the merge like a conflict does.
+    pub fn blocks_on_rebase(&self) -> bool {
+        self.cannot_rebase && self.rebase_only && !self.conflict
+    }
+
+    /// Whether GitHub's own merge state agrees the merge button would work.
+    /// `true` when GitHub did not report one (prototype fixtures).
+    pub fn merge_state_clean(&self) -> bool {
+        matches!(self.merge_state, None | Some(MergeState::Clean))
+    }
+}
+
 /// Mode A Note (SKILL.md): action rows combine every applicable blocker,
 /// most-blocking first; await/draft rows are single-state. Action rows render
 /// straight from `row.blockers`, so the note and the structured list can never
@@ -1642,7 +1763,7 @@ fn authored_note(row: &BoardRow) -> String {
             .collect::<Vec<_>>()
             .join(" · "),
         Category::Await => match row.review_state {
-            ReviewState::Approved => "🟢 approved — mergeable".to_string(),
+            ReviewState::Approved => approved_note(row),
             ReviewState::Commented => "🟢 commented — awaiting approval".to_string(),
             ReviewState::Waiting if only_teams_asked(row) => {
                 "✅ awaiting review — team requested, nobody responded".to_string()
@@ -1963,6 +2084,106 @@ mod tests {
         assert_eq!(row.category, Category::Await);
         assert_eq!(row.review_state, ReviewState::Approved);
         assert_eq!(row.note, "🟢 approved — mergeable");
+    }
+
+    fn approved(number: u64) -> serde_json::Value {
+        let mut v = base(number);
+        v["reviewDecision"] = json!("APPROVED");
+        v["reviews"]["nodes"] = json!([
+            {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
+        ]);
+        v
+    }
+
+    #[test]
+    fn an_approved_pr_is_mergeable_only_when_github_says_so() {
+        let note = |status: &str, ci: &str| {
+            let mut v = approved(2);
+            v["mergeStateStatus"] = json!(status);
+            v["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = json!(ci);
+            let row = derive_one(v, Mode::Authored);
+            assert_eq!(row.category, Category::Await, "{status} {ci}");
+            row.note
+        };
+        assert_eq!(note("CLEAN", "SUCCESS"), "🟢 approved — mergeable");
+        assert_eq!(note("HAS_HOOKS", "SUCCESS"), "🟢 approved — mergeable");
+        // An approved PR with four checks still running is not mergeable yet.
+        assert_eq!(note("UNSTABLE", "PENDING"), "🟢 approved — waiting for CI");
+        assert_eq!(note("BLOCKED", "PENDING"), "🟢 approved — waiting for CI");
+        assert_eq!(
+            note("UNSTABLE", "SUCCESS"),
+            "🟢 approved — checks not passing"
+        );
+        assert_eq!(
+            note("BLOCKED", "SUCCESS"),
+            "🟢 approved — blocked by branch rules"
+        );
+        assert_eq!(
+            note("BEHIND", "SUCCESS"),
+            "🟢 approved — branch out of date"
+        );
+        // Still computing: no claim either way.
+        assert_eq!(note("UNKNOWN", "SUCCESS"), "🟢 approved");
+        assert_eq!(note("DRAFT", "SUCCESS"), "🟢 approved");
+        // Not reported (prototype fixtures): the prototype's wording.
+        let row = derive_one(approved(2), Mode::Authored);
+        assert!(row.merge_state.is_none());
+        assert_eq!(row.note, "🟢 approved — mergeable");
+    }
+
+    fn with_methods(
+        mut v: serde_json::Value,
+        merge: bool,
+        squash: bool,
+        rebase: bool,
+    ) -> serde_json::Value {
+        v["repository"] = json!({
+            "nameWithOwner": "acme/widgets",
+            "mergeCommitAllowed": merge,
+            "squashMergeAllowed": squash,
+            "rebaseMergeAllowed": rebase,
+        });
+        v
+    }
+
+    #[test]
+    fn a_branch_github_cannot_rebase_is_named_and_blocks_only_where_rebase_is_the_only_way() {
+        let mut v = with_methods(approved(2), true, true, true);
+        v["mergeStateStatus"] = json!("CLEAN");
+        v["canBeRebased"] = json!(false);
+        // A branch whose newest commit merges main, which rebase can't
+        // replay; a merge commit or a squash still goes through.
+        let row = derive_one(v.clone(), Mode::Authored);
+        assert_eq!(row.category, Category::Await);
+        assert!(row.cannot_rebase && !row.rebase_only);
+        assert!(row.blockers.is_empty());
+        assert_eq!(row.note, "🟢 approved — mergeable · can't rebase");
+
+        let only_rebase = derive_one(with_methods(v.clone(), false, false, true), Mode::Authored);
+        assert_eq!(only_rebase.category, Category::Action);
+        assert_eq!(only_rebase.blockers, vec![Blocker::CannotRebase]);
+        assert_eq!(only_rebase.note, "🔴 can't rebase — rebase locally");
+
+        // Rebase merges not allowed: rebasing is not a way to merge here.
+        let no_rebase = derive_one(with_methods(v.clone(), true, true, false), Mode::Authored);
+        assert!(!no_rebase.cannot_rebase);
+        assert_eq!(no_rebase.note, "🟢 approved — mergeable");
+
+        // A conflict is the blocker; "can't rebase" would only repeat it.
+        let mut conflicted = with_methods(v, false, false, true);
+        conflicted["mergeable"] = json!("CONFLICTING");
+        let conflicted = derive_one(conflicted, Mode::Authored);
+        assert_eq!(conflicted.blockers, vec![Blocker::MergeConflict]);
+
+        // Someone else's PR in a rebase-only repository says it as a fact.
+        let mut theirs = with_methods(approved(3), false, false, true);
+        theirs["author"] = json!({"login": "alice"});
+        theirs["canBeRebased"] = json!(false);
+        let theirs = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg())
+            .pop()
+            .unwrap();
+        assert_eq!(theirs.category, Category::Action);
+        assert_eq!(theirs.note, "alice's PR · can't rebase");
     }
 
     #[test]

@@ -73,11 +73,14 @@ pub fn global_available_search_string(who: &str) -> String {
 /// "ready for review" for the pickup age (`crate::pickup`); it adds one point
 /// to a two-alias review query's `rateLimit.cost` (7 → 8) and nothing to a
 /// single search (4). `additions deletions changedFiles` feed the size band
-/// (`crate::size`) and cost nothing.
+/// (`crate::size`) and cost nothing. `mergeStateStatus`, `canBeRebased` and
+/// the repository's allowed merge methods say whether GitHub's merge button
+/// would work (`crate::board::MergeState`); plain fields, no preview header on
+/// github.com or GHES 3.17+.
 macro_rules! pr_fields {
     () => {
-        r#"id url repository { nameWithOwner } updatedAt headRefOid
-  number title isDraft reviewDecision mergeable createdAt
+        r#"id url repository { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } updatedAt headRefOid
+  number title isDraft reviewDecision mergeable mergeStateStatus canBeRebased createdAt
   additions deletions changedFiles
   stack { number size baseRefName }
   stackEntry { position }
@@ -472,6 +475,13 @@ pub struct RawStackEntry {
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub name_with_owner: String,
+    /// The merge methods the repository allows. Absent in prototype fixtures.
+    #[serde(default)]
+    pub merge_commit_allowed: Option<bool>,
+    #[serde(default)]
+    pub squash_merge_allowed: Option<bool>,
+    #[serde(default)]
+    pub rebase_merge_allowed: Option<bool>,
 }
 
 /// One PR as returned by the search query. Field names follow GitHub's schema;
@@ -501,6 +511,13 @@ pub struct RawPr {
     pub review_decision: Option<String>,
     #[serde(default)]
     pub mergeable: Option<String>,
+    /// GitHub's verdict on the merge button (`CLEAN`, `UNSTABLE`, `BLOCKED`,
+    /// …). Absent in prototype fixtures.
+    #[serde(default)]
+    pub merge_state_status: Option<String>,
+    /// Whether rebase-and-merge would go through. Absent in prototype fixtures.
+    #[serde(default)]
+    pub can_be_rebased: Option<bool>,
     pub created_at: String,
     /// Change counts for the size band. Absent in prototype fixtures.
     #[serde(default)]

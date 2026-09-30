@@ -79,7 +79,8 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
   `large`: more than 400 lines or 30 files; otherwise `medium`),
   `additions`, `deletions`, and `changed_files`. It is null when GitHub
   didn't report the counts. Don't turn a band into a time estimate.
-- **`blockers[]`:** typed as `merge_conflict`, `ci_failing`,
+- **`blockers[]`:** typed as `merge_conflict`, `cannot_rebase` (only in a
+  repository that allows rebase merges alone), `ci_failing`,
   `changes_requested`, `unresolved_comments` (with `count`), or `no_reviewers`
   (with `suggested`).
 - **`attention`:** `watched`, `snoozed`, `changed`, and `changes[]`, the
@@ -171,7 +172,7 @@ reason:
 | --- | --- | --- |
 | `ci-pass` | the check rollup is green | CI fails. A PR with no checks never passes; bound the wait with `--timeout` |
 | `approved` | GitHub's review decision is approved. Without branch protection the standing reviews decide: an approval, the user's own included, and no change requests | changes are requested |
-| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads, and GitHub has finished computing mergeability | CI fails or changes are requested |
+| `mergeable` | approved, CI green, no conflict, not a draft, no unresolved threads, and GitHub reports a clean merge state (nothing blocking, branch up to date) | CI fails or changes are requested |
 | `merged` | the PR merged | the PR closed without merging |
 
 A merge ends every wait as met (exit 0): whatever you were waiting for before

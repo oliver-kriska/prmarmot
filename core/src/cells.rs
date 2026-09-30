@@ -14,7 +14,7 @@
 //! caller shortens the tail and never the phrase that carries the exception.
 
 use crate::board::strip_note_glyphs;
-use crate::board::{Blocker, BoardRow, Category, Ci, ReviewState};
+use crate::board::{Blocker, BoardRow, Category, Ci, ReviewState, CANNOT_REBASE_NOTE};
 
 /// How alarming a cell is. Each front end maps this to its own palette; the
 /// decision about which is which is made here so both make it the same way.
@@ -54,19 +54,24 @@ pub struct NotePresentation {
 fn blocker_rank(blocker: &Blocker) -> u8 {
     match blocker {
         Blocker::MergeConflict => 0,
-        Blocker::CiFailing => 1,
-        Blocker::ChangesRequested => 2,
-        Blocker::UnresolvedComments(_) => 3,
-        Blocker::NoReviewers { .. } => 4,
+        Blocker::CannotRebase => 1,
+        Blocker::CiFailing => 2,
+        Blocker::ChangesRequested => 3,
+        Blocker::UnresolvedComments(_) => 4,
+        Blocker::NoReviewers { .. } => 5,
     }
 }
 
-/// Merge conflict / CI failure / changes-requested interrupt the scan (danger);
-/// unresolved comments and missing reviewers are routine follow-up (warning).
+/// Merge conflict / a branch that can't be rebased / CI failure /
+/// changes-requested interrupt the scan (danger); unresolved comments and
+/// missing reviewers are routine follow-up (warning).
 fn is_exceptional(blocker: &Blocker) -> bool {
     matches!(
         blocker,
-        Blocker::MergeConflict | Blocker::CiFailing | Blocker::ChangesRequested
+        Blocker::MergeConflict
+            | Blocker::CannotRebase
+            | Blocker::CiFailing
+            | Blocker::ChangesRequested
     )
 }
 
@@ -74,6 +79,7 @@ fn is_exceptional(blocker: &Blocker) -> bool {
 fn blocker_primary(blocker: &Blocker) -> (String, Option<String>) {
     match blocker {
         Blocker::MergeConflict => ("merge conflict".into(), Some("rebase".into())),
+        Blocker::CannotRebase => (CANNOT_REBASE_NOTE.into(), Some("rebase locally".into())),
         Blocker::CiFailing => ("CI failing".into(), None),
         Blocker::ChangesRequested => ("changes requested".into(), None),
         Blocker::UnresolvedComments(n) => (
@@ -95,6 +101,7 @@ fn blocker_primary(blocker: &Blocker) -> (String, Option<String>) {
 fn blocker_context(blocker: &Blocker) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict".into(),
+        Blocker::CannotRebase => CANNOT_REBASE_NOTE.into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
         Blocker::UnresolvedComments(n) => unresolved_label(*n),
@@ -183,7 +190,18 @@ pub fn note_presentation(row: &BoardRow) -> NotePresentation {
                 plain_note(Tone::Warning, tooltip)
             }
         }
-        Category::Await => plain_note(Tone::Success, tooltip),
+        // "can't rebase" on an approved PR is a muted fact beside the
+        // state, so eliding a narrow cell never hides the state itself.
+        Category::Await => match tooltip.strip_suffix(&format!(" · {CANNOT_REBASE_NOTE}")) {
+            Some(state) => NotePresentation {
+                tone: Tone::Success,
+                primary: state.to_string(),
+                remedy: None,
+                context: vec![CANNOT_REBASE_NOTE.to_string()],
+                tooltip,
+            },
+            None => plain_note(Tone::Success, tooltip),
+        },
         // "You approved" is good news; "you commented / requested changes" is
         // neutral — the ball is on the author, nothing is wrong.
         Category::Done => {
@@ -455,6 +473,9 @@ mod tests {
             ci: Ci::Pass,
             conflict: false,
             mergeable_unknown: false,
+            merge_state: None,
+            cannot_rebase: false,
+            rebase_only: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),
@@ -485,6 +506,28 @@ mod tests {
         // Nothing is dropped: the rest trail as muted context, in priority
         // order rather than the order the note happened to list them.
         assert_eq!(p.context, vec!["3 unresolved", "reviewers missing"]);
+    }
+
+    #[test]
+    fn a_branch_that_cannot_be_rebased_is_a_fact_or_a_red_blocker() {
+        // Other merge methods still work: the state leads, the fact trails.
+        let mut r = row();
+        r.category = Category::Await;
+        r.note = "🟢 approved — mergeable · can't rebase".into();
+        let p = note_presentation(&r);
+        assert_eq!(p.tone, Tone::Success);
+        assert_eq!(p.primary, "approved — mergeable");
+        assert_eq!(p.context, vec!["can't rebase"]);
+        assert_eq!(p.tooltip, "approved — mergeable · can't rebase");
+
+        // Rebase is the only way to merge: it blocks, in red, after a conflict.
+        let mut r = row();
+        r.blockers = vec![Blocker::CannotRebase, Blocker::UnresolvedComments(1)];
+        let p = note_presentation(&r);
+        assert_eq!(p.tone, Tone::Danger);
+        assert_eq!(p.primary, "can't rebase");
+        assert_eq!(p.remedy.as_deref(), Some("rebase locally"));
+        assert_eq!(p.context, vec!["1 unresolved"]);
     }
 
     #[test]

@@ -137,12 +137,16 @@ pub fn judge_open(condition: Condition, row: &BoardRow) -> Verdict {
         }
         // Await is the board's "nothing blocks it": not a draft, no conflict,
         // CI not failing, no changes requested, no unresolved threads. A
-        // mergeability GitHub is still computing is not a clean bill yet.
+        // mergeability GitHub is still computing is not a clean bill yet, and
+        // neither is a merge state GitHub does not call clean (a required
+        // check or rule, an out-of-date branch): the board would not say
+        // "mergeable" either.
         Condition::Mergeable
             if row.category == Category::Await
                 && approved(row)
                 && row.ci == Ci::Pass
-                && !row.mergeable_unknown =>
+                && !row.mergeable_unknown
+                && row.merge_state_clean() =>
         {
             Verdict::Met
         }
@@ -229,6 +233,7 @@ pub fn parse_duration(value: &str) -> Result<Duration, String> {
 mod tests {
     use super::*;
     use crate::view::tests::row;
+    use prmarmot_core::board::MergeState;
 
     fn open(category: Category) -> BoardRow {
         row(1, category)
@@ -339,7 +344,21 @@ mod tests {
         blocked.conflict = true;
         let mut draft = pr.clone();
         draft.category = Category::Draft;
-        for waiting in [unknown, running, unapproved, blocked, draft] {
+        // GitHub's own merge state has to agree, as it does for the board's
+        // "approved — mergeable".
+        let mut branch_rules = pr.clone();
+        branch_rules.merge_state = Some(MergeState::Blocked);
+        let mut behind = pr.clone();
+        behind.merge_state = Some(MergeState::Behind);
+        for waiting in [
+            unknown,
+            running,
+            unapproved,
+            blocked,
+            draft,
+            branch_rules,
+            behind,
+        ] {
             assert_eq!(judge_open(Condition::Mergeable, &waiting), Verdict::Pending);
         }
 
