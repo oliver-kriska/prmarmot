@@ -595,9 +595,6 @@ pub enum DetailKind {
     Labels,
     Issue,
     Stack,
-    /// No longer sent: the sentence moved to `sync_status_note`. Kept so
-    /// Swift code matching on it still compiles; drop it once the iPad has.
-    Snapshot,
 }
 
 impl From<core_detail::DetailKind> for DetailKind {
@@ -614,7 +611,6 @@ impl From<core_detail::DetailKind> for DetailKind {
             Core::Labels => Self::Labels,
             Core::Issue => Self::Issue,
             Core::Stack => Self::Stack,
-            Core::Snapshot => Self::Snapshot,
         }
     }
 }

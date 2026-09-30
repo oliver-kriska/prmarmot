@@ -66,10 +66,6 @@ pub enum DetailKind {
     Labels,
     Issue,
     Stack,
-    /// No longer emitted: the snapshot sentence moved to the sync status's
-    /// hover text (`status::SYNC_STATUS_NOTE`). Kept until the iPad stops
-    /// matching on it, so its build keeps compiling.
-    Snapshot,
 }
 
 /// Every line of the panel, in the order it is shown.
@@ -118,8 +114,7 @@ pub fn detail_items(
 }
 
 /// One fact of the Details panel as a label and a value, for a panel that
-/// lays them out in two columns. The Note and the closing snapshot line have
-/// no label.
+/// lays them out in two columns. The Note has no label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailField {
     pub kind: DetailKind,

@@ -2047,7 +2047,6 @@ impl RootView {
             };
             match (field.kind, field.label) {
                 (DetailKind::Labels, _) => {}
-                (DetailKind::Snapshot, _) => {}
                 (_, None) => rows.push(
                     div()
                         .pb(px(6.))

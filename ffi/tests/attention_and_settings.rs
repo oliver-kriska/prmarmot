@@ -601,9 +601,6 @@ fn the_details_panel_says_what_each_line_is_so_swift_never_matches_words() {
     );
     assert_eq!(items[0].kind, prmarmot_ffi::DetailKind::Note);
     assert_eq!(items[1].kind, prmarmot_ffi::DetailKind::Facts);
-    assert!(items
-        .iter()
-        .all(|item| item.kind != prmarmot_ffi::DetailKind::Snapshot));
     assert_eq!(
         prmarmot_ffi::attention_line(true, true),
         "Attention: changed · watched"
@@ -612,9 +609,6 @@ fn the_details_panel_says_what_each_line_is_so_swift_never_matches_words() {
     let fields = prmarmot_ffi::detail_fields(row, Mode::Review, NOW, 0).unwrap();
     assert_eq!(fields[0].label, None);
     assert_eq!(fields[1].label.as_deref(), Some("Author"));
-    assert!(fields
-        .iter()
-        .all(|field| field.kind != prmarmot_ffi::DetailKind::Snapshot));
 }
 
 #[test]
