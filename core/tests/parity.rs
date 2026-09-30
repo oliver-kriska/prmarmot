@@ -29,6 +29,15 @@
 //! `board::tests::an_approved_pr_is_mergeable_only_when_github_says_so` and
 //! `board::tests::a_branch_github_cannot_rebase_is_named_and_blocks_only_where_rebase_is_the_only_way`
 //! pin it instead. Leave the oracle and the goldens as they are.
+//!
+//! A third, in what is fetched rather than how it is read (Oliver, 2026-09-29):
+//! the port asks for the newest 60 reviews and newest 100 review threads
+//! (`last:`), where the prototype's query asks for the oldest (`first:`).
+//! GitHub returns both connections oldest first, so on a busy PR the
+//! prototype's window drops the latest reviews. Every fixture has fewer, so
+//! both windows hold the same nodes and the goldens cannot show it; the
+//! thread `totalCount` behind "5+ unresolved comments" is pinned by
+//! `board::tests::more_threads_than_the_window_make_the_count_a_lower_bound`.
 
 use prmarmot_core::board::{derive_rows, BoardConfig, BoardRow, IssueLinkRule, Mode};
 use prmarmot_core::github::query::parse_search_response;

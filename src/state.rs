@@ -706,6 +706,10 @@ impl AppState {
         if tracked_total > 0 {
             self.tracked_cursor = (self.tracked_cursor + tracked_ids.len()) % tracked_total;
         }
+        // A view GitHub could not answer in time keeps its smaller pages; the
+        // flag lives in the view's pagination, so it lasts until a scope
+        // change resets it or the app quits.
+        let small_pages = self.pagination.small_pages();
 
         cx.spawn(async move |this, cx| {
             let fetched = cx
@@ -721,6 +725,7 @@ impl AppState {
                             &config,
                             &filter,
                             &tracked_ids,
+                            small_pages,
                         ),
                         _ => fetch_board_scoped_with_tracked(
                             transport.as_ref(),
@@ -729,6 +734,7 @@ impl AppState {
                             &me,
                             &config,
                             &tracked_ids,
+                            small_pages,
                         ),
                     }
                 })

@@ -12,8 +12,8 @@ use prmarmot_core::attention::{
     semantic_notice, NoticeKind, Observation, SnapshotNamespace, SnapshotStore,
 };
 use prmarmot_core::board::{
-    carry_forward_conflicts, fetch_tracked, resolve_pull_request_id, BoardConfig, BoardFetch,
-    BoardPagination, BoardRow, BoardScope, Mode, TrackedPrStatus,
+    carry_forward_conflicts, fetch_tracked, fetch_tracked_status, resolve_pull_request_id,
+    BoardConfig, BoardFetch, BoardPagination, BoardRow, BoardScope, Mode, TrackedPrStatus,
 };
 use prmarmot_core::github::rate_limit::{
     backoff_secs, rate_limited_wait_secs, should_back_off, RateLimitInfo, MIN_REFRESH_SECS,
@@ -692,7 +692,7 @@ fn resolve_removals(session: &Session, removed: &[Seen]) -> HashMap<String, Trac
         .take(MAX_RESOLVED_REMOVALS)
         .map(|seen| seen.id.clone())
         .collect();
-    fetch_tracked(session.transport, &ids, &session.viewer, &session.board)
+    fetch_tracked_status(session.transport, &ids)
         .map(|fetch| {
             fetch
                 .tracked
@@ -830,6 +830,8 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
     let mut counted = 0u64;
     // Set when the next poll lands on the `--timeout` deadline.
     let mut last_look = false;
+    // Once GitHub gave up on a full page, later polls ask for the smaller one.
+    let mut small_pages = false;
     loop {
         let now = Utc::now();
         // Re-read each poll: watches and snoozes change in the app meanwhile.
@@ -845,8 +847,12 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
                 // Watch follows My PRs or the review queue, never All open.
                 &Default::default(),
                 1,
+                small_pages,
             )
-            .map(|fetch| (fetch, None)),
+            .map(|fetch| {
+                small_pages |= fetch.pagination.small_pages();
+                (fetch, None)
+            }),
         };
         let mut finish = None;
         let (events, rate, wait) = match fetched {

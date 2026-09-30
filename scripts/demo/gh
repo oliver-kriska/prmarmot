@@ -836,7 +836,8 @@ def main():
             print(f"{name}\t{len(scenario['steps'])}\t{scenario['description']}")
         return
     try:
-        if args == ["api", "user", "--jq", ".login"]:
+        # `--cache 10m` is the CLI asking gh to reuse a recent answer.
+        if args[:2] == ["api", "user"] and args[-2:] == ["--jq", ".login"]:
             root = Path(os.environ["XDG_CONFIG_HOME"])
             if (root / "unauthenticated").exists():
                 print("not logged in; run gh auth login", file=sys.stderr)

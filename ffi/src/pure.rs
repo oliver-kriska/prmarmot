@@ -301,6 +301,14 @@ pub fn unresolved_label(count: u32) -> String {
     core_cells::unresolved_label(count as usize)
 }
 
+/// "5+ unresolved" when `capped` (the PR's `unresolved_capped`: more review
+/// threads than the newest 100 that were read), otherwise as
+/// [`unresolved_label`].
+#[uniffi::export]
+pub fn unresolved_fact(count: u32, capped: bool) -> String {
+    core_cells::unresolved_fact(count as usize, capped)
+}
+
 /// "42 changed lines in 3 files".
 #[uniffi::export]
 pub fn size_lines_and_files(size: ChangeSize) -> String {

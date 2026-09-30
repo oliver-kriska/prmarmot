@@ -1446,7 +1446,11 @@ impl TableDelegate for BoardTableDelegate {
                 if row.unresolved > 0 {
                     div()
                         .text_color(theme.warning)
-                        .child(row.unresolved.to_string())
+                        .child(if row.unresolved_capped {
+                            format!("{}+", row.unresolved)
+                        } else {
+                            row.unresolved.to_string()
+                        })
                 } else {
                     div()
                 }
@@ -1835,6 +1839,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             // As the derivation leaves any waiting PR in My PRs: a reviewer
             // is asked. One with nobody asked is Available to review.

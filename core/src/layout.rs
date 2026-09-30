@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 
 use crate::board::{BoardRow, Category, Ci, Mode, ReviewState};
-use crate::cells::unresolved_label;
+use crate::cells::unresolved_fact;
 use crate::pickup::{wait_label, waiting_secs};
 use crate::size::{ChangeSize, SizeBand};
 use crate::status::row_needs_you;
@@ -560,7 +560,10 @@ pub fn section_summary<'a>(
     };
     let unresolved = || match rows.iter().map(|row| row.unresolved).sum() {
         0 => None,
-        n => Some(unresolved_label(n)),
+        n => Some(unresolved_fact(
+            n,
+            rows.iter().any(|row| row.unresolved_capped),
+        )),
     };
     let longest_wait = || {
         rows.iter()
@@ -624,6 +627,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),

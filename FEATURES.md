@@ -14,7 +14,8 @@ values in the code. New features get the next free number in their area.
   PR in the selected repository (F-board-14); `v` skips it while All repositories is selected. _since v0.12.0_
 - **F-board-2** **Involving me** is the zero-config default: open PRs involving your GitHub login across all
   repositories. Your own PRs get actionable Notes, and other people's get status Notes ("alice's PR · approved").
-  It never widens to PRs that don't involve you. _since v0.6.0_
+  It never widens to PRs that don't involve you. _since v0.6.0_ Across all repositories the most recently updated PRs
+  come first, so the first page holds the ones with fresh activity rather than the newest opened. _unreleased_
 - **F-board-3** **My PRs** in one repository lists the PRs you opened there. _since v0.1.0_
 - **F-board-4** **Review queue** splits PRs that request your review (**Requested from you**) from other people's
   PRs with no pending user or team reviewer request (**Available to review**), an optional pool rather than an
@@ -232,7 +233,8 @@ values in the code. New features get the next free number in their area.
   changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _since v0.13.0_
 - **F-track-3** **Watch** (`w`) follows a PR even outside the current view. Up to 50 watches are kept; a 51st drops
   the oldest, and the footer says which. Watched and snoozed PRs refresh in the same request as the board, at most
-  50 per refresh, taking turns when there are more. _since v0.6.0_
+  50 per refresh, taking turns when there are more. _since v0.6.0_ A watched PR already seen merged is no longer
+  fetched. _unreleased_
 - **F-track-4** **Snooze** (`s`) moves a PR to a collapsed **Snoozed** group, where it adds no alerts or counts
   until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches.
   _since v0.13.0_
@@ -353,11 +355,18 @@ values in the code. New features get the next free number in their area.
   far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else
   until a spent budget resets, rather than always the one-minute floor. _since v0.12.1_
 - **F-refresh-6** Each PR's data is capped: 20 labels, 15 review requests, 60 reviews, 100 review threads (so the
-  unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_
+  unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_ The reviews and threads read are
+  the newest ones, and a PR with more than 100 threads shows its unresolved count as a minimum ("5+ unresolved
+  comments"). _unreleased_
 - **F-refresh-7** If the first load fails, **Retry** tries again. A watched PR you can no longer see is reported as
   unavailable, and the refresh still succeeds. _since v0.5.0; unavailable PRs since v0.7.0_
 - **F-refresh-8** An idle window repaints at most once a minute, with no animated spinner, so the GPU stays idle.
   _since v0.9.0_
+- **F-refresh-9** GitHub stops a request after about 10 seconds, and a page of 60 PRs spread over many
+  repositories can take longer. When GitHub gives up, PR Marmot asks again at once for 30 PRs, and that view keeps
+  loading 30 at a time, Load more included, until you quit or change the repository. `prmarmot-cli watch` does the
+  same between polls. A smaller page shows like any other partial page, with the **partial results** notice and
+  Load more (F-refresh-4); nothing says why it is smaller. _unreleased_
 
 ## Settings, theme, shortcuts
 
@@ -438,7 +447,9 @@ values in the code. New features get the next free number in their area.
 
 - **F-cli-1** `prmarmot-cli mine` and `prmarmot-cli review` print the app's My PRs and Review queue. They use the
   same query, categories, Notes, sections, stacks, config file, and sign-in. The CLI reads the app's watches and
-  snoozes but never changes them, and never clears a changed marker. _since v0.7.0_
+  snoozes but never changes them, and never clears a changed marker. _since v0.7.0_ It no longer asks GitHub who
+  you are on every run: it uses the login saved at sign-in, or on the `gh` path `gh`'s own ten-minute cache, which
+  is kept per token. _unreleased_
 - **F-cli-2** It is bundled inside the app and linked by every installer. It has no GPUI dependency, so it builds
   without Metal (`cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli`), with Rust
   1.85 or newer. _since v0.7.0_
@@ -468,7 +479,8 @@ values in the code. New features get the next free number in their area.
     goes below 30 seconds.
   - Events: `ready`, `changed`, `added`, `removed`, `rate_limited`, and `error`.
   - A removed PR costs one small extra request to learn whether it merged or closed, for up to 50 removals per
-    poll; the rest are reported as `unknown`.
+    poll; the rest are reported as `unknown`. That request asks for their state alone, about one point.
+    _unreleased_
   - `--events N` exits after N events.
 
   _since v0.7.0_

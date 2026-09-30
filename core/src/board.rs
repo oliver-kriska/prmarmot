@@ -18,9 +18,10 @@ use crate::github::query::{
     global_available_search_string, global_search_string, issue_count, page_info,
     parse_alias_response, parse_pull_request_id, parse_review_response, parse_search_response,
     parse_tracked_response, pull_request_id_query, requested_ids, scope_repository_error,
-    search_string, with_requested_ids, with_scope_repository, with_tracked_nodes, RawPr,
-    ReviewNode, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY,
-    REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY, TRACKED_ONLY_QUERY,
+    search_string, with_page_size, with_requested_ids, with_scope_repository, with_tracked_nodes,
+    RawPr, ReviewNode, PAGE_SIZE, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY,
+    REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
+    REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY, TRACKED_STATUS_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
 use crate::github::{GhError, GithubTransport};
@@ -362,6 +363,9 @@ pub struct BoardRow {
     /// `NONE`; see [`standing_review`].
     pub my_review: Option<String>,
     pub unresolved: usize,
+    /// The PR has more review threads than the newest 100 that were read, so
+    /// `unresolved` counts only those and may be low ("5+").
+    pub unresolved_capped: bool,
     /// Structured blockers behind the action `note`, most-blocking-first
     /// (authored mode only; empty for await/review rows). The UI reorders and
     /// colors these; the `note` string is generated from exactly this list.
@@ -432,9 +436,27 @@ pub struct BoardPagination {
     /// more page reads them the same way. At most
     /// [`crate::github::query::MAX_ALL_OPEN_REQUESTED`].
     requested_ids: Vec<String>,
+    /// GitHub gave up on a full page for this view, so its pages ask for
+    /// [`SMALL_PAGE_SIZE`] rows, Load more included.
+    small_pages: bool,
 }
 
 impl BoardPagination {
+    /// Whether this view fell back to [`SMALL_PAGE_SIZE`] pages. A front end
+    /// passes it back to the next refresh of the same view, so a view GitHub
+    /// could not answer in time stops asking for full pages until it quits.
+    pub fn small_pages(&self) -> bool {
+        self.small_pages
+    }
+
+    fn page_size(&self) -> u8 {
+        if self.small_pages {
+            SMALL_PAGE_SIZE
+        } else {
+            PAGE_SIZE
+        }
+    }
+
     pub fn can_load_more(&self, mode: Mode) -> bool {
         match mode {
             Mode::Authored => self.authored.can_load(),
@@ -524,6 +546,61 @@ pub fn fetch_tracked(
     })
 }
 
+/// What became of specific PRs, state only: whether each is open, closed,
+/// merged, or no longer visible. One request of about a point for up to 100
+/// ids, for callers that need no rows (the CLI's removed PRs).
+pub fn fetch_tracked_status(
+    transport: &dyn GithubTransport,
+    ids: &[String],
+) -> Result<TrackedFetch, GhError> {
+    if ids.is_empty() {
+        return Ok(TrackedFetch {
+            tracked: Vec::new(),
+            rate: None,
+            access: AccessGaps::default(),
+        });
+    }
+    let mut body = transport.graphql_with_ids(TRACKED_STATUS_QUERY, &[], ids)?;
+    let access = tolerate_access_errors(&mut body);
+    let rate = parse_tracked_response(&body)?;
+    let nodes = body
+        .pointer("/data/tracked")
+        .and_then(serde_json::Value::as_array);
+    let tracked = ids
+        .iter()
+        .enumerate()
+        .map(|(index, requested_id)| {
+            let node = nodes
+                .and_then(|nodes| nodes.get(index))
+                .filter(|node| node.get("state").is_some());
+            let status = match node {
+                None => TrackedPrStatus::Inaccessible,
+                Some(node)
+                    if node.get("merged").and_then(serde_json::Value::as_bool) == Some(true) =>
+                {
+                    TrackedPrStatus::Merged
+                }
+                Some(node)
+                    if node.get("state").and_then(serde_json::Value::as_str) == Some("CLOSED") =>
+                {
+                    TrackedPrStatus::Closed
+                }
+                Some(_) => TrackedPrStatus::Open,
+            };
+            TrackedPr {
+                pr_id: requested_id.clone(),
+                status,
+                row: None,
+            }
+        })
+        .collect();
+    Ok(TrackedFetch {
+        tracked,
+        rate,
+        access,
+    })
+}
+
 /// The node id of `owner/name#number`, for [`fetch_tracked`].
 pub fn resolve_pull_request_id(
     transport: &dyn GithubTransport,
@@ -568,9 +645,13 @@ pub fn fetch_board_scoped(
     me: &str,
     cfg: &BoardConfig,
 ) -> Result<BoardFetch, GhError> {
-    fetch_board_scoped_with_tracked(transport, mode, scope, me, cfg, &[])
+    fetch_board_scoped_with_tracked(transport, mode, scope, me, cfg, &[], false)
 }
 
+/// [`fetch_board_scoped`] plus tracked PRs. `small_pages` is the previous
+/// fetch's [`BoardPagination::small_pages`] for the same view (false for the
+/// first): once GitHub has given up on a full page, the view keeps asking for
+/// [`SMALL_PAGE_SIZE`] rows.
 pub fn fetch_board_scoped_with_tracked(
     transport: &dyn GithubTransport,
     mode: Mode,
@@ -578,6 +659,7 @@ pub fn fetch_board_scoped_with_tracked(
     me: &str,
     cfg: &BoardConfig,
     tracked_ids: &[String],
+    small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
     fetch_scoped(
         transport,
@@ -587,14 +669,16 @@ pub fn fetch_board_scoped_with_tracked(
         cfg,
         tracked_ids,
         &RemoteFilter::default(),
+        small_pages,
     )
 }
 
 /// All open for one repository, with `filter`'s labels and authors matched by
 /// GitHub rather than among the loaded rows, so the count, the first page, and
 /// Load more all cover the whole repository. Same one-operation contract and
-/// bounds as the other views: 60 rows a page, user-invoked Load more, at most
-/// [`MAX_PAGES_PER_ALIAS`] pages.
+/// bounds as the other views: [`PAGE_SIZE`] rows a page (or
+/// [`SMALL_PAGE_SIZE`], see [`fetch_board_scoped_with_tracked`]), user-invoked
+/// Load more, at most [`MAX_PAGES_PER_ALIAS`] pages.
 pub fn fetch_all_open(
     transport: &dyn GithubTransport,
     repo: &str,
@@ -602,6 +686,7 @@ pub fn fetch_all_open(
     cfg: &BoardConfig,
     filter: &RemoteFilter,
     tracked_ids: &[String],
+    small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
     fetch_scoped(
         transport,
@@ -611,9 +696,15 @@ pub fn fetch_all_open(
         cfg,
         tracked_ids,
         filter,
+        small_pages,
     )
 }
 
+/// One page-one operation, and when GitHub gives up on a full page (see
+/// [`GhError::is_query_timeout`]) the same operation once more with
+/// [`SMALL_PAGE_SIZE`] rows. Still one request per refresh when GitHub
+/// answers; two when it did not, and then the view remembers.
+#[allow(clippy::too_many_arguments)]
 fn fetch_scoped(
     transport: &dyn GithubTransport,
     mode: Mode,
@@ -622,6 +713,47 @@ fn fetch_scoped(
     cfg: &BoardConfig,
     tracked_ids: &[String],
     filter: &RemoteFilter,
+    small_pages: bool,
+) -> Result<BoardFetch, GhError> {
+    if !small_pages {
+        match fetch_scoped_sized(
+            transport,
+            mode,
+            scope,
+            me,
+            cfg,
+            tracked_ids,
+            filter,
+            PAGE_SIZE,
+        ) {
+            Err(error) if error.is_query_timeout() => {}
+            fetched => return fetched,
+        }
+    }
+    let mut fetched = fetch_scoped_sized(
+        transport,
+        mode,
+        scope,
+        me,
+        cfg,
+        tracked_ids,
+        filter,
+        SMALL_PAGE_SIZE,
+    )?;
+    fetched.pagination.small_pages = true;
+    Ok(fetched)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_scoped_sized(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    tracked_ids: &[String],
+    filter: &RemoteFilter,
+    first: u8,
 ) -> Result<BoardFetch, GhError> {
     if mode == Mode::AllOpen && scope.is_all() {
         return Err(GhError::NeedsRepository);
@@ -629,7 +761,7 @@ fn fetch_scoped(
     let repo = scope.fallback_repo();
     let scope_repository = scope.repository().and_then(|repo| repo.split_once('/'));
     let initial_operation = |base: &str| -> Result<String, GhError> {
-        let mut query = base.to_owned();
+        let mut query = with_page_size(base, first);
         if scope_repository.is_some() {
             query = with_scope_repository(&query)?;
         }
@@ -851,6 +983,28 @@ pub fn fetch_more_board_scoped(
     cfg: &BoardConfig,
     current: &BoardFetch,
 ) -> Result<BoardFetch, GhError> {
+    let first = current.pagination.page_size();
+    match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
+        // Same fallback as page one: the cursor stays valid at any page size.
+        Err(error) if error.is_query_timeout() && !current.pagination.small_pages => {
+            let mut fetched =
+                fetch_more_sized(transport, mode, scope, me, cfg, current, SMALL_PAGE_SIZE)?;
+            fetched.pagination.small_pages = true;
+            Ok(fetched)
+        }
+        fetched => fetched,
+    }
+}
+
+fn fetch_more_sized(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    current: &BoardFetch,
+    first: u8,
+) -> Result<BoardFetch, GhError> {
     let repo = scope.fallback_repo();
     let mut next = current.clone();
     match mode {
@@ -861,7 +1015,7 @@ pub fn fetch_more_board_scoped(
             let search = scope_search_string(scope, mode, me, cfg);
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
             let mut body = transport.graphql(
-                PR_SEARCH_PAGE_QUERY,
+                &with_page_size(PR_SEARCH_PAGE_QUERY, first),
                 &[("q", &search), ("after", &cursor), ("who", me)],
             )?;
             next.access = next.access.plus(tolerate_access_errors(&mut body));
@@ -884,7 +1038,7 @@ pub fn fetch_more_board_scoped(
             }
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
             let mut body = transport.graphql(
-                PR_SEARCH_PAGE_QUERY,
+                &with_page_size(PR_SEARCH_PAGE_QUERY, first),
                 &[("q", &search), ("after", &cursor), ("who", me)],
             )?;
             next.access = next.access.plus(tolerate_access_errors(&mut body));
@@ -910,7 +1064,7 @@ pub fn fetch_more_board_scoped(
                 let rc = next.pagination.requested.end_cursor.clone().unwrap();
                 let ac = next.pagination.available.end_cursor.clone().unwrap();
                 let mut body = transport.graphql(
-                    REVIEW_BOTH_PAGE_QUERY,
+                    &with_page_size(REVIEW_BOTH_PAGE_QUERY, first),
                     &[
                         ("requested", &requested_search),
                         ("requestedAfter", &rc),
@@ -942,8 +1096,10 @@ pub fn fetch_more_board_scoped(
                         next.pagination.available.end_cursor.clone().unwrap(),
                     )
                 };
-                let mut body = transport
-                    .graphql(query, &[(alias, search), ("after", &cursor), ("who", me)])?;
+                let mut body = transport.graphql(
+                    &with_page_size(query, first),
+                    &[(alias, search), ("after", &cursor), ("who", me)],
+                )?;
                 next.access = next.access.plus(tolerate_access_errors(&mut body));
                 let (prs, page, rate) = parse_alias_response(&body, alias)?;
                 if requested {
@@ -1256,7 +1412,7 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
         facts.push("changes requested".to_owned());
     }
     if row.unresolved > 0 {
-        facts.push(unresolved_comments(row.unresolved));
+        facts.push(unresolved_comments(row.unresolved, row.unresolved_capped));
     }
     row.category = if facts.is_empty() {
         Category::Await
@@ -1346,6 +1502,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         .iter()
         .filter(|t| !t.is_resolved)
         .count();
+    let unresolved_capped = pr.review_threads.total_count > pr.review_threads.nodes.len();
     let ci = derive_ci(pr);
     let conflict = pr.mergeable.as_deref() == Some("CONFLICTING");
     let mergeable_unknown = !matches!(pr.mergeable.as_deref(), Some("MERGEABLE" | "CONFLICTING"));
@@ -1405,6 +1562,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         reviews: latest_reviews_excluding(pr, me, &cfg.bots),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
+        unresolved_capped,
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
         waiting_since: None,
@@ -1663,7 +1821,7 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
 /// The exact SKILL.md note fragment for one blocker — the prototype's wording
 /// and emoji, verbatim. The joined fragments reproduce the legacy `note`
 /// byte-for-byte (pinned by the golden tests).
-fn blocker_note(blocker: &Blocker) -> String {
+fn blocker_note(blocker: &Blocker, unresolved_capped: bool) -> String {
     match blocker {
         Blocker::NoReviewers { suggested } => {
             if suggested.is_empty() {
@@ -1676,13 +1834,19 @@ fn blocker_note(blocker: &Blocker) -> String {
         Blocker::CannotRebase => format!("🔴 {CANNOT_REBASE_NOTE} — rebase locally"),
         Blocker::CiFailing => "❌ CI failing".to_string(),
         Blocker::ChangesRequested => "✋ changes requested".to_string(),
-        Blocker::UnresolvedComments(n) => format!("🟡 {}", unresolved_comments(*n)),
+        Blocker::UnresolvedComments(n) => {
+            format!("🟡 {}", unresolved_comments(*n, unresolved_capped))
+        }
     }
 }
 
 /// "1 unresolved comment", "2 unresolved comments". SKILL.md writes the rule
-/// as "<n> unresolved comments"; the count decides the plural.
-fn unresolved_comments(n: usize) -> String {
+/// as "<n> unresolved comments"; the count decides the plural. A count taken
+/// from only the newest 100 threads is a lower bound: "5+ unresolved comments".
+fn unresolved_comments(n: usize, capped: bool) -> String {
+    if capped {
+        return format!("{n}+ unresolved comments");
+    }
     format!("{n} unresolved comment{}", if n == 1 { "" } else { "s" })
 }
 
@@ -1759,7 +1923,7 @@ fn authored_note(row: &BoardRow) -> String {
         Category::Action => row
             .blockers
             .iter()
-            .map(blocker_note)
+            .map(|blocker| blocker_note(blocker, row.unresolved_capped))
             .collect::<Vec<_>>()
             .join(" · "),
         Category::Await => match row.review_state {
@@ -1774,7 +1938,10 @@ fn authored_note(row: &BoardRow) -> String {
             if row.conflict {
                 "🔴 draft · merge conflict".to_string()
             } else if row.unresolved > 0 {
-                format!("🟡 draft · {}", unresolved_comments(row.unresolved))
+                format!(
+                    "🟡 draft · {}",
+                    unresolved_comments(row.unresolved, row.unresolved_capped)
+                )
             } else if row.ci == Ci::Fail {
                 "🔴 draft · CI failing".to_string()
             } else {
@@ -1879,10 +2046,14 @@ mod tests {
             variables: &[(&str, &str)],
         ) -> Result<serde_json::Value, GhError> {
             assert_eq!(query, REVIEW_SEARCH_QUERY);
-            assert!(
-                variables.contains(&("requested", "is:pr is:open review-requested:me -author:me"))
-            );
-            assert!(variables.contains(&("available", "is:pr is:open involves:me -author:me")));
+            assert!(variables.contains(&(
+                "requested",
+                "is:pr is:open review-requested:me -author:me sort:updated-desc"
+            )));
+            assert!(variables.contains(&(
+                "available",
+                "is:pr is:open involves:me -author:me sort:updated-desc"
+            )));
             Ok(json!({"data": {
                 "requested": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
                 "available": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
@@ -3093,15 +3264,23 @@ mod tests {
             "me",
             &cfg(),
             &tracked,
+            false,
         )
         .unwrap();
         assert_eq!(fetched.tracked.len(), 1);
         assert_eq!(fetched.tracked[0].status, TrackedPrStatus::Inaccessible);
 
         let scope = BoardScope::Repository("acme/nope".into());
-        let error =
-            fetch_board_scoped_with_tracked(&Scoped, Mode::Review, &scope, "me", &cfg(), &tracked)
-                .unwrap_err();
+        let error = fetch_board_scoped_with_tracked(
+            &Scoped,
+            Mode::Review,
+            &scope,
+            "me",
+            &cfg(),
+            &tracked,
+            false,
+        )
+        .unwrap_err();
         assert_eq!(error, GhError::RepositoryNotFound("acme/nope".into()));
         assert_eq!(
             error.to_string(),
@@ -3213,8 +3392,8 @@ mod tests {
         assert_eq!(
             *searches.0.lock().unwrap(),
             [
-                "is:pr is:open involves:me",
-                "is:pr is:open author:me",
+                "is:pr is:open involves:me sort:updated-desc",
+                "is:pr is:open author:me sort:updated-desc",
                 "repo:acme/widgets is:pr is:open author:me",
             ]
         );
@@ -3313,6 +3492,7 @@ mod tests {
             &cfg(),
             &RemoteFilter::default(),
             &[],
+            false,
         )
         .unwrap();
         assert_eq!(first.total, Some(412));
@@ -3356,7 +3536,16 @@ mod tests {
             all_open_page(Vec::new(), 90, Some("c1")),
             all_open_page(Vec::new(), 90, None),
         ]);
-        let first = fetch_all_open(&transport, "acme/widgets", "me", &cfg(), &filter, &[]).unwrap();
+        let first = fetch_all_open(
+            &transport,
+            "acme/widgets",
+            "me",
+            &cfg(),
+            &filter,
+            &[],
+            false,
+        )
+        .unwrap();
         // A filter change is a new search; the cursor it hands out belongs to
         // this one, so Load more repeats it word for word.
         fetch_more_board(
@@ -3403,6 +3592,7 @@ mod tests {
             &cfg(),
             &RemoteFilter::default(),
             &[],
+            false,
         )
         .unwrap();
         let more = fetch_more_board(
@@ -3659,5 +3849,171 @@ mod tests {
         second.issue_link =
             Some(IssueLinkRule::new("DEMO-[0-9]+", "https://other.example/{id}").unwrap());
         assert_ne!(first, second);
+    }
+
+    /// Answers only searches of [`SMALL_PAGE_SIZE`] rows, the way GitHub
+    /// answered "Involving me" on 2026-09-29: a full page timed out.
+    struct GivesUpOnFullPages(Mutex<Vec<String>>);
+
+    impl GithubTransport for GivesUpOnFullPages {
+        fn graphql(
+            &self,
+            query: &str,
+            _variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            self.0.lock().unwrap().push(query.to_owned());
+            if query.contains(&format!("first:{PAGE_SIZE}")) {
+                return Err(GhError::Network("gh: HTTP 502".into()));
+            }
+            Ok(json!({"data": {
+                "search": {
+                    "issueCount": 101,
+                    "pageInfo": {"hasNextPage": true, "endCursor": "c1"},
+                    "nodes": [base(1)]
+                },
+                "rateLimit": null
+            }}))
+        }
+    }
+
+    #[test]
+    fn a_page_github_gives_up_on_is_asked_again_with_fewer_rows_and_the_view_remembers() {
+        let transport = GivesUpOnFullPages(Mutex::new(Vec::new()));
+        let all = BoardScope::AllRepositories;
+        let first = fetch_board_scoped_with_tracked(
+            &transport,
+            Mode::Authored,
+            &all,
+            "me",
+            &cfg(),
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(first.pagination.small_pages());
+        assert_eq!(first.rows.len(), 1);
+        let asked = std::mem::take(&mut *transport.0.lock().unwrap());
+        assert_eq!(asked.len(), 2, "one full page, then one small page");
+        assert!(asked[0].contains("first:60") && asked[1].contains("first:30"));
+
+        // The next refresh of the same view asks for the small page at once,
+        // and so does Load more.
+        let again = fetch_board_scoped_with_tracked(
+            &transport,
+            Mode::Authored,
+            &all,
+            "me",
+            &cfg(),
+            &[],
+            true,
+        )
+        .unwrap();
+        assert!(again.pagination.small_pages());
+        let more = fetch_more_board_scoped(&transport, Mode::Authored, &all, "me", &cfg(), &again)
+            .unwrap();
+        assert!(more.pagination.small_pages());
+        let asked = std::mem::take(&mut *transport.0.lock().unwrap());
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|query| query.contains("first:30")));
+    }
+
+    #[test]
+    fn only_github_giving_up_asks_again() {
+        // Refused, signed out, or a network failure: one request, same error.
+        for error in [
+            GhError::NotAuthenticated,
+            GhError::Network("could not resolve host".into()),
+            GhError::Network("gh timed out after 60s — killed".into()),
+        ] {
+            let transport = SequenceTransport::new(vec![Err(error.clone())]);
+            let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg());
+            assert!(fetched.is_err(), "{error:?}");
+            assert!(transport.0.lock().unwrap().is_empty());
+        }
+        // A small page that also fails reports that failure; no third try.
+        let transport = SequenceTransport::new(vec![
+            Err(GhError::Network("gh: HTTP 502".into())),
+            Err(GhError::GraphqlErrors(vec![
+                "Something went wrong while executing your query. This may be the result of a timeout".into(),
+            ])),
+        ]);
+        let error =
+            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap_err();
+        assert!(error.is_query_timeout());
+        assert!(transport.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn more_threads_than_the_window_make_the_count_a_lower_bound() {
+        let mut v = base(4);
+        v["reviewThreads"] = json!({
+            "totalCount": 130,
+            "nodes": [{"isResolved": false}, {"isResolved": true}, {"isResolved": false}]
+        });
+        let row = derive_one(v.clone(), Mode::Authored);
+        assert_eq!(row.unresolved, 2);
+        assert!(row.unresolved_capped);
+        assert!(row.note.contains("2+ unresolved comments"), "{}", row.note);
+        // Every thread read: the plain count, singular where it is one.
+        v["reviewThreads"] = json!({"totalCount": 1, "nodes": [{"isResolved": false}]});
+        let row = derive_one(v, Mode::Authored);
+        assert!(!row.unresolved_capped);
+        assert!(row.note.contains("1 unresolved comment"), "{}", row.note);
+        assert!(!row.note.contains("comments"), "{}", row.note);
+    }
+
+    #[test]
+    fn what_became_of_tracked_prs_is_one_request_without_rows() {
+        struct Status;
+        impl GithubTransport for Status {
+            fn graphql(
+                &self,
+                _query: &str,
+                _variables: &[(&str, &str)],
+            ) -> Result<serde_json::Value, GhError> {
+                unreachable!("ids go through graphql_with_ids")
+            }
+            fn graphql_with_ids(
+                &self,
+                query: &str,
+                variables: &[(&str, &str)],
+                ids: &[String],
+            ) -> Result<serde_json::Value, GhError> {
+                assert_eq!(query, TRACKED_STATUS_QUERY);
+                assert!(variables.is_empty());
+                assert_eq!(ids.len(), 4);
+                Ok(json!({"data": {
+                    "tracked": [
+                        {"id": "A", "state": "MERGED", "merged": true},
+                        {"id": "B", "state": "CLOSED", "merged": false},
+                        {"id": "C", "state": "OPEN", "merged": false},
+                        null
+                    ],
+                    "rateLimit": {"limit": 5000, "cost": 1, "remaining": 4999, "resetAt": "2026-09-29T12:00:00Z"}
+                }}))
+            }
+        }
+        let ids: Vec<String> = ["A", "B", "C", "D"].map(String::from).to_vec();
+        let fetched = fetch_tracked_status(&Status, &ids).unwrap();
+        let statuses: Vec<_> = fetched
+            .tracked
+            .iter()
+            .map(|tracked| (tracked.pr_id.as_str(), tracked.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("A", TrackedPrStatus::Merged),
+                ("B", TrackedPrStatus::Closed),
+                ("C", TrackedPrStatus::Open),
+                ("D", TrackedPrStatus::Inaccessible),
+            ]
+        );
+        assert!(fetched.tracked.iter().all(|tracked| tracked.row.is_none()));
+        assert_eq!(fetched.rate.map(|rate| rate.cost), Some(1));
+        assert!(fetch_tracked_status(&Status, &[])
+            .unwrap()
+            .tracked
+            .is_empty());
     }
 }

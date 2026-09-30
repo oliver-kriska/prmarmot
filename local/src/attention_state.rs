@@ -342,11 +342,17 @@ impl AttentionState {
         self.watches.iter().find(|watch| watch.pr_id == pr_id)
     }
 
+    /// The watched and snoozed PRs a refresh asks GitHub about, at most
+    /// `limit` of them starting at `offset` (rotating through the rest), and
+    /// how many there are in all. A watch already seen merged is left out:
+    /// merged is final, so fetching it again only spends points and time. A
+    /// closed one stays, because a closed PR can be reopened.
     pub fn tracked_ids(&self, limit: usize, offset: usize) -> (Vec<String>, usize) {
         let mut ids = Vec::new();
         for id in self
             .watches
             .iter()
+            .filter(|watch| watch.status != TrackedStatus::Merged)
             .map(|watch| &watch.pr_id)
             .chain(self.snoozes.iter().map(|snooze| &snooze.pr_id))
         {
@@ -582,6 +588,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: vec!["me".into()],
@@ -696,6 +703,25 @@ mod tests {
         assert_eq!(total, MAX_WATCHES + 1);
         let (rotated, _) = state.tracked_ids(MAX_WATCHES, MAX_WATCHES);
         assert_eq!(rotated.first().map(String::as_str), Some("PR_1000"));
+    }
+
+    #[test]
+    fn a_watch_seen_merged_is_not_asked_about_again() {
+        let mut state = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        for number in 1..=3 {
+            state.toggle_watch(&row(number));
+        }
+        state.update_watch_status("PR_1", TrackedStatus::Merged);
+        state.update_watch_status("PR_2", TrackedStatus::Closed);
+        let (ids, total) = state.tracked_ids(MAX_WATCHES, 0);
+        // Merged is final; a closed PR can be reopened, so it stays.
+        assert_eq!(ids, ["PR_2", "PR_3"]);
+        assert_eq!(total, 2);
+        // The watch itself stays, with its status, until it is removed.
+        assert_eq!(
+            state.watch("PR_1").map(|watch| watch.status),
+            Some(TrackedStatus::Merged)
+        );
     }
 
     #[test]

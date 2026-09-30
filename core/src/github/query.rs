@@ -40,17 +40,21 @@ pub fn available_search_string(repo: &str, who: &str) -> String {
 }
 
 /// All-repositories queue searches. The resolved login is used deliberately:
-/// GitHub's GraphQL search does not expand `@me` consistently.
+/// GitHub's GraphQL search does not expand `@me` consistently. Across every
+/// repository a search can match more PRs than one page holds, and without a
+/// `sort:` GitHub lists the newest *created* first, so an old PR with fresh
+/// activity would fall off the first page; `sort:updated-desc` keeps the live
+/// end on it, as All open does.
 pub fn global_search_string(mode: crate::board::Mode, who: &str) -> String {
     match mode {
         // All open covers one repository, and the fetch refuses it across all
         // of them; were it ever asked here, it must stay scoped to the viewer
         // rather than become a search of every open PR on GitHub.
         crate::board::Mode::Authored | crate::board::Mode::AllOpen => {
-            format!("is:pr is:open involves:{who}")
+            format!("is:pr is:open involves:{who} sort:updated-desc")
         }
         crate::board::Mode::Review => {
-            format!("is:pr is:open review-requested:{who} -author:{who}")
+            format!("is:pr is:open review-requested:{who} -author:{who} sort:updated-desc")
         }
     }
 }
@@ -58,13 +62,13 @@ pub fn global_search_string(mode: crate::board::Mode, who: &str) -> String {
 /// Every open PR you authored, in any repository (the narrower alternative to
 /// the involving search above).
 pub fn global_authored_search_string(who: &str) -> String {
-    format!("is:pr is:open author:{who}")
+    format!("is:pr is:open author:{who} sort:updated-desc")
 }
 
 /// Global available-review candidates must remain involvement-scoped. A bare
 /// `-author:` query would pull arbitrary public PRs from across GitHub.
 pub fn global_available_search_string(who: &str) -> String {
-    format!("is:pr is:open involves:{who} -author:{who}")
+    format!("is:pr is:open involves:{who} -author:{who} sort:updated-desc")
 }
 
 /// The fields every board query selects for one PR, in one place so the
@@ -73,7 +77,11 @@ pub fn global_available_search_string(who: &str) -> String {
 /// "ready for review" for the pickup age (`crate::pickup`); it adds one point
 /// to a two-alias review query's `rateLimit.cost` (7 → 8) and nothing to a
 /// single search (4). `additions deletions changedFiles` feed the size band
-/// (`crate::size`) and cost nothing. `mergeStateStatus`, `canBeRebased` and
+/// (`crate::size`) and cost nothing. `reviews` and `reviewThreads` come oldest
+/// first, so both take the newest end (`last:`): a busy PR's latest reviews
+/// decide its standing reviews, and every reply in a thread is a review of its
+/// own. `totalCount` says when a PR has more threads than the window, so the
+/// unresolved count is a lower bound. `mergeStateStatus`, `canBeRebased` and
 /// the repository's allowed merge methods say whether GitHub's merge button
 /// would work (`crate::board::MergeState`); plain fields, no preview header on
 /// github.com or GHES 3.17+.
@@ -88,11 +96,34 @@ macro_rules! pr_fields {
   labels(first:20){ nodes{ name } }
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(first:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(first:100){ nodes{ isResolved } }
+  reviews(last:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(last:100){ totalCount nodes{ isResolved } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
     };
+}
+
+/// Rows a search page asks for. GitHub stops a GraphQL request after about
+/// 10 s, and with every field above a page of 60 PRs takes 6–11 s when they
+/// span many repositories (measured 2026-09-29), so a request GitHub gives up
+/// on is asked again once with [`SMALL_PAGE_SIZE`].
+pub const PAGE_SIZE: u8 = 60;
+
+/// The page a view falls back to after GitHub gave up on [`PAGE_SIZE`];
+/// about 5 s for the same searches.
+pub const SMALL_PAGE_SIZE: u8 = 30;
+
+/// `query` with its searches asking for `first` rows instead of
+/// [`PAGE_SIZE`]. Only the board searches change: the per-PR windows and All
+/// open's `requested` id list keep their own bounds.
+pub fn with_page_size(query: &str, first: u8) -> String {
+    if first == PAGE_SIZE {
+        return query.to_owned();
+    }
+    query.replace(
+        &format!("type:ISSUE, first:{PAGE_SIZE}"),
+        &format!("type:ISSUE, first:{first}"),
+    )
 }
 
 /// The shared PR selection as the review queries' fragment.
@@ -205,6 +236,10 @@ pub fn with_tracked_nodes(query: &str) -> Result<String, GhError> {
     extended.push_str(TRACKED_FRAGMENT);
     Ok(extended)
 }
+
+/// What became of specific PRs, and nothing else: state only, no connections,
+/// so it costs a point however many ids it carries (at most 100).
+pub const TRACKED_STATUS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  tracked: nodes(ids:$tracked){ ... on PullRequest { id state merged } }\n}";
 
 /// Only the rate budget; [`with_tracked_nodes`] adds the tracked PRs. For
 /// following specific PRs without running a board search.
@@ -717,15 +752,15 @@ mod tests {
     fn global_queries_are_resolved_and_involvement_scoped() {
         assert_eq!(
             global_search_string(crate::board::Mode::Authored, "octocat"),
-            "is:pr is:open involves:octocat"
+            "is:pr is:open involves:octocat sort:updated-desc"
         );
         assert_eq!(
             global_search_string(crate::board::Mode::Review, "octocat"),
-            "is:pr is:open review-requested:octocat -author:octocat"
+            "is:pr is:open review-requested:octocat -author:octocat sort:updated-desc"
         );
         assert_eq!(
             global_available_search_string("octocat"),
-            "is:pr is:open involves:octocat -author:octocat"
+            "is:pr is:open involves:octocat -author:octocat sort:updated-desc"
         );
         assert!(!global_available_search_string("octocat").starts_with("-author:"));
     }
@@ -831,6 +866,54 @@ mod tests {
             assert_eq!(extended.matches("tracked: nodes(ids:$tracked)").count(), 1);
             assert_eq!(extended.matches("fragment TrackedPr").count(), 1);
             assert!(extended.contains("state merged"));
+        }
+    }
+
+    #[test]
+    fn a_smaller_page_shrinks_only_the_board_searches() {
+        let review = with_page_size(REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE);
+        assert_eq!(review.matches("type:ISSUE, first:30").count(), 2);
+        assert!(!review.contains("type:ISSUE, first:60"));
+        // The per-PR windows keep their bounds.
+        assert!(review.contains("reviews(last:60)"));
+        assert!(review.contains("reviewThreads(last:100){ totalCount"));
+        // All open's requested ids keep theirs.
+        let all_open = with_page_size(&with_requested_ids(PR_SEARCH_QUERY).unwrap(), 30);
+        assert!(all_open.contains("type:ISSUE, first:30"));
+        assert!(all_open.contains("type:ISSUE, first:100"));
+        for query in [PR_SEARCH_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY] {
+            assert!(with_page_size(query, 30).contains("first:30, after:"));
+            assert_eq!(with_page_size(query, PAGE_SIZE), query);
+        }
+    }
+
+    #[test]
+    fn github_giving_up_on_a_query_is_told_apart_from_other_failures() {
+        for timeout in [
+            GhError::Network("gh: HTTP 502".into()),
+            GhError::Network("GitHub is having trouble (504)".into()),
+            GhError::Network(
+                "gh: We couldn't respond to your request in time. Sorry about that.".into(),
+            ),
+            GhError::GraphqlErrors(vec![
+                "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug.".into(),
+            ]),
+            GhError::GraphqlErrors(vec!["Query exceeded resource limits".into()]),
+        ] {
+            assert!(timeout.is_query_timeout(), "{timeout:?}");
+        }
+        for other in [
+            GhError::NotAuthenticated,
+            GhError::RateLimited {
+                reset_epoch: None,
+                retry_after_secs: None,
+            },
+            GhError::Network("gh timed out after 60s — killed".into()),
+            GhError::Network("GitHub refused the request (403)".into()),
+            GhError::GraphqlErrors(vec!["Could not resolve to a Repository".into()]),
+            GhError::Parse("missing /data/search/nodes".into()),
+        ] {
+            assert!(!other.is_query_timeout(), "{other:?}");
         }
     }
 }

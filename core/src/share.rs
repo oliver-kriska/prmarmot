@@ -415,6 +415,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),

@@ -76,12 +76,15 @@ fn is_exceptional(blocker: &Blocker) -> bool {
 }
 
 /// The blocker as the emphasised primary phrase (+ optional muted remedy).
-fn blocker_primary(blocker: &Blocker) -> (String, Option<String>) {
+fn blocker_primary(blocker: &Blocker, unresolved_capped: bool) -> (String, Option<String>) {
     match blocker {
         Blocker::MergeConflict => ("merge conflict".into(), Some("rebase".into())),
         Blocker::CannotRebase => (CANNOT_REBASE_NOTE.into(), Some("rebase locally".into())),
         Blocker::CiFailing => ("CI failing".into(), None),
         Blocker::ChangesRequested => ("changes requested".into(), None),
+        Blocker::UnresolvedComments(n) if unresolved_capped => {
+            (format!("resolve {n}+ comments"), None)
+        }
         Blocker::UnresolvedComments(n) => (
             format!("resolve {n} comment{}", if *n == 1 { "" } else { "s" }),
             None,
@@ -98,13 +101,13 @@ fn blocker_primary(blocker: &Blocker) -> (String, Option<String>) {
 
 /// The blocker as a compact muted context fact (shown when a higher-priority
 /// blocker is the primary), so it stays visible on the row, not only on hover.
-fn blocker_context(blocker: &Blocker) -> String {
+fn blocker_context(blocker: &Blocker, unresolved_capped: bool) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict".into(),
         Blocker::CannotRebase => CANNOT_REBASE_NOTE.into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) => unresolved_label(*n),
+        Blocker::UnresolvedComments(n) => unresolved_fact(*n, unresolved_capped),
         Blocker::NoReviewers { .. } => "reviewers missing".into(),
     }
 }
@@ -112,6 +115,15 @@ fn blocker_context(blocker: &Blocker) -> String {
 /// "2 unresolved": open review threads as a short fact, the Note's context
 /// word and what a front end with no column for the count says instead.
 pub fn unresolved_label(count: usize) -> String {
+    unresolved_fact(count, false)
+}
+
+/// [`unresolved_label`] for a count that may be low: "5+ unresolved" when
+/// the PR has more review threads than the newest 100 that were read.
+pub fn unresolved_fact(count: usize, capped: bool) -> String {
+    if capped {
+        return format!("{count}+ unresolved");
+    }
     format!("{count} unresolved")
 }
 
@@ -146,8 +158,11 @@ fn action_presentation(row: &BoardRow, tooltip: String) -> NotePresentation {
     } else {
         Tone::Warning
     };
-    let (primary, remedy) = blocker_primary(primary_blocker);
-    let context = rest.iter().map(|b| blocker_context(b)).collect();
+    let (primary, remedy) = blocker_primary(primary_blocker, row.unresolved_capped);
+    let context = rest
+        .iter()
+        .map(|b| blocker_context(b, row.unresolved_capped))
+        .collect();
     NotePresentation {
         tone,
         primary,
@@ -476,6 +491,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),
@@ -528,6 +544,19 @@ mod tests {
         assert_eq!(p.primary, "can't rebase");
         assert_eq!(p.remedy.as_deref(), Some("rebase locally"));
         assert_eq!(p.context, vec!["1 unresolved"]);
+    }
+
+    #[test]
+    fn a_count_from_only_the_newest_threads_says_it_may_be_more() {
+        let mut r = row();
+        r.unresolved = 2;
+        r.unresolved_capped = true;
+        r.blockers = vec![Blocker::UnresolvedComments(2)];
+        assert_eq!(note_presentation(&r).primary, "resolve 2+ comments");
+        r.blockers = vec![Blocker::CiFailing, Blocker::UnresolvedComments(2)];
+        assert_eq!(note_presentation(&r).context, vec!["2+ unresolved"]);
+        assert_eq!(unresolved_fact(1, true), "1+ unresolved");
+        assert_eq!(unresolved_fact(1, false), unresolved_label(1));
     }
 
     #[test]

@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use prmarmot_core::attention::{Observation, SnapshotNamespace};
 use prmarmot_core::board::{
-    fetch_all_open, fetch_board_scoped, fetch_more_board_scoped, BoardConfig, BoardFetch, BoardRow,
-    BoardScope, Mode,
+    fetch_all_open, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
+    BoardFetch, BoardRow, BoardScope, Mode,
 };
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
@@ -220,7 +220,9 @@ pub fn all_open_needs_repository() -> String {
 
 /// One request, plus up to `pages - 1` user-requested pages. All open sends
 /// `filter` with its search, so GitHub answers those terms for the whole
-/// repository and Load more pages the same search.
+/// repository and Load more pages the same search. `small_pages` is the last
+/// fetch's `pagination.small_pages()` for a caller that polls (false once).
+#[allow(clippy::too_many_arguments)]
 pub fn fetch(
     transport: &dyn GithubTransport,
     mode: Mode,
@@ -229,12 +231,21 @@ pub fn fetch(
     config: &BoardConfig,
     filter: &RemoteFilter,
     pages: u8,
+    small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
     let mut board = match (mode, scope.repository()) {
         (Mode::AllOpen, Some(repo)) => {
-            fetch_all_open(transport, repo, viewer, config, filter, &[])?
+            fetch_all_open(transport, repo, viewer, config, filter, &[], small_pages)?
         }
-        _ => fetch_board_scoped(transport, mode, scope, viewer, config)?,
+        _ => fetch_board_scoped_with_tracked(
+            transport,
+            mode,
+            scope,
+            viewer,
+            config,
+            &[],
+            small_pages,
+        )?,
     };
     for _ in 1..pages {
         if !board.pagination.can_load_more(mode) {
@@ -364,6 +375,7 @@ pub mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: vec!["bob".into()],

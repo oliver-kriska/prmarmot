@@ -133,9 +133,18 @@ impl BoardClient {
         let core_scope: core_board::BoardScope = scope.into();
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
+        let small_pages = self.small_pages(core_mode);
         let fetched = self
             .run(move |core| {
-                core_board::fetch_board_scoped(core, core_mode, &core_scope, &viewer, &cfg)
+                core_board::fetch_board_scoped_with_tracked(
+                    core,
+                    core_mode,
+                    &core_scope,
+                    &viewer,
+                    &cfg,
+                    &[],
+                    small_pages,
+                )
             })
             .await?;
         self.remember(core_mode, &fetched, generation);
@@ -195,6 +204,7 @@ impl BoardClient {
         let core_scope: core_board::BoardScope = scope.into();
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
+        let small_pages = self.small_pages(core_mode);
         let fetched = self
             .run(move |core| {
                 core_board::fetch_board_scoped_with_tracked(
@@ -204,6 +214,7 @@ impl BoardClient {
                     &viewer,
                     &cfg,
                     &tracked_ids,
+                    small_pages,
                 )
             })
             .await?;
@@ -228,9 +239,18 @@ impl BoardClient {
         let remote = RemoteFilter::from_chips(&core_chips(&filter));
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
+        let small_pages = self.small_pages(core_board::Mode::AllOpen);
         let fetched = self
             .run(move |core| {
-                core_board::fetch_all_open(core, &repository, &viewer, &cfg, &remote, &tracked_ids)
+                core_board::fetch_all_open(
+                    core,
+                    &repository,
+                    &viewer,
+                    &cfg,
+                    &remote,
+                    &tracked_ids,
+                    small_pages,
+                )
             })
             .await?;
         self.tracked_board(Mode::AllOpen, fetched, now_epoch, &settings, generation)
@@ -348,6 +368,17 @@ impl BoardClient {
         if pages.generation == generation {
             pages.fetches.insert(key(mode), fetched.clone());
         }
+    }
+
+    /// Whether GitHub gave up on a full page for this mode since the last
+    /// `reset`, so the next fetch asks for the smaller page straight away.
+    fn small_pages(&self, mode: core_board::Mode) -> bool {
+        self.last
+            .lock()
+            .expect("board cache")
+            .fetches
+            .get(&key(mode))
+            .is_some_and(|fetched| fetched.pagination.small_pages())
     }
 
     fn recall(&self, mode: core_board::Mode) -> Option<core_board::BoardFetch> {

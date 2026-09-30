@@ -142,7 +142,11 @@ pub fn detail_fields(
         field(
             DetailKind::Facts,
             Some("Unresolved comments"),
-            row.unresolved.to_string(),
+            if row.unresolved_capped {
+                format!("{}+", row.unresolved)
+            } else {
+                row.unresolved.to_string()
+            },
         ),
         field(
             DetailKind::RequestedReviewers,
@@ -310,6 +314,7 @@ mod tests {
             merge_state: None,
             cannot_rebase: false,
             rebase_only: false,
+            unresolved_capped: false,
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),

@@ -8,6 +8,7 @@ use prmarmot_core::board::{
     strip_note_glyphs, Blocker, BoardRow, BoardScope, Category, Ci, Mode, QueueProvenance,
     ReviewState,
 };
+use prmarmot_core::cells::unresolved_fact;
 use prmarmot_core::layout::{section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
 use prmarmot_core::status::{
@@ -140,6 +141,7 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         })).collect::<Vec<_>>(),
         "my_review": row.my_review,
         "unresolved_threads": row.unresolved,
+        "unresolved_threads_capped": row.unresolved_capped,
         "labels": row.labels,
         "issue": row.issue.as_ref().map(|key| json!({ "key": key, "url": row.issue_url })),
         "stack": row.stack.as_ref().map(|stack| json!({
@@ -330,12 +332,13 @@ fn blocker_rank(blocker: &Blocker) -> u8 {
     }
 }
 
-fn blocker_primary(blocker: &Blocker) -> String {
+fn blocker_primary(blocker: &Blocker, unresolved_capped: bool) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict — rebase".into(),
         Blocker::CannotRebase => "can't rebase — rebase locally".into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
+        Blocker::UnresolvedComments(n) if unresolved_capped => format!("resolve {n}+ comments"),
         Blocker::UnresolvedComments(n) => {
             format!("resolve {n} comment{}", if *n == 1 { "" } else { "s" })
         }
@@ -344,13 +347,13 @@ fn blocker_primary(blocker: &Blocker) -> String {
     }
 }
 
-fn blocker_context(blocker: &Blocker) -> String {
+fn blocker_context(blocker: &Blocker, unresolved_capped: bool) -> String {
     match blocker {
         Blocker::MergeConflict => "merge conflict".into(),
         Blocker::CannotRebase => "can't rebase".into(),
         Blocker::CiFailing => "CI failing".into(),
         Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) => format!("{n} unresolved"),
+        Blocker::UnresolvedComments(n) => unresolved_fact(*n, unresolved_capped),
         Blocker::NoReviewers { .. } => "reviewers missing".into(),
     }
 }
@@ -378,10 +381,10 @@ pub fn note(row: &BoardRow) -> Note {
             } else {
                 Tone::Warning
             };
-            let mut text = blocker_primary(primary);
+            let mut text = blocker_primary(primary, row.unresolved_capped);
             for blocker in rest {
                 text.push_str(" · ");
-                text.push_str(&blocker_context(blocker));
+                text.push_str(&blocker_context(blocker, row.unresolved_capped));
             }
             Note { tone, text }
         }
@@ -1430,6 +1433,20 @@ mod tests {
         review.conflict = true;
         assert_eq!(note(&review).tone, Tone::Danger);
         assert_eq!(note(&row(3, Category::Draft)).tone, Tone::Muted);
+    }
+
+    #[test]
+    fn a_count_from_only_the_newest_threads_says_it_may_be_more() {
+        let mut pr = row(1, Category::Action);
+        pr.unresolved = 2;
+        pr.unresolved_capped = true;
+        pr.blockers = vec![Blocker::UnresolvedComments(2)];
+        assert_eq!(note(&pr).text, "resolve 2+ comments");
+        pr.blockers = vec![Blocker::CiFailing, Blocker::UnresolvedComments(2)];
+        assert_eq!(note(&pr).text, "CI failing · 2+ unresolved");
+        let json = pr_json(&pr, &Marks::default());
+        assert_eq!(json["unresolved_threads"], 2);
+        assert_eq!(json["unresolved_threads_capped"], true);
     }
 
     #[test]

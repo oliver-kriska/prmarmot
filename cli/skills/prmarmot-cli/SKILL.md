@@ -65,7 +65,9 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
 - **Identity:** `repo`, `number`, `url`, `title`, `author`.
 - **State:** `ci` (`pass`, `fail`, `running`, `none`), `conflict`,
   `review_decision`, `requested_reviewers`, `reviews[]`, `my_review`,
-  `unresolved_threads`, `labels`, `issue`, `stack`.
+  `unresolved_threads`, `labels`, `issue`, `stack`. `unresolved_threads_capped`
+  is true when the PR has more threads than the newest 100 that were read, so
+  the count is a minimum.
 - **Reviews:** `reviews[]` has each other reviewer's standing review and
   `my_review` the user's own (`NONE` if none). A standing review is the latest,
   except that a later comment does not cancel an approval or change request.

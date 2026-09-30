@@ -23,6 +23,29 @@ in `core/tests/parity.rs` (the goldens stay as they are; rows without a merge
 state keep the prototype's wording). `DetailKind::Snapshot` is removed from
 core and ffi.
 
+**FACT: GitHub's server time, not points, limits a refresh (measured
+2026-09-29, `.claude/research/2026-09-29-github-api-efficiency.md`).** A 60-PR
+page takes 6–11 s against GitHub's ~10 s cut-off; Involving me timed out in
+most CLI runs, on the released v0.13.1 query as well. Since July 2025 a timeout
+also costs rate-limit points. Changes, unreleased, all Oliver's picks:
+- A request GitHub gives up on (`GhError::is_query_timeout`: 502/504, "in
+  time", a timeout or resource-limit GraphQL error) is asked again once with 30
+  rows. The view keeps 30-row pages, Load more included, through
+  `BoardPagination::small_pages()`: the app until a scope change or quit, the
+  ffi client until `reset`, the CLI watch for its run.
+- The all-repositories searches add `sort:updated-desc` (the default order is
+  newest created, which left an active older PR off Involving me's first page).
+- `reviews(last:60)` and `reviewThreads(last:100){ totalCount }` read the
+  newest end. More than 100 threads makes the count a minimum ("5+"), shown in
+  the Note, Details, the Note cell, the Unres column, the CLI, and
+  `unresolved_threads_capped` in the JSON and ffi. Recorded as a port-only
+  divergence in `core/tests/parity.rs`; the goldens are unchanged.
+- `tracked_ids` skips watches already seen merged. The CLI watch's removed-PR
+  lookup asks for state alone (`fetch_tracked_status`, about one point).
+- The CLI resolves the login without a request per run
+  (`Session::login_cached`: the stored login, or `gh api user --cache 10m`).
+  The desktop keeps `login()`, which also checks the token.
+
 **OPEN QUESTION:** the three fields are GA on github.com and GHES 3.17–3.22.
 GHES 3.12 and older needed the merge-info preview header, and 3.14–3.16 are
 unverified. There, the query may be rejected. Check one of those servers'

@@ -79,6 +79,23 @@ impl Session {
         }
     }
 
+    /// The signed-in account for a caller that runs once and exits (the CLI),
+    /// without a request on every run: the login remembered at sign-in when
+    /// there is one, and on the `gh` path `gh`'s own ten-minute cache of
+    /// `gh api user`, which is keyed on the token, so another `gh` account
+    /// is never answered from it. A token that stopped working still fails,
+    /// on the board request instead. The desktop keeps [`Session::login`],
+    /// which checks the token before the first board.
+    pub fn login_cached(&self) -> Result<String, GhError> {
+        if let Some(login) = &self.stored_login {
+            return Ok(login.clone());
+        }
+        match self.connection {
+            Connection::GhCli => gh_cli::current_login_cached(),
+            _ => viewer_login(self.transport()),
+        }
+    }
+
     /// Every repository affiliation visible to this account, bounded exactly
     /// as the `gh` path bounds it.
     pub fn list_repos(&self) -> Result<RepoDiscovery, GhError> {

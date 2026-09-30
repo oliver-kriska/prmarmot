@@ -598,7 +598,9 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   order.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
-  `unresolved_threads`, `labels`, `issue`, `stack`, typed `blockers`, and the
+  `unresolved_threads` (with `unresolved_threads_capped` when the PR has more
+  threads than the newest 100 that were read), `labels`, `issue`, `stack`,
+  typed `blockers`, and the
   plain-text `note`. `waiting_since` is the pickup age's start (null when the
   PR isn't waiting for a reviewer) and `stale` says whether it has waited
   `filters.stale_after_days` or longer. `size` has `band` (`small`,
@@ -735,7 +737,8 @@ determine what is visible.
 
 Each initial involvement/authored search returns up to 60 PRs. In
 all-repositories scope, candidates are limited to PRs involving your resolved
-login; PR Marmot never broadens this to arbitrary other-authored public PRs.
+login, most recently updated first; PR Marmot never broadens this to arbitrary
+other-authored public PRs.
 Review queue uses one GraphQL operation with two search aliases: up to 60
 explicitly requested PRs and 60 other-authored candidates, then keeps available
 candidates only when they have no pending user or team reviewer request. Your
@@ -751,6 +754,11 @@ The header shows GitHub's total, so a filtered or truncated list is never
 passed off as complete. Opening All open doesn't make other people's PRs
 notify you or count on the Dock badge: only PRs you watch, your own, and those
 requesting your review are followed.
+
+GitHub stops a GraphQL request after about 10 seconds, and a page of 60 PRs
+spread over many repositories can take longer. When GitHub gives up on a page,
+PR Marmot asks again at once for 30 PRs, and that view loads 30 at a time,
+Load more included, until you quit or change the repository.
 
 A **partial results** notice means GitHub has another page. **Load more** can
 advance each active search to a maximum of five pages: at most 300 authored
@@ -769,7 +777,9 @@ so the band doesn't use it.
 
 Search and Details operate on the loaded snapshot and make no per-PR request.
 Reviewer, label, thread, and stack information is subject to the GraphQL
-query's per-PR limits. Stack grouping uses GitHub's native stack metadata—not
+query's per-PR limits. The newest 60 reviews and newest 100 review threads are
+read, and a PR with more threads shows its unresolved count as a minimum
+("5+"). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
 labels or guessed branch relationships—and reports partial stacks when not all
 layers appear in the same loaded section.
 

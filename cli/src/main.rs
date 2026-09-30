@@ -154,7 +154,7 @@ fn setup(
 
 fn connect(setup: &view::Setup) -> Result<(Session, String), GhError> {
     let session = view::connect(setup)?;
-    let login = session.login()?;
+    let login = session.login_cached()?;
     Ok((session, login))
 }
 
@@ -195,6 +195,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
         &setup.board,
         &filters.remote(args.mode),
         args.pages,
+        false,
     ) {
         Ok(fetch) => fetch,
         Err(error) => return fail(&error),

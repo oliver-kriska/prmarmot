@@ -972,3 +972,80 @@ fn a_section_order_list_moves_names_and_reports_what_it_skipped() {
     assert_eq!(entries[2].views, "Review queue, Involving me, All open");
     assert_eq!(entries.last().unwrap().name, "Drafts");
 }
+
+/// GitHub as it answered a cross-repository search on 2026-09-29: a full page
+/// timed out (HTTP 502), a smaller one came back.
+struct GivesUpOnFullPages {
+    body: String,
+    pages: Mutex<Vec<&'static str>>,
+}
+
+#[async_trait::async_trait]
+impl GithubTransport for GivesUpOnFullPages {
+    async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+        let full = request.body.contains("type:ISSUE, first:60");
+        self.pages
+            .lock()
+            .unwrap()
+            .push(if full { "full" } else { "small" });
+        Ok(HttpResponse {
+            status: if full { 502 } else { 200 },
+            headers: Vec::new(),
+            body: if full {
+                "<html>502 Bad Gateway</html>".into()
+            } else {
+                self.body.clone()
+            },
+        })
+    }
+
+    async fn get(
+        &self,
+        _request: prmarmot_ffi::transport::RestRequest,
+    ) -> Result<HttpResponse, FfiError> {
+        unreachable!("no REST call here")
+    }
+}
+
+/// The iPad gets the desktop's fallback without a line of Swift: a view GitHub
+/// could not answer in time is asked again with fewer rows, and keeps asking
+/// for fewer until `reset`.
+#[test]
+fn a_view_github_could_not_answer_in_time_keeps_its_smaller_pages_until_reset() {
+    let path = format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let transport = Arc::new(GivesUpOnFullPages {
+        body: std::fs::read_to_string(&path).unwrap(),
+        pages: Mutex::new(Vec::new()),
+    });
+    let client = BoardClient::new(
+        ClientConfig {
+            host: "github.com".into(),
+            viewer: "me".into(),
+            user_agent: "prmarmot-ffi-test/0".into(),
+        },
+        transport.clone(),
+        Arc::new(Token),
+    );
+    let fetch = || {
+        futures::executor::block_on(client.fetch_board(
+            Mode::Authored,
+            BoardScope::AllRepositories,
+            settings(),
+            NOW,
+        ))
+        .unwrap()
+    };
+    assert!(!fetch().rows.is_empty());
+    assert_eq!(*transport.pages.lock().unwrap(), ["full", "small"]);
+    fetch();
+    assert_eq!(*transport.pages.lock().unwrap(), ["full", "small", "small"]);
+    client.reset();
+    fetch();
+    assert_eq!(
+        *transport.pages.lock().unwrap(),
+        ["full", "small", "small", "full", "small"]
+    );
+}

@@ -92,6 +92,30 @@ impl fmt::Display for GhError {
 
 impl std::error::Error for GhError {}
 
+impl GhError {
+    /// GitHub gave up on the query itself rather than refusing it: it stops a
+    /// GraphQL request after about 10 s (HTTP 502 or 504, "couldn't respond to
+    /// your request in time", or a GraphQL error that mentions a timeout) and
+    /// ends one that exceeds its resource limits. The same request with fewer
+    /// rows may get through. Our own watchdog kill of a hung `gh` is not one:
+    /// that is the network, and a smaller page would not help.
+    pub fn is_query_timeout(&self) -> bool {
+        let says = |message: &str| {
+            let message = message.to_lowercase();
+            message.contains("in time")
+                || message.contains("timeout")
+                || message.contains("resource limit")
+        };
+        match self {
+            GhError::Network(message) => {
+                message.contains("502") || message.contains("504") || says(message)
+            }
+            GhError::GraphqlErrors(messages) => messages.iter().any(|message| says(message)),
+            _ => false,
+        }
+    }
+}
+
 /// One GraphQL call. Implementations must be callable from a background
 /// thread; blocking inside is acceptable (the caller runs it off the UI thread).
 pub trait GithubTransport: Send + Sync {

@@ -253,6 +253,15 @@ pub fn current_login() -> Result<String, GhError> {
     run_gh_line(Command::new(resolve_gh_path()).args(["api", "user", "--jq", ".login"]))
 }
 
+/// [`current_login`] answered from `gh`'s response cache when it asked in the
+/// last ten minutes. The cache key includes the token, so `gh auth switch` or
+/// a new login asks GitHub again.
+pub fn current_login_cached() -> Result<String, GhError> {
+    run_gh_line(
+        Command::new(resolve_gh_path()).args(["api", "user", "--cache", "10m", "--jq", ".login"]),
+    )
+}
+
 /// Every repository affiliation visible to the authenticated user, newest
 /// activity first. Unlike `gh repo list`, this includes collaborations and
 /// organization membership. Pagination and the memory bound are explicit.

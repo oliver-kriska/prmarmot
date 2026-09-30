@@ -404,6 +404,11 @@ pub struct PullRequest {
     pub reviews: Vec<Review>,
     pub my_review: Option<String>,
     pub unresolved_threads: u32,
+    /// The PR has more review threads than the newest 100 that were read, so
+    /// `unresolved_threads` may be low; the core Note then says "5+".
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub unresolved_capped: bool,
     pub labels: Vec<String>,
     pub bug: bool,
     pub note: String,
@@ -465,6 +470,7 @@ impl PullRequest {
                 .collect(),
             my_review: row.my_review.clone(),
             unresolved_threads: row.unresolved as u32,
+            unresolved_capped: row.unresolved_capped,
             labels: row.labels.clone(),
             bug: row.bug,
             note: row.note.clone(),
@@ -540,6 +546,7 @@ impl PullRequest {
                 .collect(),
             my_review: self.my_review,
             unresolved: self.unresolved_threads as usize,
+            unresolved_capped: self.unresolved_capped,
             blockers: self
                 .blockers
                 .iter()
