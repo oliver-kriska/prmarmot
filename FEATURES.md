@@ -15,7 +15,7 @@ values in the code. New features get the next free number in their area.
 - **F-board-2** **Involving me** is the zero-config default: open PRs involving your GitHub login across all
   repositories. Your own PRs get actionable Notes, and other people's get status Notes ("alice's PR · approved").
   It never widens to PRs that don't involve you. _since v0.6.0_ Across all repositories the most recently updated PRs
-  come first, so the first page holds the ones with fresh activity rather than the newest opened. _unreleased_
+  come first, so the first page holds the ones with fresh activity rather than the newest opened. _since v0.14.0_
 - **F-board-3** **My PRs** in one repository lists the PRs you opened there. _since v0.1.0_
 - **F-board-4** **Review queue** splits PRs that request your review (**Requested from you**) from other people's
   PRs with no pending user or team reviewer request (**Available to review**), an optional pool rather than an
@@ -179,12 +179,12 @@ values in the code. New features get the next free number in their area.
   When the repository allows rebase merges and GitHub can't rebase an approved PR's branch, the Note adds "can't
   rebase" and the PR stays in Approved. If rebase is the only merge method the repository allows, your PR whose
   branch can't be rebased is in Needs action with "can't rebase — rebase locally", and someone else's gets "can't
-  rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _unreleased_
+  rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _since v0.14.0_
 - **F-note-15** A cancelled check doesn't make CI fail. GitHub reports failing CI when any check was cancelled,
   even one no rule requires, so PR Marmot counts the latest commit's checks by state: only a failed, timed-out,
   action-required or start-up-failure check, or a failing commit status, makes CI fail. When every other check
   passed or was skipped, CI shows as passing (running while a check still runs). This applies to the CI column,
-  the Note, the section a PR lands in, notifications and `watch --until`. _unreleased_
+  the Note, the section a PR lands in, notifications and `watch --until`. _since v0.14.0_
 
 ## Search and filters
 
@@ -239,7 +239,7 @@ values in the code. New features get the next free number in their area.
 - **F-track-3** **Watch** (`w`) follows a PR even outside the current view. Up to 50 watches are kept; a 51st drops
   the oldest, and the footer says which. Watched and snoozed PRs refresh in the same request as the board, at most
   50 per refresh, taking turns when there are more. _since v0.6.0_ A watched PR already seen merged is no longer
-  fetched. _unreleased_
+  fetched. _since v0.14.0_
 - **F-track-4** **Snooze** (`s`) moves a PR to a collapsed **Snoozed** group, where it adds no alerts or counts
   until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches.
   _since v0.13.0_
@@ -362,7 +362,7 @@ values in the code. New features get the next free number in their area.
 - **F-refresh-6** Each PR's data is capped: 20 labels, 15 review requests, 60 reviews, 100 review threads (so the
   unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_ The reviews and threads read are
   the newest ones, and a PR with more than 100 threads shows its unresolved count as a minimum ("5+ unresolved
-  comments"). _unreleased_
+  comments"). _since v0.14.0_
 - **F-refresh-7** If the first load fails, **Retry** tries again. A watched PR you can no longer see is reported as
   unavailable, and the refresh still succeeds. _since v0.5.0; unavailable PRs since v0.7.0_
 - **F-refresh-8** An idle window repaints at most once a minute, with no animated spinner, so the GPU stays idle.
@@ -371,7 +371,7 @@ values in the code. New features get the next free number in their area.
   repositories can take longer. When GitHub gives up, PR Marmot asks again at once for 30 PRs, and that view keeps
   loading 30 at a time, Load more included, until you quit or change the repository. `prmarmot-cli watch` does the
   same between polls. A smaller page shows like any other partial page, with the **partial results** notice and
-  Load more (F-refresh-4); nothing says why it is smaller. _unreleased_
+  Load more (F-refresh-4); nothing says why it is smaller. _since v0.14.0_
 
 ## Settings, theme, shortcuts
 
@@ -454,7 +454,7 @@ values in the code. New features get the next free number in their area.
   same query, categories, Notes, sections, stacks, config file, and sign-in. The CLI reads the app's watches and
   snoozes but never changes them, and never clears a changed marker. _since v0.7.0_ It no longer asks GitHub who
   you are on every run: it uses the login saved at sign-in, or on the `gh` path `gh`'s own ten-minute cache, which
-  is kept per token. _unreleased_
+  is kept per token. _since v0.14.0_
 - **F-cli-2** It is bundled inside the app and linked by every installer. It has no GPUI dependency, so it builds
   without Metal (`cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli`), with Rust
   1.85 or newer. _since v0.7.0_
@@ -485,7 +485,7 @@ values in the code. New features get the next free number in their area.
   - Events: `ready`, `changed`, `added`, `removed`, `rate_limited`, and `error`.
   - A removed PR costs one small extra request to learn whether it merged or closed, for up to 50 removals per
     poll; the rest are reported as `unknown`. That request asks for their state alone, about one point.
-    _unreleased_
+    _since v0.14.0_
   - `--events N` exits after N events.
 
   _since v0.7.0_
