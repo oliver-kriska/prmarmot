@@ -5,8 +5,10 @@
 #
 # Sets the [package] version of the app (Cargo.toml) and the CLI
 # (cli/Cargo.toml) together — a prmarmot-cli unit test pins them equal —
-# refreshes only the workspace entries in Cargo.lock, and regenerates
-# CHANGELOG.md for vX.Y.Z with git-cliff. It never commits, tags, or pushes:
+# refreshes only the workspace entries in Cargo.lock, marks FEATURES.md's
+# `_unreleased_` sentences `_since vX.Y.Z_` (the site's feature page leaves
+# unreleased ones out), and regenerates CHANGELOG.md for vX.Y.Z with
+# git-cliff, then checks FEATURES.md against it. It never commits, tags, or pushes:
 # publishing is the tag-only flow in packaging/RELEASING.md and needs explicit
 # approval first.
 set -euo pipefail
@@ -74,10 +76,22 @@ set_package_version cli/Cargo.toml
 cargo metadata --format-version 1 --offline >/dev/null
 echo "Set the app and CLI to $VERSION (was $CURRENT) and refreshed Cargo.lock"
 
+# grep -c exits 1 when it counts nothing; that is not an error here.
+released="$(grep -c '_unreleased_' FEATURES.md || true)"
+if [[ "$released" != 0 ]]; then
+  tmp="$(mktemp FEATURES.md.XXXXXX)"
+  sed "s/_unreleased_/_since v${VERSION}_/g" FEATURES.md >"$tmp"
+  cat "$tmp" >FEATURES.md
+  rm -f "$tmp"
+  echo "Marked $released FEATURES.md sentence(s) _since v${VERSION}_"
+fi
+
 if [[ "$CHANGELOG" == 1 ]]; then
   if command -v git-cliff >/dev/null 2>&1; then
     git cliff --config cliff.toml --tag "v$VERSION" -o CHANGELOG.md
     echo "Regenerated CHANGELOG.md for v$VERSION"
+    # A release whose CHANGELOG lists Features must name them in FEATURES.md.
+    scripts/features-check.sh
   else
     echo "warning: git-cliff not found; CHANGELOG.md not regenerated (brew install git-cliff)" >&2
   fi
@@ -88,7 +102,7 @@ cat <<EOF
 Next (packaging/RELEASING.md):
   git fetch --tags && git tag -l v$VERSION   # must print nothing: tags created on GitHub only exist remotely
   make verify
-  git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md
+  git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md FEATURES.md
   git commit -m "chore(release): v$VERSION"
 Then, only with explicit approval: push main, then push the v$VERSION tag.
 EOF

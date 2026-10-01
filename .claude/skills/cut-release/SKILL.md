@@ -67,9 +67,9 @@ printed anything, the candidate run in step 4 is required.
 ### 3. Bump (after the version is agreed)
 
 ```sh
-make bump V=<X.Y.Z>     # root + cli/Cargo.toml versions, Cargo.lock, CHANGELOG.md; never commits
+make bump V=<X.Y.Z>     # root + cli/Cargo.toml versions, Cargo.lock, CHANGELOG.md, FEATURES.md markers; never commits
 make verify
-git diff --stat         # exactly Cargo.toml, cli/Cargo.toml, Cargo.lock, CHANGELOG.md
+git diff --stat         # exactly Cargo.toml, cli/Cargo.toml, Cargo.lock, CHANGELOG.md (+ FEATURES.md when it had _unreleased_ markers)
 ```
 
 ### 4. The gate — show the user and wait
@@ -89,7 +89,7 @@ and verify the downloaded candidate per RELEASING.md (including the
 ## Phase B — publish (irreversible, only after approval)
 
 ```sh
-git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md FEATURES.md
 git commit -m "chore(release): v<X.Y.Z>"     # cliff.toml skips this commit next cycle
 git push origin main
 git tag v<X.Y.Z> && git push origin v<X.Y.Z>

@@ -98,9 +98,9 @@ changing the version or pushing a tag.
 Prepare the release commit on an up-to-date `main`:
 
 ```sh
-make bump V=<approved-new-version>   # app + CLI versions, Cargo.lock, CHANGELOG.md; never commits
+make bump V=<approved-new-version>   # app + CLI versions, Cargo.lock, CHANGELOG.md, FEATURES.md markers; never commits
 make verify
-git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml cli/Cargo.toml Cargo.lock CHANGELOG.md FEATURES.md
 git commit -m "chore(release): v<approved-new-version>"
 git push origin main
 ```

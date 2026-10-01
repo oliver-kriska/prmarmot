@@ -79,7 +79,7 @@ changelog: ## Regenerate CHANGELOG.md from the commit history (git-cliff)
 unreleased: ## Print what's on main but not in the latest tag
 	@git cliff --config cliff.toml --unreleased --strip all
 
-bump: ## Set app + CLI version, Cargo.lock, CHANGELOG for a release commit: make bump V=X.Y.Z (no commit/tag)
+bump: ## Set app + CLI version, Cargo.lock, CHANGELOG, FEATURES markers for a release commit: make bump V=X.Y.Z (no commit/tag)
 	@test -n "$(V)" || { echo "usage: make bump V=X.Y.Z"; exit 2; }
 	scripts/bump-version.sh $(V)
 
