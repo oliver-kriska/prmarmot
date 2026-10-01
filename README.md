@@ -780,8 +780,8 @@ Reviewer, label, thread, and stack information is subject to the GraphQL
 query's per-PR limits. The newest 60 reviews and newest 100 review threads are
 read, and a PR with more threads shows its unresolved count as a minimum
 ("5+"). CI comes from the latest commit's checks counted by state, so a
-cancelled or skipped check doesn't make it fail (GitHub's own summary reports
-failing CI for any cancelled check). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
+cancelled or skipped check doesn't make it fail (GitHub's combined check status
+reads failing for any cancelled check). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
 labels or guessed branch relationships—and reports partial stacks when not all
 layers appear in the same loaded section.
 
