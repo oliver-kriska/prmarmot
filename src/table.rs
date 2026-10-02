@@ -836,6 +836,7 @@ impl BoardTableDelegate {
     fn set_rows(&mut self, rows: Vec<BoardRow>) {
         self.rows = rows;
         self.rebuild_display();
+        self.prune_multi();
     }
 
     #[cfg(test)]
@@ -861,8 +862,12 @@ impl BoardTableDelegate {
         self.snoozed = attention.snoozed;
         self.collapsed = attention.collapsed;
         self.rebuild_display();
-        // A selected PR that left the board leaves the selection; one left
-        // alone is the caret row again.
+        self.prune_multi();
+    }
+
+    /// A selected PR that left the board leaves the selection; one left
+    /// alone is the caret row again.
+    fn prune_multi(&mut self) {
         let ids: HashSet<&str> = self.rows.iter().map(|row| row.id.as_str()).collect();
         self.multi.retain(|id| ids.contains(id.as_str()));
         if self.multi.len() <= 1 {
