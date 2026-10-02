@@ -417,6 +417,7 @@ mod tests {
             conflict: false,
             mergeable_unknown: false,
             merge_state: None,
+            merge_queue: None,
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,

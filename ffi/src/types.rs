@@ -276,6 +276,72 @@ impl From<MergeState> for core_board::MergeState {
     }
 }
 
+/// Where a PR stands in its repository's merge queue; see core's
+/// `MergeQueueState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+pub enum MergeQueueState {
+    Queued,
+    AwaitingChecks,
+    Mergeable,
+    Locked,
+    Unmergeable,
+    Unknown,
+}
+
+impl From<core_board::MergeQueueState> for MergeQueueState {
+    fn from(state: core_board::MergeQueueState) -> Self {
+        use core_board::MergeQueueState as Core;
+        match state {
+            Core::Queued => Self::Queued,
+            Core::AwaitingChecks => Self::AwaitingChecks,
+            Core::Mergeable => Self::Mergeable,
+            Core::Locked => Self::Locked,
+            Core::Unmergeable => Self::Unmergeable,
+            Core::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<MergeQueueState> for core_board::MergeQueueState {
+    fn from(state: MergeQueueState) -> Self {
+        match state {
+            MergeQueueState::Queued => Self::Queued,
+            MergeQueueState::AwaitingChecks => Self::AwaitingChecks,
+            MergeQueueState::Mergeable => Self::Mergeable,
+            MergeQueueState::Locked => Self::Locked,
+            MergeQueueState::Unmergeable => Self::Unmergeable,
+            MergeQueueState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// A PR's merge-queue entry: GitHub merges it when its turn comes.
+/// `position` is one-based, as GitHub shows it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
+)]
+pub struct MergeQueue {
+    pub state: MergeQueueState,
+    pub position: Option<u64>,
+}
+
+impl From<core_board::MergeQueue> for MergeQueue {
+    fn from(queue: core_board::MergeQueue) -> Self {
+        Self {
+            state: queue.state.into(),
+            position: queue.position,
+        }
+    }
+}
+
+impl From<MergeQueue> for core_board::MergeQueue {
+    fn from(queue: MergeQueue) -> Self {
+        Self {
+            state: queue.state.into(),
+            position: queue.position,
+        }
+    }
+}
 /// One completed review, latest per author.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct Review {
@@ -432,6 +498,11 @@ pub struct PullRequest {
     #[serde(default)]
     #[uniffi(default = None)]
     pub merge_state: Option<MergeState>,
+    /// The PR's merge-queue entry, when it is in one: the Note then says
+    /// "in merge queue, position N" instead of "mergeable".
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub merge_queue: Option<MergeQueue>,
     /// GitHub reports that rebase-and-merge would fail although the
     /// repository allows it and the PR has no merge conflict.
     #[serde(default)]
@@ -503,6 +574,7 @@ impl PullRequest {
             conflict: row.conflict,
             mergeable_unknown: row.mergeable_unknown,
             merge_state: row.merge_state.map(Into::into),
+            merge_queue: row.merge_queue.map(Into::into),
             cannot_rebase: row.cannot_rebase,
             rebase_only: row.rebase_only,
             review_decision: row.review_decision.as_ref().map(|d| d.as_str().to_owned()),
@@ -580,6 +652,7 @@ impl PullRequest {
             conflict: self.conflict,
             mergeable_unknown: self.mergeable_unknown,
             merge_state: self.merge_state.map(Into::into),
+            merge_queue: self.merge_queue.map(Into::into),
             cannot_rebase: self.cannot_rebase,
             rebase_only: self.rebase_only,
             review_decision: self.review_decision.map(Into::into),

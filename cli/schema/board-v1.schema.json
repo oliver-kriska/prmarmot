@@ -171,6 +171,20 @@
         },
         "ci": { "enum": ["pass", "fail", "running", "none", "hidden"], "description": "The head commit's check rollup; none when it has no checks, hidden when the token may not read them (a fine-grained token never can)." },
         "conflict": { "type": "boolean" },
+        "merge_queue": {
+          "description": "The PR's entry in its repository's merge queue, or null when it is not queued. GitHub merges a queued PR when its turn comes, so the Note says \"in merge queue, position N\" rather than \"mergeable\". Absent from releases up to v0.14.0.",
+          "type": ["object", "null"],
+          "properties": {
+            "state": { "enum": ["queued", "awaiting_checks", "mergeable", "locked", "unmergeable", "unknown"] },
+            "position": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "One-based, as GitHub shows it; null when GitHub did not say."
+            }
+          },
+          "required": ["state", "position"],
+          "additionalProperties": false
+        },
         "review_decision": {
           "enum": ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", null],
           "description": "GitHub's decision; null without branch protection that requires reviews."

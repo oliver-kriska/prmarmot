@@ -88,15 +88,15 @@ pub fn global_available_search_string(who: &str) -> String {
 /// github.com or GHES 3.17+. The rollup's per-state counts of checks and
 /// statuses let a cancelled check stop reading as a failure
 /// (`crate::board::derive_ci`); they cost nothing extra (2 points for 30 rows
-/// either way, measured 2026-09-30).
+/// either way, measured 2026-09-30). The newest 30 contexts' names and run
 macro_rules! pr_fields {
     () => {
         r#"id url repository { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } updatedAt headRefOid
   number title isDraft reviewDecision mergeable mergeStateStatus canBeRebased createdAt
+  mergeQueueEntry { state position }
   additions deletions changedFiles
   stack { number size baseRefName }
   stackEntry { position }
-  author{ login }
   labels(first:20){ nodes{ name } }
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
@@ -571,6 +571,16 @@ pub struct RawStackEntry {
     pub position: u64,
 }
 
+/// `mergeQueueEntry { state position }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawMergeQueueEntry {
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub position: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
@@ -618,6 +628,10 @@ pub struct RawPr {
     /// Whether rebase-and-merge would go through. Absent in prototype fixtures.
     #[serde(default)]
     pub can_be_rebased: Option<bool>,
+    /// The PR's entry in its repository's merge queue, when it is in one.
+    /// Absent in prototype fixtures and `null` for every PR not queued.
+    #[serde(default)]
+    pub merge_queue_entry: Option<RawMergeQueueEntry>,
     pub created_at: String,
     /// Change counts for the size band. Absent in prototype fixtures.
     #[serde(default)]

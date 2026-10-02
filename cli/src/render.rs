@@ -85,6 +85,19 @@ fn author_column(mode: Mode) -> bool {
 
 // ---- JSON ------------------------------------------------------------------
 
+/// The merge-queue state's stable key.
+fn merge_queue_key(state: prmarmot_core::board::MergeQueueState) -> &'static str {
+    use prmarmot_core::board::MergeQueueState as S;
+    match state {
+        S::Queued => "queued",
+        S::AwaitingChecks => "awaiting_checks",
+        S::Mergeable => "mergeable",
+        S::Locked => "locked",
+        S::Unmergeable => "unmergeable",
+        S::Unknown => "unknown",
+    }
+}
+
 fn ci_key(ci: Ci) -> &'static str {
     ci.as_str()
 }
@@ -121,6 +134,10 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         }),
         "ci": ci_key(row.ci),
         "conflict": row.conflict,
+        "merge_queue": row.merge_queue.map(|queue| json!({
+            "state": merge_queue_key(queue.state),
+            "position": queue.position,
+        })),
         "review_decision": row.review_decision,
         "review_state": row.review_state.as_str(),
         "requested_reviewers": row.requested,
@@ -1048,6 +1065,32 @@ mod tests {
         assert!(markdown(&unfiltered, false).contains("_No open PRs in this repository_"));
     }
 
+    #[test]
+    fn a_queued_pr_s_json_names_its_place_in_the_merge_queue() {
+        use crate::schema_check::{assert_conforms, Schema};
+        use prmarmot_core::board::{MergeQueue, MergeQueueState};
+        let mut view = sample_view(Mode::Authored);
+        view.rows[0].merge_queue = Some(MergeQueue {
+            state: MergeQueueState::AwaitingChecks,
+            position: Some(2),
+        });
+        let number = view.rows[0].number;
+        let value = board_json(&view);
+        assert_conforms(Schema::Board, &value);
+        let prs: Vec<&serde_json::Value> = value["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section["prs"].as_array().unwrap())
+            .collect();
+        let queued = prs.iter().find(|pr| pr["number"] == number).unwrap();
+        assert_eq!(queued["merge_queue"]["state"], "awaiting_checks");
+        assert_eq!(queued["merge_queue"]["position"], 2);
+        assert!(prs
+            .iter()
+            .filter(|pr| pr["number"] != number)
+            .all(|pr| pr["merge_queue"].is_null()));
+    }
     #[test]
     fn json_matches_the_published_schema() {
         use crate::schema_check::{assert_conforms, Schema};

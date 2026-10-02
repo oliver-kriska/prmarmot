@@ -355,6 +355,62 @@ fn an_approved_pr_is_mergeable_only_when_github_says_so() {
     assert_eq!(row.note, "🟢 approved — mergeable");
 }
 
+#[test]
+fn a_queued_pr_says_where_it_stands_in_the_merge_queue_not_mergeable() {
+    let note = |state: &str, position: Option<u64>| {
+        let mut v = approved(2);
+        v["mergeStateStatus"] = json!("BLOCKED");
+        v["mergeQueueEntry"] = json!({ "state": state, "position": position });
+        let row = derive_one(v, Mode::Authored);
+        assert_eq!(row.category, Category::Await, "{state}");
+        (row.merge_queue, row.note)
+    };
+    // Queued: GitHub merges it in turn, so "press merge" would be wrong.
+    let (queue, text) = note("QUEUED", Some(2));
+    assert_eq!(
+        queue,
+        Some(MergeQueue {
+            state: MergeQueueState::Queued,
+            position: Some(2)
+        })
+    );
+    assert_eq!(text, "🟢 approved — in merge queue, position 2");
+    assert_eq!(
+        note("AWAITING_CHECKS", Some(1)).1,
+        "🟢 approved — in merge queue, position 1"
+    );
+    assert_eq!(
+        note("MERGEABLE", Some(1)).1,
+        "🟢 approved — in merge queue, position 1"
+    );
+    assert_eq!(note("LOCKED", Some(1)).1, "🟢 approved — merging");
+    assert_eq!(
+        note("UNMERGEABLE", None).1,
+        "🟢 approved — merge queue couldn't merge it"
+    );
+    // A position GitHub did not give, or a state this build does not know.
+    assert_eq!(note("QUEUED", None).1, "🟢 approved — in merge queue");
+    let (queue, text) = note("SOMETHING_NEW", Some(3));
+    assert_eq!(queue.map(|q| q.state), Some(MergeQueueState::Unknown));
+    assert_eq!(text, "🟢 approved — in merge queue, position 3");
+
+    // Not queued: null entry, and the merge-state wording as before.
+    let mut v = approved(2);
+    v["mergeStateStatus"] = json!("CLEAN");
+    v["mergeQueueEntry"] = serde_json::Value::Null;
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.merge_queue, None);
+    assert_eq!(row.note, "🟢 approved — mergeable");
+
+    // The rebase tail still follows.
+    let mut v = with_methods(approved(2), true, true, true);
+    v["canBeRebased"] = json!(false);
+    v["mergeQueueEntry"] = json!({ "state": "QUEUED", "position": 4 });
+    assert_eq!(
+        derive_one(v, Mode::Authored).note,
+        "🟢 approved — in merge queue, position 4 · can't rebase"
+    );
+}
 fn with_methods(
     mut v: serde_json::Value,
     merge: bool,

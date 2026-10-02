@@ -174,6 +174,45 @@ pub enum QueueProvenance {
     Available,
 }
 
+/// Where a PR stands in its repository's merge queue (`mergeQueueEntry.state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeQueueState {
+    /// Waiting its turn (`QUEUED`).
+    Queued,
+    /// The queue is running its checks (`AWAITING_CHECKS`).
+    AwaitingChecks,
+    /// Ready; the queue merges it next (`MERGEABLE`).
+    Mergeable,
+    /// The queue is merging it now (`LOCKED`).
+    Locked,
+    /// The queue could not merge it; it leaves the queue (`UNMERGEABLE`).
+    Unmergeable,
+    /// A state this build does not know.
+    Unknown,
+}
+
+impl MergeQueueState {
+    pub fn from_github(state: &str) -> Self {
+        match state {
+            "QUEUED" => Self::Queued,
+            "AWAITING_CHECKS" => Self::AwaitingChecks,
+            "MERGEABLE" => Self::Mergeable,
+            "LOCKED" => Self::Locked,
+            "UNMERGEABLE" => Self::Unmergeable,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// A PR's place in the merge queue: GitHub merges it when its turn comes, so
+/// an approved PR here is not "press merge" but "wait". `position` is
+/// one-based, as GitHub shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeQueue {
+    pub state: MergeQueueState,
+    pub position: Option<u64>,
+}
+
 /// GitHub's own verdict on whether the merge button would work
 /// (`mergeStateStatus`). The Note says "mergeable" only when GitHub does;
 /// when GitHub did not report one (prototype fixtures) the prototype's Note
@@ -351,6 +390,8 @@ pub struct BoardRow {
     pub mergeable_unknown: bool,
     /// GitHub's merge-button verdict; `None` when it was not reported.
     pub merge_state: Option<MergeState>,
+    /// The PR's merge-queue entry, when it is in one.
+    pub merge_queue: Option<MergeQueue>,
     /// GitHub reports that rebase-and-merge would fail although the
     /// repository allows it and the PR has no merge conflict.
     pub cannot_rebase: bool,
@@ -844,6 +885,13 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         .merge_state_status
         .as_deref()
         .map(MergeState::from_github);
+    let merge_queue = pr.merge_queue_entry.as_ref().map(|entry| MergeQueue {
+        state: entry
+            .state
+            .as_deref()
+            .map_or(MergeQueueState::Unknown, MergeQueueState::from_github),
+        position: entry.position,
+    });
     let methods = pr.repository.as_ref();
     let rebase_allowed = methods.and_then(|r| r.rebase_merge_allowed) == Some(true);
     // Only a known-clean merge says anything about rebasing: a conflict is
@@ -887,6 +935,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         conflict,
         mergeable_unknown,
         merge_state,
+        merge_queue,
         cannot_rebase,
         rebase_only,
         review_decision: pr.review_decision.clone(),
@@ -1324,6 +1373,14 @@ pub fn strip_note_glyphs(note: &str) -> String {
 /// fixtures pin. A branch GitHub cannot rebase, in a repository that allows
 /// other methods, gets [`CANNOT_REBASE_NOTE`] as a tail.
 fn approved_note(row: &BoardRow) -> String {
+    if let Some(queue) = row.merge_queue {
+        let mut note = format!("🟢 approved — {}", merge_queue_text(queue));
+        if row.cannot_rebase {
+            note.push_str(" · ");
+            note.push_str(CANNOT_REBASE_NOTE);
+        }
+        return note;
+    }
     let state = match (row.merge_state, row.ci) {
         (None, _) => Some("mergeable"),
         (Some(MergeState::Dirty | MergeState::Unknown), _) => None,
@@ -1342,6 +1399,24 @@ fn approved_note(row: &BoardRow) -> String {
         note.push_str(CANNOT_REBASE_NOTE);
     }
     note
+}
+
+/// What the merge queue is doing with the PR: "in merge queue, position 2"
+/// while it waits or its checks run, "merging" once the queue has it, and
+/// "merge queue couldn't merge it" when the queue gave up. Position is
+/// GitHub's, one-based.
+pub fn merge_queue_text(queue: MergeQueue) -> String {
+    match queue.state {
+        MergeQueueState::Locked => "merging".to_owned(),
+        MergeQueueState::Unmergeable => "merge queue couldn't merge it".to_owned(),
+        MergeQueueState::Queued
+        | MergeQueueState::AwaitingChecks
+        | MergeQueueState::Mergeable
+        | MergeQueueState::Unknown => match queue.position {
+            Some(position) => format!("in merge queue, position {position}"),
+            None => "in merge queue".to_owned(),
+        },
+    }
 }
 
 impl BoardRow {
