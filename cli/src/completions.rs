@@ -65,6 +65,7 @@ mod tests {
                 "review",
                 "all",
                 "all-open",
+                "pr",
                 "watch",
                 "auth",
                 "login",
@@ -147,8 +148,13 @@ mod tests {
 
     #[test]
     fn bash_offers_what_each_position_accepts() {
-        let cases: [(&[&str], &str); 22] = [
+        let cases: &[(&[&str], &str)] = &[
             (&["prmarmot-cli", "wa"], "watch"),
+            (&["prmarmot-cli", "p"], "pr"),
+            (
+                &["prmarmot-cli", "pr", "o/n#1", "--"],
+                "--format --json --no-color --help --host --auth",
+            ),
             (&["prmarmot-cli", "--v"], "--version"),
             (&["prmarmot-cli", "watch", ""], "mine review"),
             // Watch follows My PRs or the review queue, never All open.
@@ -199,7 +205,7 @@ mod tests {
             (&["prmarmot-cli", "mine", "--au"], "--auth --authored"),
             (&["prmarmot-cli", "mine", "--auth", "de"], "device"),
         ];
-        for (words, expected) in cases {
+        for &(words, expected) in cases {
             let Some(offered) = bash_offers(words) else {
                 return;
             };

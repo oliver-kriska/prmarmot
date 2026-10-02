@@ -346,6 +346,64 @@ pub fn build(
     }
 }
 
+/// One pull request in full (`prmarmot-cli pr`): the row as the board would
+/// show it in Involving me, with the attention marks, and whether GitHub
+/// still has it open.
+pub struct PrDetail {
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    pub status: prmarmot_core::board::TrackedPrStatus,
+    /// Present whenever GitHub returned the PR, open or not.
+    pub row: Option<BoardRow>,
+    pub marks: Marks,
+    pub viewer: String,
+    pub generated_at: DateTime<Utc>,
+    pub rate: Option<RateLimitInfo>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn pr_detail(
+    fetched: prmarmot_core::board::TrackedFetch,
+    repo: &str,
+    number: u64,
+    host: &str,
+    attention: &AttentionState,
+    viewer: String,
+    stale_after_days: u64,
+    now: DateTime<Utc>,
+) -> PrDetail {
+    use prmarmot_core::board::TrackedPrStatus;
+    let tracked = fetched.tracked.into_iter().next();
+    let status = tracked
+        .as_ref()
+        .map_or(TrackedPrStatus::Inaccessible, |tracked| tracked.status);
+    let row = tracked.and_then(|tracked| tracked.row);
+    let mut snapshots = attention.snapshots.clone();
+    let marks = row
+        .as_ref()
+        .map(|row| {
+            let mut marks = marks_for(row, attention, &mut snapshots, now);
+            marks.stale = is_stale(row, now, stale_after_days);
+            marks
+        })
+        .unwrap_or_default();
+    let url = row.as_ref().map_or_else(
+        || format!("https://{host}/{repo}/pull/{number}"),
+        |row| row.url.clone(),
+    );
+    PrDetail {
+        repo: repo.to_owned(),
+        number,
+        url,
+        status,
+        row,
+        marks,
+        viewer,
+        generated_at: now,
+        rate: fetched.rate,
+    }
+}
 pub fn marks_for(
     row: &BoardRow,
     attention: &AttentionState,

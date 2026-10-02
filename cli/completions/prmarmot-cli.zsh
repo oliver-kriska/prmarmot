@@ -37,6 +37,7 @@ _prmarmot-cli() {
         'mine:PRs you authored (My PRs), or every PR involving you with --all-repos'
         'review:PRs waiting for your review (Review queue)'
         'all:every open PR in one repository (All open); needs --repo'
+        'pr:one pull request in full (OWNER/NAME#N or URL)'
         'watch:poll and print what changes, one event per line'
         'auth:sign in to GitHub without the gh CLI'
         'skill:print or install the coding-agent skill'
@@ -74,6 +75,15 @@ _prmarmot-cli() {
               ;;
           esac
           _arguments -s $help $scope $view $board && ret=0
+          ;;
+        pr)
+          _arguments -s $help \
+            '(-f --format --json)'{-f+,--format=}'[output format]:format:(table markdown json)' \
+            '(-f --format --json)--json[JSON, same as --format json]' \
+            '--no-color[plain text]' \
+            '--host=[GitHub host (github.com or an Enterprise Server host)]:host: ' \
+            '--auth=[how to get a token]:mode:(auto gh device token)' \
+            '1:pull request (OWNER/NAME#N or URL): ' && ret=0
           ;;
         watch)
           watch=(

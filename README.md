@@ -575,6 +575,7 @@ prmarmot-cli review --sort smallest    # small changes first, by the app's size 
 prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in one repository
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
+prmarmot-cli pr acme/api#42            # one PR in full: Note, evidence, reviews, checks, wait
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
 prmarmot-cli watch --pr acme/api#42 --until ci-pass --timeout 30m   # wait for green CI
 prmarmot-cli auth login                # sign in without the GitHub CLI
@@ -645,10 +646,10 @@ since v0.9.1, `ci` can be `hidden`, meaning the token may not read checks (a
 fine-grained token never can). Treat a value you don't know as unknown rather
 than as an error.
 
-**JSON Schema.** Both formats are described by JSON Schema (draft 2020-12):
+**JSON Schema.** Every format is described by JSON Schema (draft 2020-12):
 [`cli/schema/board-v1.schema.json`](cli/schema/board-v1.schema.json) for
-`--json` views and [`cli/schema/event-v1.schema.json`](cli/schema/event-v1.schema.json)
-for each `watch` line. The event schema reuses the board schema's PR object.
+`--json` views, [`cli/schema/event-v1.schema.json`](cli/schema/event-v1.schema.json)
+for each `watch` line, [`cli/schema/pr-v1.schema.json`](cli/schema/pr-v1.schema.json)
 Because fields are only ever added within `@1`, the schemas accept fields they
 don't list. Validate against them or generate types from them, but ignore
 fields you don't know. The CLI's tests check its real output against both

@@ -311,7 +311,12 @@ mod tests {
                 .take_while(|word| *word != "#" && *word != "|")
                 .map(str::to_owned);
             match args::parse(words) {
-                Ok(Command::View(_) | Command::Watch(_) | Command::Skill(_)) => checked += 1,
+                Ok(
+                    Command::View(_)
+                    | Command::Watch(_)
+                    | Command::Pr(_)
+                    | Command::Skill(_),
+                ) => checked += 1,
                 other => panic!("skill example does not parse: {line} -> {other:?}"),
             }
         }

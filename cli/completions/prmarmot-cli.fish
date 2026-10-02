@@ -38,6 +38,7 @@ complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -s V -l 
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a mine -d 'PRs you authored (My PRs)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a review -d 'PRs waiting for your review'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a all -d 'Every open PR in one repository (needs --repo)'
+complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a pr -d 'One pull request in full (OWNER/NAME#N or URL)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Print what changes, one event per line'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a auth -d 'Sign in to GitHub without the gh CLI'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a skill -d 'Print or install the coding-agent skill'
@@ -67,6 +68,12 @@ complete -c prmarmot-cli -n "__prmarmot_cli_command review reviews" -l sort -x -
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
 
 # pr
+complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -s f -l format -x -a 'table markdown json' -d 'Output format'
+complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l json -d 'JSON output'
+complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l no-color -d 'Plain text'
+complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
+complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l auth -x -a 'auto gh device token' -d 'How to get a token'
+
 # watch
 complete -c prmarmot-cli -n __prmarmot_cli_watch_view_expected -a 'mine review' -d 'View to watch'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch" -s f -l format -x -a 'text json' -d 'Output format'

@@ -4,10 +4,14 @@
 //! source the app's table and the iPad draw from.
 
 use chrono::Local;
+use prmarmot_core::board::TrackedPrStatus;
 use prmarmot_core::board::{
     strip_note_glyphs, Blocker, BoardRow, BoardScope, Ci, Mode, QueueProvenance,
 };
 use prmarmot_core::cells;
+use prmarmot_core::detail::detail_lines;
+use prmarmot_core::github::rate_limit::RateLimitInfo;
+use prmarmot_core::layout::group_label;
 use prmarmot_core::layout::{section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
 use prmarmot_core::status::{
@@ -16,6 +20,7 @@ use prmarmot_core::status::{
 use serde_json::{json, Value};
 
 use crate::term::{display_width, fit, truncate, Paint, Tone};
+use crate::view::PrDetail;
 use crate::view::{BoardView, Marks};
 
 pub const BOARD_SCHEMA: &str = "prmarmot-cli/board@1";
@@ -190,17 +195,144 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
 }
 
 pub fn rate_json(view: &BoardView) -> Value {
-    view.rate
-        .as_ref()
-        .map(|rate| {
-            json!({
-                "limit": rate.limit,
-                "remaining": rate.remaining,
-                "cost": rate.cost,
-                "reset_at": rate.reset_at,
-            })
+    rate_info_json(view.rate.as_ref())
+}
+
+fn rate_info_json(rate: Option<&RateLimitInfo>) -> Value {
+    rate.map(|rate| {
+        json!({
+            "limit": rate.limit,
+            "remaining": rate.remaining,
+            "cost": rate.cost,
+            "reset_at": rate.reset_at,
         })
-        .unwrap_or(Value::Null)
+    })
+    .unwrap_or(Value::Null)
+}
+
+// ---- One pull request (`prmarmot-cli pr`) ------------------------------------
+
+pub const PR_SCHEMA: &str = "prmarmot-cli/pr@1";
+
+fn tracked_status_key(status: TrackedPrStatus) -> &'static str {
+    match status {
+        TrackedPrStatus::Open => "open",
+        TrackedPrStatus::Merged => "merged",
+        TrackedPrStatus::Closed => "closed",
+        TrackedPrStatus::Inaccessible => "inaccessible",
+    }
+}
+
+/// What the status means, for the text and Markdown outputs.
+fn tracked_status_text(status: TrackedPrStatus) -> &'static str {
+    match status {
+        TrackedPrStatus::Open => "open",
+        TrackedPrStatus::Merged => "merged",
+        TrackedPrStatus::Closed => "closed without merging",
+        TrackedPrStatus::Inaccessible => "not found, or this token cannot see it",
+    }
+}
+
+/// `prmarmot-cli pr --json`: the PR as `board@1` prints it, plus whether
+/// GitHub still has it open. Stable keys; additive changes only within `pr@1`.
+pub fn pr_document_json(detail: &PrDetail) -> Value {
+    json!({
+        "schema": PR_SCHEMA,
+        "generated_at": detail.generated_at.to_rfc3339(),
+        "viewer": detail.viewer,
+        "repo": detail.repo,
+        "number": detail.number,
+        "url": detail.url,
+        "status": tracked_status_key(detail.status),
+        "pr": detail.row.as_ref().map(|row| pr_json(row, &detail.marks)),
+        "rate_limit": rate_info_json(detail.rate.as_ref()),
+    })
+}
+
+/// The lines under the title, each "Label: value": the status and section,
+/// then the Details panel's lines, then the attention marks.
+fn pr_lines(detail: &PrDetail) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &detail.row {
+        Some(row) => {
+            lines.push(format!(
+                "Status: {} · {}",
+                tracked_status_text(detail.status),
+                group_label(Mode::Authored, row.category, true)
+            ));
+            lines.extend(detail_lines(
+                row,
+                Mode::Authored,
+                detail.generated_at,
+                Local::now().offset().local_minus_utc(),
+            ));
+            let mut marks = Vec::new();
+            if detail.marks.watched {
+                marks.push("watched".to_owned());
+            }
+            if let Some(snoozed) = &detail.marks.snoozed {
+                marks.push(format!("snoozed {snoozed}"));
+            }
+            if detail.marks.changed {
+                marks.push(if detail.marks.changes.is_empty() {
+                    "changed since you looked".to_owned()
+                } else {
+                    format!(
+                        "changed since you looked: {}",
+                        detail.marks.changes.join(", ")
+                    )
+                });
+            }
+            if detail.marks.stale {
+                marks.push("stale".to_owned());
+            }
+            if !marks.is_empty() {
+                lines.push(format!("In PR Marmot: {}", marks.join(" · ")));
+            }
+        }
+        None => lines.push(format!("Status: {}", tracked_status_text(detail.status))),
+    }
+    lines
+}
+
+/// `prmarmot-cli pr` on a terminal.
+pub fn pr_text(detail: &PrDetail, paint: Paint) -> String {
+    let mut out = match &detail.row {
+        Some(row) => format!(
+            "{}  {}\n",
+            paint.bold(&format!("{}#{}", detail.repo, detail.number)),
+            row.title
+        ),
+        None => format!(
+            "{}\n",
+            paint.bold(&format!("{}#{}", detail.repo, detail.number))
+        ),
+    };
+    out.push_str(&detail.url);
+    out.push('\n');
+    for line in pr_lines(detail) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// `prmarmot-cli pr` piped, or `--format markdown`.
+pub fn pr_markdown(detail: &PrDetail) -> String {
+    let mut out = match &detail.row {
+        Some(row) => format!(
+            "# {}#{} · {}\n",
+            detail.repo,
+            detail.number,
+            md_cell(&row.title)
+        ),
+        None => format!("# {}#{}\n", detail.repo, detail.number),
+    };
+    out.push_str(&format!("\n<{}>\n\n", detail.url));
+    for line in pr_lines(detail) {
+        out.push_str(&format!("- {}\n", md_cell(&line)));
+    }
+    out
 }
 
 /// The complete board: every section including Snoozed, each PR in display
@@ -1146,6 +1278,90 @@ mod tests {
             .all(|pr| pr["failed_checks"].as_array().unwrap().is_empty()
                 && pr["unresolved_paths"].as_array().unwrap().is_empty()));
     }
+
+    fn pr_detail_of(status: TrackedPrStatus, row: Option<BoardRow>) -> PrDetail {
+        use prmarmot_core::board::{TrackedFetch, TrackedPr};
+        let attention = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        let fetched = TrackedFetch {
+            tracked: vec![TrackedPr {
+                pr_id: "PR_10".into(),
+                status,
+                row,
+            }],
+            rate: None,
+            access: Default::default(),
+        };
+        crate::view::pr_detail(
+            fetched,
+            "acme/widgets",
+            10,
+            "github.com",
+            &attention,
+            "me".into(),
+            prmarmot_core::pickup::DEFAULT_STALE_AFTER_DAYS,
+            Utc.with_ymd_and_hms(2026, 9, 11, 12, 0, 0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_pr_document_conforms_to_its_schema_open_or_not() {
+        use crate::schema_check::{assert_conforms, Schema};
+        let mut row = row(10, Category::Action);
+        row.ci = Ci::Fail;
+        row.blockers = vec![Blocker::CiFailing];
+        row.note = "🔴 CI failing".into();
+        let open = pr_detail_of(TrackedPrStatus::Open, Some(row.clone()));
+        let value = pr_document_json(&open);
+        assert_conforms(Schema::Pr, &value);
+        assert_eq!(value["schema"], PR_SCHEMA);
+        assert_eq!(value["status"], "open");
+        assert_eq!(value["repo"], "acme/widgets");
+        assert_eq!(value["number"], 10);
+        assert_eq!(value["pr"]["number"], 10);
+        assert_eq!(value["pr"]["note"], "CI failing");
+
+        let merged = pr_detail_of(TrackedPrStatus::Merged, Some(row));
+        let value = pr_document_json(&merged);
+        assert_conforms(Schema::Pr, &value);
+        assert_eq!(value["status"], "merged");
+        assert!(value["pr"].is_object());
+
+        let gone = pr_detail_of(TrackedPrStatus::Inaccessible, None);
+        let value = pr_document_json(&gone);
+        assert_conforms(Schema::Pr, &value);
+        assert_eq!(value["status"], "inaccessible");
+        assert!(value["pr"].is_null());
+        assert_eq!(value["url"], "https://github.com/acme/widgets/pull/10");
+    }
+
+    #[test]
+    fn the_pr_text_and_markdown_carry_the_details_lines() {
+        let mut row = row(10, Category::Action);
+        row.title = "Fix | pipes".into();
+        row.url = "https://github.com/acme/widgets/pull/10".into();
+        row.ci = Ci::Fail;
+        row.blockers = vec![Blocker::CiFailing];
+        row.note = "🔴 CI failing".into();
+        let open = pr_detail_of(TrackedPrStatus::Open, Some(row));
+        let text = pr_text(&open, Paint::new(false));
+        assert!(text.starts_with(
+            "acme/widgets#10  Fix | pipes\nhttps://github.com/acme/widgets/pull/10\n"
+        ));
+        assert!(text.contains("Status: open · Needs action\n"), "{text}");
+        assert!(
+            text.contains("Needs action\nCI failing\nAuthor: alice"),
+            "{text}"
+        );
+        let markdown = pr_markdown(&open);
+        assert!(markdown.starts_with("# acme/widgets#10 · Fix \\| pipes\n\n<https://github.com/acme/widgets/pull/10>\n\n- Status: open · Needs action\n"), "{markdown}");
+
+        let gone = pr_detail_of(TrackedPrStatus::Inaccessible, None);
+        assert_eq!(
+            pr_text(&gone, Paint::new(false)),
+            "acme/widgets#10\nhttps://github.com/acme/widgets/pull/10\nStatus: not found, or this token cannot see it\n"
+        );
+    }
+
     #[test]
     fn json_matches_the_published_schema() {
         use crate::schema_check::{assert_conforms, Schema};

@@ -163,7 +163,7 @@ reorder this list.
 | 8 | **Next release:** **merge-queue state** — "approved — in merge queue, position 2", "merging", or "merge queue couldn't merge it"; `merge_queue` in the CLI's JSON; the iPad through ffi | core → both | S | One GraphQL field; a queued PR used to read as "approved — mergeable", which is press-merge wording for a PR GitHub will merge itself |
 | 9 | **Multi-account** — two `gh` identities, one board, account badge per row | core → both | M | 981 👍 on GitHub Desktop and 354 👍 on the GitHub CLI, both open for years; cheap after the Phase 4 transport |
 | 10 | **Notification policy** — digest at times you pick, catch-up on launch, silence when nothing needs you, per-repo mute | app | M | Off by default; reuses the transition engine |
-| 11 | **`prmarmot-cli pr OWNER/NAME#N`** compact single-PR detail, same JSON, no patches | CLI | S | Agents keep asking for a compact per-PR summary |
+| 11 | **Next release:** `prmarmot-cli pr OWNER/NAME#N` (or the URL) — one PR in full: the Details panel's lines, the evidence behind the Note, the app's marks; `--json` prints `pr@1`, the `board@1` PR object plus `status` | CLI | S | Agents keep asking for a compact per-PR summary |
 | 12 | **Stack ordering inside the queue** — which layer to open first, "ancestor unmerged" as a blocker | core → app | S | GitHub ships stack *creation*; ordering in a queue is still nobody's |
 | 13 | **`prmarmot-cli report --since`** standup Markdown (merged / opened / still blocked) | CLI | S | Nearly free on the existing formatter |
 | 14 | Up to **three saved views** (capped) | app | L | Reserve; only if Ideas votes demand it |

@@ -219,6 +219,43 @@ fn a_wait_that_times_out_matches_the_event_schema() {
 }
 
 #[test]
+fn one_pull_request_matches_the_pr_schema_present_or_not() {
+    let sandbox = Sandbox::new();
+    let (code, stdout) = sandbox.run(&["pr", "demo-labs/atlas#418", "--json"]);
+    assert_eq!(code, Some(0), "{stdout}");
+    let document: Value = serde_json::from_str(&stdout).expect("--json prints one document");
+    assert_conforms(Schema::Pr, &document);
+    assert_eq!(document["status"], "open");
+    assert_eq!(document["repo"], "demo-labs/atlas");
+    assert_eq!(document["number"], 418);
+    assert_eq!(document["pr"]["number"], 418);
+    assert_eq!(document["pr"]["ci"], "fail");
+    assert!(document["pr"]["failed_checks"]
+        .as_array()
+        .is_some_and(|checks| !checks.is_empty()));
+
+    // Markdown when piped: a heading, the link, one line per detail.
+    let (code, markdown) = sandbox.run(&["pr", "https://github.com/demo-labs/atlas/pull/418"]);
+    assert_eq!(code, Some(0), "{markdown}");
+    assert!(
+        markdown.starts_with("# demo-labs/atlas#418 · "),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("\n<https://github.com/demo-labs/atlas/pull/418>\n"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("\n- Status: open · "), "{markdown}");
+
+    // A PR GitHub doesn't return still prints a document, and exits 1.
+    let (code, stdout) = sandbox.run(&["pr", "demo-labs/atlas#999", "--json"]);
+    assert_eq!(code, Some(1), "{stdout}");
+    let document: Value = serde_json::from_str(&stdout).expect("--json prints one document");
+    assert_conforms(Schema::Pr, &document);
+    assert_eq!(document["status"], "inaccessible");
+    assert!(document["pr"].is_null());
+}
+#[test]
 fn the_published_schemas_are_valid_draft_2020_12() {
     for text in [schema_check::BOARD, schema_check::EVENT] {
         let schema: Value = serde_json::from_str(text).unwrap();

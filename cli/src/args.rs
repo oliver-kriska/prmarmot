@@ -29,6 +29,7 @@ Usage:
   prmarmot-cli watch --pr OWNER/NAME#N   Follow one pull request until it merges or closes
   prmarmot-cli watch --pr OWNER/NAME#N --until ci-pass [--timeout 30m]
                                          Wait for a condition instead of polling in a loop
+  prmarmot-cli pr OWNER/NAME#N [options]  One pull request in full: its Note and the
                                          evidence behind it, reviews, checks, and wait
   prmarmot-cli auth login [--with-token] Sign in to GitHub without the `gh` CLI
   prmarmot-cli auth status               Show which account and token this machine uses
@@ -195,6 +196,18 @@ pub struct PrRef {
     pub number: u64,
 }
 
+
+/// `prmarmot-cli pr OWNER/NAME#N`: one pull request in full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrArgs {
+    pub pr: PrRef,
+    /// `None` picks by whether stdout is a terminal.
+    pub format: Option<Format>,
+    pub no_color: bool,
+    pub host: Option<String>,
+    pub auth: Option<AuthMode>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillAction {
     Show,
@@ -209,6 +222,7 @@ pub enum SkillAction {
 pub enum Command {
     View(ViewArgs),
     Watch(WatchArgs),
+    Pr(PrArgs),
     Auth(auth::Action, auth::Options),
     Skill(SkillAction),
     Completions(Shell),
@@ -243,6 +257,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         "auth" => return parse_auth(tokens),
         "skill" => return parse_skill(tokens),
         "completions" => return parse_completions(tokens),
+        "pr" => return parse_pr_command(tokens),
         "watch" => true,
         _ => false,
     };
@@ -398,17 +413,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             auth,
         }))
     } else {
-        let format = match format.as_deref() {
-            None => None,
-            Some("table") => Some(Format::Table),
-            Some("markdown") | Some("md") => Some(Format::Markdown),
-            Some("json") => Some(Format::Json),
-            Some(other) => {
-                return Err(format!(
-                    "unknown format: {other} (use table, markdown, or json)"
-                ))
-            }
-        };
+        let format = format.as_deref().map(parse_format).transpose()?;
         Ok(Command::View(ViewArgs {
             mode,
             scope,
@@ -429,6 +434,62 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     }
 }
 
+fn parse_format(word: &str) -> Result<Format, String> {
+    match word {
+        "table" => Ok(Format::Table),
+        "markdown" | "md" => Ok(Format::Markdown),
+        "json" => Ok(Format::Json),
+        other => Err(format!(
+            "unknown format: {other} (use table, markdown, or json)"
+        )),
+    }
+}
+
+/// `pr OWNER/NAME#N` (or the PR's URL), with the view options that apply to
+/// one PR. `--pr` is accepted too, as `watch` spells it.
+fn parse_pr_command(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut pr = None;
+    let mut format = None;
+    let mut no_color = false;
+    let mut host = None;
+    let mut auth = None;
+    while let Some(token) = tokens.next() {
+        match token.as_str() {
+            "-f" | "--format" => {
+                let word = tokens.next().ok_or("--format needs a value")?;
+                format = Some(parse_format(&word)?);
+            }
+            "--json" => format = Some(Format::Json),
+            "--no-color" => no_color = true,
+            "--host" => host = Some(tokens.next().ok_or("--host needs a value")?),
+            "--auth" => {
+                let word = tokens.next().ok_or("--auth needs a value")?;
+                auth = Some(AuthMode::parse(&word).ok_or_else(|| {
+                    format!("unknown auth mode: {word} (use auto, gh, device, or token)")
+                })?);
+            }
+            "--pr" => {
+                let value = tokens.next().ok_or("--pr needs a value")?;
+                pr = Some(parse_pr(&value)?);
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option for `pr`: {other}"))
+            }
+            other if pr.is_none() => {
+                pr = Some(parse_pr(other).map_err(|error| error.replace("--pr needs", "pr needs"))?)
+            }
+            other => return Err(format!("unexpected argument: {other}")),
+        }
+    }
+    let pr = pr.ok_or("pr needs a pull request: OWNER/NAME#NUMBER or its URL")?;
+    Ok(Command::Pr(PrArgs {
+        pr,
+        format,
+        no_color,
+        host,
+        auth,
+    }))
+}
 fn parse_auth(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
     let word = tokens
         .next()
@@ -776,6 +837,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_pr_command_takes_one_reference_and_the_single_pr_options() {
+        let parsed = |line: &str| match parse_str(line) {
+            Ok(Command::Pr(args)) => args,
+            other => panic!("{line}: {other:?}"),
+        };
+        let args = parsed("pr acme/api#12");
+        assert_eq!(args.pr.repo, "acme/api");
+        assert_eq!(args.pr.number, 12);
+        assert_eq!(
+            (args.format, args.no_color, args.host, args.auth),
+            (None, false, None, None)
+        );
+        let args =
+            parsed("pr https://github.com/acme/api/pull/12 --json --no-color --host ghe.acme.test");
+        assert_eq!(args.pr.number, 12);
+        assert_eq!(args.format, Some(Format::Json));
+        assert!(args.no_color);
+        assert_eq!(args.host.as_deref(), Some("ghe.acme.test"));
+        assert_eq!(
+            parsed("pr --pr acme/api#3 -f markdown").format,
+            Some(Format::Markdown)
+        );
+        assert_eq!(
+            parse_str("pr").unwrap_err(),
+            "pr needs a pull request: OWNER/NAME#NUMBER or its URL"
+        );
+        assert!(parse_str("pr acme#1")
+            .unwrap_err()
+            .starts_with("pr needs OWNER/NAME#NUMBER"));
+        assert_eq!(
+            parse_str("pr acme/api#1 --stale").unwrap_err(),
+            "unknown option for `pr`: --stale"
+        );
+        assert_eq!(
+            parse_str("pr acme/api#1 acme/api#2").unwrap_err(),
+            "unexpected argument: acme/api#2"
+        );
+    }
     #[test]
     fn pr_accepts_a_reference_or_url_and_stands_alone() {
         let expected = Some(PrRef {

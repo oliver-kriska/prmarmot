@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/pr-v1.schema.json",
+  "title": "prmarmot-cli pr@1",
+  "description": "What `prmarmot-cli pr OWNER/NAME#N --json` prints: one pull request as the board's `pr` object (board@1), classified as in Involving me, plus whether GitHub still has it open. Within pr@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
+  "type": "object",
+  "required": ["schema", "generated_at", "viewer", "repo", "number", "url", "status", "pr", "rate_limit"],
+  "properties": {
+    "schema": { "const": "prmarmot-cli/pr@1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "viewer": { "type": "string", "description": "The signed-in login." },
+    "repo": { "$ref": "board-v1.schema.json#/$defs/repo" },
+    "number": { "type": "integer", "minimum": 1 },
+    "url": { "type": "string", "format": "uri" },
+    "status": {
+      "enum": ["open", "merged", "closed", "inaccessible"],
+      "description": "open: still open. merged / closed: GitHub still returned it, so `pr` carries its last state. inaccessible: GitHub returned nothing for it (no such PR, or this token cannot see it); `pr` is null and the command exits 1."
+    },
+    "pr": {
+      "oneOf": [{ "$ref": "board-v1.schema.json#/$defs/pr" }, { "type": "null" }],
+      "description": "The PR as `board@1` prints it, with the app's attention marks; null when `status` is inaccessible."
+    },
+    "rate_limit": { "$ref": "board-v1.schema.json#/$defs/rate_limit" }
+  }
+}

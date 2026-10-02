@@ -598,6 +598,12 @@ values in the code. New features get the next free number in their area.
 
   _since v0.12.0_
 
+- **F-cli-17** `prmarmot-cli pr OWNER/NAME#N` (or the PR's URL) prints one pull request in full: its title and
+  URL, its status and section, every line of the app's Details panel (the Note and the evidence behind it, CI,
+  checks, threads, reviewers, reviews, your review, the wait, size, labels, issue, stack), and what PR Marmot
+  marks it as (watched, snoozed, changed, stale). Plain lines on a terminal, Markdown when piped, and `--json`
+  prints `pr@1` (`cli/schema/pr-v1.schema.json`): the `board@1` PR object plus `status` — open, merged, closed, or
+  inaccessible, which exits 1. One small request after the id lookup, as `watch --pr` does. _unreleased_
 ## Platform notes
 
 - **F-platform-1** Prebuilt, signed releases are for Apple-silicon Macs. Intel Macs and Linux build from source.

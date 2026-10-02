@@ -115,6 +115,9 @@ _prmarmot_cli() {
             # One repository only, so no --all-repos.
             words="${view/ --all-repos/} --changed --stale --agent --no-agent --filter --pages"
             ;;
+        pr)
+            words="--format --json --no-color --help --host --auth"
+            ;;
             ;;
         watch)
             # A view word only right after `watch`.

@@ -21,11 +21,15 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use chrono::Utc;
-use prmarmot_core::board::{carry_forward_conflicts, Mode};
+use prmarmot_core::board::{
+    carry_forward_conflicts, fetch_tracked, resolve_pull_request_id, Mode, TrackedFetch,
+    TrackedPrStatus,
+};
 use prmarmot_core::github::GhError;
 use prmarmot_local::config;
 use prmarmot_local::session::Session;
 
+use args::PrArgs;
 use args::{Command, EventFormat, Format, SkillAction, ViewArgs, WatchArgs};
 use term::Paint;
 use view::Filters;
@@ -49,6 +53,7 @@ fn main() -> ExitCode {
         Ok(Command::Version) => print(&format!("prmarmot-cli {}", env!("CARGO_PKG_VERSION"))),
         Ok(Command::View(args)) => run_view(args),
         Ok(Command::Watch(args)) => run_watch(args),
+        Ok(Command::Pr(args)) => run_pr(args),
         Ok(Command::Auth(action, options)) => run_auth(action, options),
         Ok(Command::Skill(SkillAction::Show)) => print(skill::SKILL_MD),
         Ok(Command::Completions(shell)) => print(shell.script()),
@@ -311,6 +316,71 @@ fn run_watch(args: WatchArgs) -> ExitCode {
     }
 }
 
+/// `prmarmot-cli pr OWNER/NAME#N`: resolve the id, fetch that one PR the way
+/// `watch --pr` does, and print it in full.
+fn run_pr(args: PrArgs) -> ExitCode {
+    let (setup, session, login) = match resolve(None, args.host.as_deref(), args.auth) {
+        Ok(resolved) => resolved,
+        Err(error) => return fail(&error),
+    };
+    let transport = session.transport();
+    // A PR GitHub doesn't return still gets its document (status
+    // inaccessible, pr null), so a `--json` reader sees why; the exit is 1.
+    let mut fetched = match resolve_pull_request_id(transport, &args.pr.repo, args.pr.number) {
+        Ok(id) => match fetch_tracked(transport, &[id], &login, &setup.board) {
+            Ok(fetched) => fetched,
+            Err(error) => return fail(&error),
+        },
+        Err(GhError::PullRequestNotFound(_)) => TrackedFetch {
+            tracked: Vec::new(),
+            rate: None,
+            access: Default::default(),
+        },
+        Err(error) => return fail(&error),
+    };
+    let attention = view::attention(&setup.auth.host, &login);
+    for tracked in &mut fetched.tracked {
+        if let Some(row) = tracked.row.as_mut() {
+            carry_forward_conflicts(
+                std::slice::from_mut(row),
+                |id| attention.snapshots.last_conflict(id),
+                Mode::Authored,
+                &login,
+                &setup.board,
+            );
+        }
+    }
+    let detail = view::pr_detail(
+        fetched,
+        &args.pr.repo,
+        args.pr.number,
+        &setup.auth.host,
+        &attention,
+        login,
+        setup.board.stale_after_days,
+        Utc::now(),
+    );
+    let format = args.format.unwrap_or(if term::stdout_is_terminal() {
+        Format::Table
+    } else {
+        Format::Markdown
+    });
+    let text = match format {
+        Format::Json => serde_json::to_string_pretty(&render::pr_document_json(&detail))
+            .expect("PR JSON is always serializable"),
+        Format::Markdown => render::pr_markdown(&detail),
+        Format::Table => render::pr_text(&detail, Paint::new(term::color_enabled(args.no_color))),
+    };
+    let printed = print(&text);
+    if detail.status == TrackedPrStatus::Inaccessible {
+        eprintln!(
+            "prmarmot-cli: {}#{} not found, or this token cannot see it",
+            args.pr.repo, args.pr.number
+        );
+        return ExitCode::from(1);
+    }
+    printed
+}
 fn watch_exit_code(stop: &watch::Stop) -> u8 {
     match stop {
         watch::Stop::Done | watch::Stop::Met => 0,

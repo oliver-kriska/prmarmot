@@ -100,8 +100,8 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
   phrases for what changed.
 
 Fields are only added within `@1`, so ignore any you don't know. The full
-JSON Schemas are `cli/schema/board-v1.schema.json` and
-`cli/schema/event-v1.schema.json` in the PR Marmot repository.
+JSON Schemas are `cli/schema/board-v1.schema.json`,
+`cli/schema/event-v1.schema.json`, `cli/schema/pr-v1.schema.json` (`pr`),
 
 Useful filters:
 
@@ -142,6 +142,22 @@ Other flags:
 - `--format markdown`: a ready-to-paste report with linked PR tables, useful
   when the user wants the dashboard itself rather than an answer.
 
+## One PR: everything the app knows about it
+
+```bash
+prmarmot-cli pr owner/name#123 --json        # or the PR's URL
+```
+
+Prints one pull request as the board's `pr` object (same fields as above,
+classified as in Involving me), plus `status`: `open`, `merged`, `closed`,
+or `inaccessible` (nothing came back: no such PR, or the token can't see it;
+`pr` is null and the exit code is 1). Without `--json` it prints a heading,
+the link, and one line per Details-panel entry — the Note and the evidence
+behind it (failing check names, the files with unresolved threads, who asked
+for changes), CI, checks, reviewers, reviews, the wait, size, labels, issue —
+and an `In PR Marmot:` line with the app's marks (watched, snoozed, changed,
+stale) when any apply. Use it after a board call to drill into one PR; it
+costs one small request after the id lookup.
 ## Watch: wait for something to happen
 
 `watch` blocks. It prints one JSON line per event and exits after `--events N`
@@ -153,6 +169,7 @@ out:
 prmarmot-cli watch mine --repo owner/name --json --interval 60 --events 1
 
 # Follow one PR (any repo, any author) until it merges or closes
+prmarmot-cli pr owner/name#123 --json
 prmarmot-cli watch --pr owner/name#123 --json --interval 60
 
 # Wait for one PR's CI: exit 0 when it passes, 5 if it fails, 6 after 30 minutes
