@@ -5,8 +5,8 @@
 # The GPUI binary (build/run/release) compiles Metal shaders and needs the Xcode
 # Metal Toolchain locally — see CLAUDE.md.
 
-.PHONY: help fmt fmt-check lint lint-all verify test build release run cli install check ci fix \
-        hooks changelog unreleased bump features-check clean
+.PHONY: help fmt fmt-check lint lint-all verify test build release run cli install capture check \
+        ci fix hooks changelog unreleased bump features-check clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -25,14 +25,17 @@ fmt-check: ## Check formatting (CI mode)
 # only thing keeping the Swift boundary honest.
 FAST_CRATES := -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
 
+# --locked, as in CI: the committed Cargo.lock is what gets checked. After
+# editing a Cargo.toml, run `cargo update -w` (or any unlocked cargo command)
+# once to bring the lockfile along.
 lint: ## Clippy on core, local, and cli, warnings as errors (matches CI)
-	cargo clippy $(FAST_CRATES) --all-targets -- -D warnings
+	cargo clippy --locked $(FAST_CRATES) --all-targets -- -D warnings
 
 test: ## Run the core spec + golden suite and the local/cli/ffi tests (matches CI)
-	cargo test $(FAST_CRATES)
+	cargo test --locked $(FAST_CRATES)
 	# The iOS build swaps the regex engine; run the same suite under it so the
 	# two can never disagree about an issue-link pattern.
-	cargo test -p prmarmot-core --no-default-features --features small-regex
+	cargo test --locked -p prmarmot-core --no-default-features --features small-regex
 
 check: fmt-check lint test ## Full local gate — run before every commit/push
 
@@ -63,6 +66,9 @@ run: ## Run the debug app
 
 cli: ## Build the terminal/agent CLI (no Metal) -> target/release/prmarmot-cli
 	cargo build --release -p prmarmot-cli
+
+capture: build ## Screenshot every demo scene, light and dark -> target/captures (macOS)
+	scripts/capture.sh
 
 install: ## Release-build and install /Applications/prmarmot.app (where the cask puts it) + link ~/.local/bin/prmarmot-cli (refuses if running)
 	@pgrep -f 'prmarmot.app/Contents/MacOS/prmarmot( |$$)' >/dev/null \

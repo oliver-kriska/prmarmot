@@ -48,15 +48,40 @@ jobs:
       # dependency, so they compile cleanly on Linux. The root GPUI binary is
       # intentionally not built in CI — see CLAUDE.md ("Fast core checks only");
       # build it locally with `make build`.
+      # --locked: CI builds exactly the committed Cargo.lock, never a resolution
+      # of its own.
       - name: Clippy (core, local, cli, ffi; warnings as errors)
-        run: cargo clippy -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi --all-targets -- -D warnings
+        run: cargo clippy --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi --all-targets -- -D warnings
       - name: Test (core spec + golden suite, local, cli, ffi)
-        run: cargo test -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
+        run: cargo test --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
       # The iOS build compiles issue-link patterns with regex-lite. Run the
       # whole core suite under it so the two engines cannot disagree about
       # anything this project does.
       - name: Test core with the iOS regex engine
-        run: cargo test -p prmarmot-core --no-default-features --features small-regex
+        run: cargo test --locked -p prmarmot-core --no-default-features --features small-regex
+
+  core-macos:
+    name: Core, local, CLI, FFI on macOS (clippy + test)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # The Keychain token store (`prmarmot-local`'s security-framework code)
+      # and the macOS branches of the CLI exist only on this target; the Linux
+      # job never compiles them. Still no GPUI binary: that needs the Metal
+      # Toolchain and runs in `make verify` before every push.
+      - name: Clippy (warnings as errors)
+        run: cargo clippy --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked -p prmarmot-core -p prmarmot-local -p prmarmot-cli -p prmarmot-ffi
 
   msrv:
     name: MSRV (core, local, CLI on Rust 1.85)
