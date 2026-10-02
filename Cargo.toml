@@ -45,7 +45,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 
 # Desktop notifications elsewhere (freedesktop D-Bus).
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-notify-rust = "=4.18.0"
+notify-rust = "=4.18.1"
 
 # No tokio, no reqwest — transport is a `gh` subprocess on GPUI's background executor.
 # No `open` crate — gpui's cx.open_url covers open-in-browser.
