@@ -1298,6 +1298,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: Some("octocat".into()),
+            agent: false,
             stack: None,
             queue_provenance: None,
             draft: false,

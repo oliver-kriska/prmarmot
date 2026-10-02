@@ -193,6 +193,10 @@ values in the code. New features get the next free number in their area.
   rebase" and the PR stays in Approved. If rebase is the only merge method the repository allows, your PR whose
   branch can't be rebased is in Needs action with "can't rebase — rebase locally", and someone else's gets "can't
   rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _since v0.14.0_
+- **F-note-17** An agent's PR that nobody has reviewed says "no human has looked yet": after the Review queue's
+  "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
+  me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review, a conflict,
+  failing CI, a change request or an unresolved comment is the fact as before. _unreleased_
 - **F-note-16** A PR in its repository's merge queue says so instead of "mergeable": "approved — in merge queue,
   position 2" while it waits or the queue runs its checks, "approved — merging" once the queue has it, and
   "approved — merge queue couldn't merge it" when the queue gave up. GitHub merges a queued PR in its turn, so
@@ -218,8 +222,9 @@ values in the code. New features get the next free number in their area.
   space or `Enter`; the box holds up to 8 chips, and all of them must match. _since v0.8.0_ Several `author:` or
   `repo:` chips keep PRs matching any one of them, as GitHub's search does; words, labels, and `is:stale` must all
   match. _since v0.12.0_
-- **F-search-3** `is:stale` keeps PRs that have waited `stale_after_days` or longer for a reviewer. `stale` is the
-  only `is:` value. _since v0.8.0_
+- **F-search-3** `is:stale` keeps PRs that have waited `stale_after_days` or longer for a reviewer. _since v0.8.0_
+  `is:agent` keeps PRs a coding agent or bot opened, and `is:human` the ones a person opened; `stale`, `agent`, and
+  `human` are the `is:` values. _unreleased_
 - **F-search-4** Clicking a label, author, or repository in the table or in Details adds it as a chip. _since
   v0.8.0_
 - **F-search-5** A chip's × removes it, `Backspace` in an empty box removes the last chip, the × at the right
@@ -241,6 +246,12 @@ values in the code. New features get the next free number in their area.
   - **Stale** adds or removes the `is:stale` chip (F-search-3), as if typed.
 
   _since v0.13.0_
+  - **Agents** adds or removes the `is:agent` chip (F-search-3), as if typed, and counts the loaded PRs a coding
+    agent or bot opened. _unreleased_
+- **F-search-9** A PR counts as agent-authored when GitHub says its author is a `Bot` account (Copilot, Claude,
+  Dependabot and the like), or when its author matches `agent_authors` in config.toml: whole logins or `*`
+  patterns (`copilot*`, `*[bot]`), ignoring case, for a person's account that an agent opens PRs from. The CLI's
+  JSON carries `agent` on every PR, and PR Marmot for iPad gets the same rule and settings field. _unreleased_
 
 ## Change tracking
 
@@ -510,7 +521,8 @@ values in the code. New features get the next free number in their area.
 
   _since v0.7.0_
 - **F-cli-4** `--stale` keeps PRs that have waited too long. `--sort smallest` or `--sort wait` orders the pickup
-  sections, and Notes end with the wait and the size band. _since v0.8.0_
+  sections, and Notes end with the wait and the size band. _since v0.8.0_ `--agent` keeps only PRs a coding agent or
+  bot opened and `--no-agent` only a person's (F-search-9); `--json` says which in `filters.agent`. _unreleased_
 - **F-cli-5** `--filter "<query>"` runs the desktop search grammar over the loaded PRs. _since v0.9.0_
 - **F-cli-6** Output formats: a width-aware table on a terminal, Markdown when piped, `--format markdown`, and
   `--json`. The table follows `COLUMNS`, and `--no-color`, `NO_COLOR`, or `TERM=dumb` turn colour off. _since v0.7.0_

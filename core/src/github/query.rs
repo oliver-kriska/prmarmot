@@ -97,12 +97,11 @@ macro_rules! pr_fields {
   additions deletions changedFiles
   stack { number size baseRefName }
   stackEntry { position }
+  author{ __typename login }
   labels(first:20){ nodes{ name } }
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
   reviews(last:60){ nodes{ author{login} state submittedAt } }
-  reviewThreads(last:100){ totalCount nodes{ isResolved } }
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:1){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } } } } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
     };
 }
@@ -443,9 +442,13 @@ impl<T> Default for Nodes<T> {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Login {
     pub login: Option<String>,
+    /// `User`, `Bot`, `Organization`, `Mannequin` or `EnterpriseUserAccount`;
+    /// only asked for on the PR author, so absent elsewhere.
+    #[serde(default, rename = "__typename")]
+    pub typename: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

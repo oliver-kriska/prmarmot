@@ -56,6 +56,10 @@ pub struct AppConfig {
     pub dock_badge: bool,
     pub automatic_update_checks: bool,
     pub stale_after_days: Option<u64>,
+    /// Authors whose PRs count as agent-authored on top of GitHub's `Bot`
+    /// accounts (`is:agent`): logins or `*` patterns, ignoring case.
+    #[uniffi(default = [])]
+    pub agent_authors: Vec<String>,
     /// The order sections come in, in every view, as their JSON keys; empty
     /// is the default order. `parse_section_order` and `section_order_entries`
     /// read it.
@@ -109,6 +113,7 @@ impl From<FileConfig> for AppConfig {
             dock_badge: file.dock_badge,
             automatic_update_checks: file.automatic_update_checks,
             stale_after_days: file.stale_after_days,
+            agent_authors: file.agent_authors,
             section_order: file.section_order,
             auth: file.auth.map(|auth| AuthConfig {
                 host: auth.host,
@@ -150,6 +155,7 @@ impl From<AppConfig> for FileConfig {
             dock_badge: config.dock_badge,
             automatic_update_checks: config.automatic_update_checks,
             stale_after_days: config.stale_after_days,
+            agent_authors: config.agent_authors,
             section_order: config.section_order,
             // The iPad keeps no collapsed sections yet; the desktop's live in
             // its own config.toml.

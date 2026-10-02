@@ -432,6 +432,27 @@
         205
       ]
     },
+    "is:agent": {
+      "authored": [],
+      "chips": [
+        "is:agent"
+      ],
+      "rebuilt": "is:agent",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
+    "is:agent is:human": {
+      "authored": [],
+      "chips": [
+        "is:agent",
+        "is:human"
+      ],
+      "rebuilt": "is:agent is:human",
+      "rebuiltAuthored": [],
+      "rest": "",
+      "review": []
+    },
     "is:fresh": {
       "authored": [],
       "chips": [
@@ -441,6 +462,67 @@
       "rebuiltAuthored": [],
       "rest": "",
       "review": []
+    },
+    "is:human": {
+      "authored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "chips": [
+        "is:human"
+      ],
+      "rebuilt": "is:human",
+      "rebuiltAuthored": [
+        115,
+        114,
+        112,
+        108,
+        105,
+        104,
+        103,
+        118,
+        117,
+        116,
+        113,
+        111,
+        110,
+        109,
+        102,
+        101,
+        107,
+        106
+      ],
+      "rest": "",
+      "review": [
+        201,
+        203,
+        204,
+        209,
+        211,
+        212,
+        202,
+        206,
+        207,
+        208,
+        210,
+        205
+      ]
     },
     "is:stale": {
       "authored": [

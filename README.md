@@ -320,6 +320,7 @@ notify_all_needs_action = false         # watched PRs still notify
 dock_badge = true                       # macOS; no-op on Linux
 automatic_update_checks = true          # latest stable release, at most daily
 stale_after_days = 3                    # waiting this long for a reviewer is stale
+agent_authors = ["copilot*"]            # agent-authored on top of GitHub's Bot accounts; * matches anything
 section_order = ["available", "await"]  # these sections first, the rest in default order
 details_position = "auto"               # auto | bottom | right
 
@@ -484,6 +485,12 @@ Every feature, with its limits and the version it shipped in, is listed in
     PRs, and while more are left to load a line under the header says so.
   - `is:stale` keeps PRs that have waited `stale_after_days` or longer for a
     reviewer (see **Pickup age**).
+  - `is:agent` keeps PRs a coding agent or bot opened, `is:human` the ones a
+    person opened. GitHub's `Bot` accounts count (Copilot, Claude, Dependabot
+    and the like); `agent_authors` in config.toml adds logins or `*` patterns
+    for an account an agent opens PRs from. An agent's PR that nobody has
+    reviewed reads "no human has looked yet". The **Agents** button beside
+    **Stale** toggles the chip.
   - Click a label (in the table or in Details), an author, or a repository to
     add it. **+n** lists the labels that didn't fit.
   - A chip's × removes it, and Backspace in an empty box removes the last one.
@@ -555,6 +562,7 @@ prmarmot-cli mine --all-repos --authored   # only PRs you opened, in any reposit
 prmarmot-cli review --all-repos        # Review queue across repositories
 prmarmot-cli mine --changed            # only PRs changed since you last looked, with what changed
 prmarmot-cli review --stale            # only PRs that have waited too long for a reviewer
+prmarmot-cli review --agent            # only PRs a coding agent or bot opened (--no-agent: a person's)
 prmarmot-cli review --filter 'label:"help wanted" is:stale'   # the app's search, in the terminal
 prmarmot-cli review --sort smallest    # small changes first, by the app's size band
 prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in one repository
@@ -585,8 +593,8 @@ cap as **Load more**.
 `--filter "<query>"` runs the app's search box over the loaded PRs, with the
 same grammar the desktop search field uses, so a saved query means one thing in
 both places. Bare words match the number, repository, title, author, labels,
-linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME` and
-`is:stale` match a whole field; quote a value that has spaces
+linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME`,
+`is:stale`, `is:agent` and `is:human` match a whole field; quote a value that has spaces
 (`label:"help wanted"`); every term must match, and matching ignores case.
 Several `author:` or `repo:` terms keep PRs matching any one of them, as
 GitHub's search does. `is:stale` uses the same `stale_after_days` as `--stale`.

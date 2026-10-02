@@ -104,10 +104,14 @@ pub struct Filters {
     pub watched: bool,
     /// Only PRs that have waited `stale_after_days` or longer for a reviewer.
     pub stale: bool,
+    /// `Some(true)`: only PRs a coding agent or bot opened (`--agent`);
+    /// `Some(false)`: only a person's (`--no-agent`).
+    pub agent: Option<bool>,
     /// What stale means, also for each PR's `stale` mark.
     pub stale_after_days: u64,
     /// `--filter`: the app's search grammar, from `prmarmot_core::search`.
-    /// Free words plus `label:`, `author:`, `repo:` and `is:stale`, ANDed,
+    /// Free words plus `label:`, `author:`, `repo:`, `is:stale`, `is:agent`
+    /// and `is:human`, ANDed,
     /// except that one of several `author:` or `repo:` terms is enough.
     pub query: Option<String>,
 }
@@ -132,6 +136,7 @@ impl Default for Filters {
             changed: false,
             watched: false,
             stale: false,
+            agent: None,
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             query: None,
         }
@@ -193,7 +198,8 @@ impl BoardView {
 
     /// The filter terms checked only against the loaded rows, spelled as the
     /// reader wrote them: all but what went to GitHub, plus `is:stale` for
-    /// `--stale`. In All open these can miss a match that is not loaded yet.
+    /// `--stale` and `is:agent` / `is:human` for `--agent` / `--no-agent`. In
+    /// All open these can miss a match that is not loaded yet.
     pub fn local_only_terms(&self) -> Vec<String> {
         let mut terms = match self.filters.query.as_deref() {
             Some(query) => {
@@ -205,6 +211,12 @@ impl BoardView {
         let stale = FilterChip::new(Qualifier::Is, "stale").term();
         if self.filters.stale && !terms.contains(&stale) {
             terms.push(stale);
+        }
+        if let Some(agent) = self.filters.agent {
+            let term = FilterChip::new(Qualifier::Is, if agent { "agent" } else { "human" }).term();
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
         }
         terms
     }
@@ -303,6 +315,7 @@ pub fn build(
         if (filters.changed && !row_marks.changed)
             || (filters.watched && !row_marks.watched)
             || (filters.stale && !row_marks.stale)
+            || filters.agent.is_some_and(|agent| row.agent != agent)
             || !query_matches
         {
             continue;
@@ -378,6 +391,7 @@ pub mod tests {
             issue: None,
             issue_url: None,
             author: Some("alice".into()),
+            agent: false,
             stack: None,
             queue_provenance: Some(QueueProvenance::Requested),
             draft: category == Category::Draft,
@@ -607,5 +621,43 @@ pub mod tests {
         let numbers: Vec<u64> = only.rows.iter().map(|row| row.number).collect();
         assert_eq!(numbers, [1, 2]);
         assert_eq!(only.filtered_out, 1);
+    }
+
+    #[test]
+    fn agent_keeps_the_agents_prs_and_no_agent_the_peoples() {
+        let by = |number, agent| {
+            let mut pr = row(number, Category::Todo);
+            pr.agent = agent;
+            pr
+        };
+        let rows = || vec![by(1, true), by(2, false), by(3, true)];
+        let attention = AttentionState::empty(namespace());
+        let view = |filters| {
+            build(
+                fetch_of(rows()),
+                &attention,
+                Mode::Review,
+                BoardScope::AllRepositories,
+                "me".into(),
+                filters,
+                Utc::now(),
+            )
+        };
+        let numbers = |view: &BoardView| view.rows.iter().map(|row| row.number).collect::<Vec<_>>();
+        let agents = view(Filters {
+            agent: Some(true),
+            ..Filters::default()
+        });
+        assert_eq!(numbers(&agents), [1, 3]);
+        assert_eq!(agents.filtered_out, 1);
+        assert_eq!(agents.local_only_terms(), ["is:agent"]);
+        let people = view(Filters {
+            agent: Some(false),
+            query: Some("is:human".into()),
+            ..Filters::default()
+        });
+        assert_eq!(numbers(&people), [2]);
+        assert_eq!(people.local_only_terms(), ["is:human"], "said once");
+        assert_eq!(numbers(&view(Filters::default())), [1, 2, 3]);
     }
 }

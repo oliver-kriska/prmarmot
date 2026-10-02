@@ -236,6 +236,9 @@ pub const NEEDS_YOU_TOGGLE_LABEL: &str = "Needs you";
 /// The quick filter that adds or removes the `is:stale` search chip.
 pub const STALE_TOGGLE_LABEL: &str = "Stale";
 
+/// The quick filter that adds or removes the `is:agent` search chip.
+pub const AGENT_TOGGLE_LABEL: &str = "Agents";
+
 /// The Needs you toggle's tooltip. `count` is the header's "need you".
 pub fn needs_you_toggle_tooltip(on: bool, count: usize) -> String {
     quick_filter_tooltip(match (on, count) {
@@ -256,6 +259,16 @@ pub fn stale_toggle_tooltip(on: bool, count: usize, stale_after_days: u64) -> St
         (true, _) => QUICK_FILTER_OFF.to_owned(),
         (false, 0) => format!("No loaded PR has waited {days} or longer for a reviewer."),
         (false, _) => format!("Show only PRs waiting {days} or longer for a reviewer."),
+    })
+}
+
+/// The Agents toggle's tooltip: `is:agent`, said in words. `count` is how
+/// many loaded rows a coding agent or bot opened.
+pub fn agent_toggle_tooltip(on: bool, count: usize) -> String {
+    quick_filter_tooltip(match (on, count) {
+        (true, _) => QUICK_FILTER_OFF,
+        (false, 0) => "No loaded PR was opened by a coding agent or bot.",
+        (false, _) => "Show only PRs opened by a coding agent or bot.",
     })
 }
 
@@ -847,6 +860,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: Some(if yours { "me" } else { "bob" }.into()),
+            agent: false,
             stack: None,
             queue_provenance: None,
             draft: category == Category::Draft,
@@ -1107,6 +1121,15 @@ mod tests {
             stale_toggle_tooltip(true, 4, 7),
             said("Turn off this filter.")
         );
+        assert_eq!(
+            agent_toggle_tooltip(false, 0),
+            said("No loaded PR was opened by a coding agent or bot.")
+        );
+        assert_eq!(
+            agent_toggle_tooltip(false, 2),
+            said("Show only PRs opened by a coding agent or bot.")
+        );
+        assert_eq!(agent_toggle_tooltip(true, 2), said("Turn off this filter."));
     }
 
     #[test]

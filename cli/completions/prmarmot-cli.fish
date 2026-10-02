@@ -60,10 +60,13 @@ complete -c prmarmot-cli -n "__prmarmot_cli_command $views" -l auth -x -a 'auto 
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -s f -l format -x -a 'table markdown json' -d 'Output format'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l changed -d 'Only PRs changed since you last looked'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l stale -d 'Only PRs that have waited too long for a reviewer'
-complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l filter -x -a 'label: author: repo: is:stale' -d 'Only PRs matching a search query'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l agent -d 'Only PRs opened by a coding agent or bot'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l no-agent -d 'Only PRs a person opened'
+complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l filter -x -a 'label: author: repo: is:stale is:agent is:human' -d 'Only PRs matching a search query'
 complete -c prmarmot-cli -n "__prmarmot_cli_command review reviews" -l sort -x -a 'wait smallest' -d 'Longest wait or smallest change first'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
 
+# pr
 # watch
 complete -c prmarmot-cli -n __prmarmot_cli_watch_view_expected -a 'mine review' -d 'View to watch'
 complete -c prmarmot-cli -n "__fish_seen_subcommand_from watch" -s f -l format -x -a 'text json' -d 'Output format'

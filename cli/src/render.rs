@@ -126,6 +126,7 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         "url": row.url,
         "title": row.title,
         "author": row.author,
+        "agent": row.agent,
         "draft": row.draft,
         "category": row.category.as_str(),
         "queue": row.queue_provenance.map(|queue| match queue {
@@ -232,6 +233,7 @@ pub fn board_json(view: &BoardView) -> Value {
             "changed": view.filters.changed,
             "watched": view.filters.watched,
             "stale": view.filters.stale,
+            "agent": view.filters.agent,
             "stale_after_days": view.filters.stale_after_days,
             "filtered_out": view.filtered_out,
         },

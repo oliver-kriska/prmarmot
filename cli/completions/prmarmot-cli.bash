@@ -8,7 +8,7 @@
 _prmarmot_cli() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     local command="" action="" flagged="" word words i
-    local value_flags=" --repo -f --format --pages --sort --interval --events --pr --until --timeout --agent --dir --host --auth --client-id "
+    local value_flags=" --repo -f --format --pages --sort --interval --events --pr --until --timeout --since --agent --dir --host --auth --client-id "
 
     # The command and its first word, skipping flag values
     # (`--flag value`, or `--flag = value` once bash splits at "=").
@@ -86,7 +86,7 @@ _prmarmot_cli() {
             ;;
         --filter)
             # A free-text query; offer the qualifier words as a starting point.
-            COMPREPLY=($(compgen -W "label: author: repo: is:stale" -- "$cur"))
+            COMPREPLY=($(compgen -W "label: author: repo: is:stale is:agent is:human" -- "$cur"))
             compopt -o nospace 2>/dev/null
             return
             ;;
@@ -102,18 +102,19 @@ _prmarmot_cli() {
             if [[ $cur == -* ]]; then
                 words="--help --version"
             else
-                words="mine review all watch auth skill completions help"
             fi
             ;;
         mine | authored)
             words="$view --authored --changed --stale --filter --pages"
+            words="$view --authored --changed --stale --agent --no-agent --filter --pages"
             ;;
         review | reviews)
-            words="$view --changed --stale --filter --sort --pages"
+            words="$view --changed --stale --agent --no-agent --filter --sort --pages"
             ;;
         all | all-open)
             # One repository only, so no --all-repos.
-            words="${view/ --all-repos/} --changed --stale --filter --pages"
+            words="${view/ --all-repos/} --changed --stale --agent --no-agent --filter --pages"
+            ;;
             ;;
         watch)
             # A view word only right after `watch`.

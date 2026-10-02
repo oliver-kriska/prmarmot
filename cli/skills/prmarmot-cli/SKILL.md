@@ -71,12 +71,15 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
 - **Reviews:** `reviews[]` has each other reviewer's standing review and
   `my_review` the user's own (`NONE` if none). A standing review is the latest,
   except that a later comment does not cancel an approval or change request.
-- **`note`:** a one-line human summary.
+- **`note`:** a one-line human summary. "CI failing" names the failing
 - **Pickup age:** `waiting_since` is when the PR started waiting for a
   reviewer (its review request, or when it opened or became ready for
   review), null when it isn't waiting (drafts, already reviewed). `stale` is
   true once it has waited `filters.stale_after_days` (default 3) or longer.
   Sections that wait on a reviewer list the longest wait first.
+- **`agent`:** true when a coding agent or bot opened the PR (GitHub's `Bot`
+  account type, or an author the config's `agent_authors` names). An agent's
+  PR nobody has reviewed and nothing blocks reads "no human has looked yet".
 - **`size`:** `band` (`small`: at most 100 changed lines and 10 files;
   `large`: more than 400 lines or 30 files; otherwise `medium`),
   `additions`, `deletions`, and `changed_files`. It is null when GitHub
@@ -120,6 +123,9 @@ Other flags:
 - `--watched`: only PRs the user watches in the app.
 - `--stale`: only PRs that have waited `stale_after_days` or longer for a
   reviewer. Good for "what's been sitting too long?".
+- `--agent` / `--no-agent`: only PRs a coding agent or bot opened (GitHub's
+  `Bot` accounts plus config `agent_authors`), or only a person's. The same
+  split as `is:agent` / `is:human` in `--filter`.
 - `--sort smallest` (`review` only): list requested and available PRs by
   size band, then changed lines, then longest wait. The default is
   `--sort wait`. The envelope's `sort` says which order was used.

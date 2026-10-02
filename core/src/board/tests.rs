@@ -411,6 +411,81 @@ fn a_queued_pr_says_where_it_stands_in_the_merge_queue_not_mergeable() {
         "🟢 approved — in merge queue, position 4 · can't rebase"
     );
 }
+
+#[test]
+fn an_agent_s_pr_is_known_by_github_s_bot_type_or_by_the_configured_authors() {
+    let author = |login: Option<&str>, typename: Option<&str>| {
+        let mut v = base(3);
+        let mut author = serde_json::Map::new();
+        if let Some(login) = login {
+            author.insert("login".into(), json!(login));
+        }
+        if let Some(typename) = typename {
+            author.insert("__typename".into(), json!(typename));
+        }
+        v["author"] = serde_json::Value::Object(author);
+        v
+    };
+    // GitHub's account type settles it, whatever the login.
+    assert!(derive_one(author(Some("copilot"), Some("Bot")), Mode::Review).agent);
+    assert!(!derive_one(author(Some("alice"), Some("User")), Mode::Review).agent);
+    // Without the type (older fixtures), only the configured authors count:
+    // whole logins or `*` patterns, ignoring case.
+    let mut cfg = cfg();
+    cfg.agent_authors = vec!["Copilot*".into(), "*[bot]".into(), "devin".into()];
+    let agent = |login: Option<&str>, typename: Option<&str>| {
+        derive_rows(
+            &[pr(author(login, typename))],
+            Mode::Review,
+            "acme/widgets",
+            "me",
+            &cfg,
+        )
+        .into_iter()
+        .next()
+        .unwrap()
+        .agent
+    };
+    assert!(agent(Some("copilot-swe-agent"), None));
+    assert!(agent(Some("claude[bot]"), None));
+    assert!(agent(Some("DEVIN"), None));
+    assert!(!agent(Some("devin-fan"), None));
+    assert!(!agent(Some("alice"), Some("User")));
+    assert!(!agent(None, None));
+    assert!(agent(Some("alice"), Some("Bot")), "the type still wins");
+}
+
+#[test]
+fn an_agent_s_unreviewed_pr_says_no_human_has_looked_yet() {
+    let mut v = base(4);
+    v["author"] = json!({"login": "copilot", "__typename": "Bot"});
+    // The review queue: one repository's rows are all requested of you.
+    let row = derive_one(v.clone(), Mode::Review);
+    assert_eq!(row.category, Category::Todo);
+    assert_eq!(row.note, "🔵 needs your review · no human has looked yet");
+    // All open, and Involving me, which names the author as for anyone else.
+    assert_eq!(
+        derive_one(v.clone(), Mode::AllOpen).note,
+        "no human has looked yet"
+    );
+    let mut involving = v.clone();
+    involving["id"] = json!("theirs");
+    involving["repository"] = json!({"nameWithOwner":"acme/two"});
+    let rows = derive_involving_rows(&[pr(involving)], "", "me", &BoardConfig::default());
+    assert_eq!(rows[0].note, "copilot's PR · no human has looked yet");
+    // A review, or anything against it, is the fact as before.
+    let mut reviewed = v.clone();
+    reviewed["reviews"] = json!({"nodes": [{"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}]});
+    assert_eq!(derive_one(reviewed.clone(), Mode::AllOpen).note, "approved");
+    assert_eq!(
+        derive_one(reviewed, Mode::Review).note,
+        "🔵 needs your review"
+    );
+    v["mergeable"] = json!("CONFLICTING");
+    assert_eq!(derive_one(v.clone(), Mode::AllOpen).note, "merge conflict");
+    assert_eq!(derive_one(v, Mode::Review).note, "⚠️ has conflicts");
+}
+
 fn with_methods(
     mut v: serde_json::Value,
     merge: bool,

@@ -329,6 +329,9 @@ pub struct BoardConfig {
     pub authored_only: bool,
     /// A PR that has waited this many days for a reviewer is stale.
     pub stale_after_days: u64,
+    /// Authors whose PRs count as agent-authored on top of GitHub's `Bot`
+    /// accounts: logins or `*` patterns (`copilot*`, `*[bot]`), ignoring case.
+    pub agent_authors: Vec<String>,
 }
 
 impl BoardConfig {
@@ -345,6 +348,38 @@ impl BoardConfig {
     }
 }
 
+impl BoardConfig {
+    /// Whether a PR author is a coding agent or another bot: GitHub says so
+    /// (`Bot`), or `agent_authors` names the login, ignoring case, with `*`
+    /// standing for any run of characters.
+    pub fn is_agent(&self, author: &crate::github::query::Login) -> bool {
+        if author.typename.as_deref() == Some("Bot") {
+            return true;
+        }
+        let Some(login) = author.login.as_deref() else {
+            return false;
+        };
+        let login = login.to_lowercase();
+        self.agent_authors
+            .iter()
+            .any(|pattern| glob_matches(&pattern.to_lowercase(), &login))
+    }
+}
+
+/// `pattern` against `text`, where `*` matches any run of characters
+/// (including none) and everything else matches itself.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, tail)) => {
+            text.starts_with(head)
+                && (0..=text.len() - head.len())
+                    .filter(|&skip| text.is_char_boundary(head.len() + skip))
+                    .any(|skip| glob_matches(tail, &text[head.len() + skip..]))
+        }
+    }
+}
+
 impl Default for BoardConfig {
     fn default() -> Self {
         Self {
@@ -354,6 +389,7 @@ impl Default for BoardConfig {
             issue_link: None,
             authored_only: false,
             stale_after_days: crate::pickup::DEFAULT_STALE_AFTER_DAYS,
+            agent_authors: Vec::new(),
         }
     }
 }
@@ -369,12 +405,16 @@ pub struct BoardRow {
     pub head_oid: Option<String>,
     pub reviewed_oid: Option<String>,
     pub reviewed_at: Option<String>,
+    /// Commits since your latest review, when the head moved on from the
     pub number: u64,
     pub url: String,
     pub title: String,
     pub issue: Option<String>,
     pub issue_url: Option<String>,
     pub author: Option<String>,
+    /// Opened by a coding agent or another bot: GitHub's `Bot` account type,
+    /// or an author `BoardConfig::agent_authors` names (`is:agent`).
+    pub agent: bool,
     pub stack: Option<StackInfo>,
     pub queue_provenance: Option<QueueProvenance>,
     pub draft: bool,
@@ -804,11 +844,22 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     } else {
         facts.join(" · ")
     };
+    // An agent's PR with nothing against it and no review yet: say that no
+    // person has looked, which is the one fact that decides who picks it up.
+    let state = if facts.is_empty() && row.agent && row.reviews.is_empty() {
+        NO_HUMAN_LOOKED_NOTE.to_owned()
+    } else {
+        state
+    };
     row.note = match named {
         Named::Yes => format!("{author}'s PR · {state}"),
         Named::No => state,
     };
 }
+
+/// The Note's state for an agent-authored PR that nobody has reviewed and
+/// nothing blocks.
+pub const NO_HUMAN_LOOKED_NOTE: &str = "no human has looked yet";
 
 /// Category, blockers, and Note for one of your own PRs, from row facts only
 /// (so a carried-forward fact can re-derive them).
@@ -920,6 +971,10 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         issue,
         issue_url,
         author: pr.author.as_ref().and_then(|a| a.login.clone()),
+        agent: pr
+            .author
+            .as_ref()
+            .is_some_and(|author| cfg.is_agent(author)),
         stack: pr.stack.as_ref().map(|stack| StackInfo {
             number: stack.number,
             size: stack.size,
@@ -1504,6 +1559,18 @@ fn review_note(row: &BoardRow, me: &str) -> String {
         },
         Category::Draft => "· draft (not ready)".to_string(),
         _ => String::new(),
+    };
+    // An agent's PR nobody has reviewed yet: the one fact that decides who
+    // picks it up, after what the queue says about it.
+    let note = if row.agent
+        && row.reviews.is_empty()
+        && matches!(row.category, Category::Todo | Category::Available)
+        && row.ci != Ci::Fail
+        && !row.conflict
+    {
+        format!("{note} · {NO_HUMAN_LOOKED_NOTE}")
+    } else {
+        note
     };
     if row.reviewed_oid.is_some()
         && row.head_oid.is_some()

@@ -669,6 +669,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: Some("alice".into()),
+            agent: false,
             stack: None,
             queue_provenance: Some(QueueProvenance::Requested),
             draft: false,
@@ -720,6 +721,7 @@ mod tests {
             row(2),
             BoardRow {
                 author: Some("me".into()),
+                agent: false,
                 ..others(3)
             },
             watched,

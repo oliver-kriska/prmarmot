@@ -54,6 +54,10 @@ pub struct FileConfig {
     /// (`is:stale`, `--stale`); at least 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_after_days: Option<u64>,
+    /// Authors whose PRs count as agent-authored on top of GitHub's `Bot`
+    /// accounts (`is:agent`, `--agent`): logins or `*` patterns, ignoring case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_authors: Vec<String>,
     /// The order sections come in, in every view, as their JSON keys
     /// (`["available", "await"]`). Sections left out follow in their default
     /// order; empty is the default order.
@@ -107,6 +111,7 @@ impl Default for FileConfig {
             dock_badge: true,
             automatic_update_checks: true,
             stale_after_days: None,
+            agent_authors: Vec::new(),
             section_order: Vec::new(),
             details_position: None,
             auth: None,
@@ -414,6 +419,12 @@ fn board_rules(file: &FileConfig, env: &EnvOverrides, warnings: &mut Vec<String>
         Some(days) => config.stale_after_days = days,
         None => {}
     }
+    config.agent_authors = file
+        .agent_authors
+        .iter()
+        .map(|author| author.trim().to_owned())
+        .filter(|author| !author.is_empty())
+        .collect();
     if let Some(reviewers) = &env.reviewers {
         config.default_reviewers = reviewers.split(',').map(|s| s.trim().to_string()).collect();
     }
@@ -819,6 +830,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_authors_reach_the_board_rules_trimmed_and_without_blanks() {
+        let (config, warning) = board_config(
+            &toml::from_str("agent_authors = [\" copilot* \", \"\", \"bob\"]").unwrap(),
+        );
+        assert_eq!(config.agent_authors, ["copilot*", "bob"]);
+        assert!(warning.is_none());
+        let (config, _) = board_config(&toml::from_str("").unwrap());
+        assert!(config.agent_authors.is_empty());
+    }
+
+    #[test]
     fn auth_settings_follow_env_over_file_and_report_typos() {
         let file: FileConfig = toml::from_str(
             r#"
@@ -991,6 +1013,7 @@ notify_all_needs_action = true
 dock_badge = false
 automatic_update_checks = false
 stale_after_days = 5
+agent_authors = ["copilot*", "renovate-runner"]
 
 [repo_reviewers]
 acme = ["carol"]

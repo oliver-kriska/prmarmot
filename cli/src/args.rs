@@ -56,10 +56,14 @@ View options:
       --watched             Only PRs you watch in PR Marmot
       --stale               Only PRs that have waited stale_after_days (default 3)
                             or longer for a reviewer
+      --agent               Only PRs opened by a coding agent or bot (GitHub's
+                            Bot accounts, plus config agent_authors)
+      --no-agent            Only PRs a person opened
       --filter QUERY        Only PRs matching the app's search box: words match the
                             number, repository, title, author, labels, linked issue
-                            and Note; label:NAME, author:LOGIN, repo:OWNER/NAME and
-                            is:stale match a whole field; quote a value that has
+                            and Note; label:NAME, author:LOGIN, repo:OWNER/NAME,
+                            is:stale, is:agent and is:human match a whole field;
+                            quote a value that has
                             spaces; every term must match, except that one of
                             several author: or repo: terms is enough. With `all`,
                             GitHub matches label: and author: across the whole
@@ -148,6 +152,8 @@ pub struct ViewArgs {
     pub changed: bool,
     pub watched: bool,
     pub stale: bool,
+    /// `--agent` / `--no-agent`: only agent-authored PRs, or only a person's.
+    pub agent: Option<bool>,
     pub snoozed: bool,
     /// `--filter`: the app's search grammar over the loaded rows; All open
     /// also sends its `label:` and `author:` terms to GitHub.
@@ -266,6 +272,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut changed = false;
     let mut watched = false;
     let mut stale = false;
+    let mut agent = None;
     let mut snoozed = false;
     let mut filter = None;
     let mut sort = Sort::Wait;
@@ -304,6 +311,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "--changed" if !watch => changed = true,
             "--stale" if !watch => stale = true,
+            "--agent" if !watch => agent = Some(true),
+            "--no-agent" if !watch => agent = Some(false),
             "--filter" if !watch => filter = Some(value("--filter")?),
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
             "--sort" if watch => return Err("--sort applies to `review`, not `watch`".into()),
@@ -337,7 +346,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--until" | "--timeout" => {
                 return Err(format!("{flag} applies to `watch --pr`"));
             }
-            "--changed" | "--stale" | "--pages" | "--filter" => {
+            "--changed" | "--stale" | "--agent" | "--no-agent" | "--pages" | "--filter" => {
                 return Err(format!(
                     "{flag} applies to `mine`, `review`, and `all`, not `watch`"
                 ))
@@ -407,6 +416,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             changed,
             watched,
             stale,
+            agent,
             snoozed,
             filter,
             sort,

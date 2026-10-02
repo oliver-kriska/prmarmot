@@ -470,6 +470,25 @@ pub fn stale_toggle_text(on: bool, count: u32, stale_after_days: u64) -> String 
     core_status::stale_toggle_tooltip(on, count as usize, stale_after_days)
 }
 
+/// The Agents quick filter's label; it adds or removes the `is:agent` chip.
+#[uniffi::export]
+pub fn agent_toggle_label() -> String {
+    core_status::AGENT_TOGGLE_LABEL.into()
+}
+
+/// What the Agents quick filter says it will do.
+#[uniffi::export]
+pub fn agent_toggle_text(on: bool, count: u32) -> String {
+    core_status::agent_toggle_tooltip(on, count as usize)
+}
+
+/// The Note's state for an agent-authored PR nobody has reviewed and nothing
+/// blocks, for a front end that wants to draw it apart.
+#[uniffi::export]
+pub fn no_human_looked_note() -> String {
+    prmarmot_core::board::NO_HUMAN_LOOKED_NOTE.into()
+}
+
 /// The sync status's hover text, after the status itself.
 #[uniffi::export]
 pub fn sync_status_note() -> String {

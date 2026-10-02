@@ -47,6 +47,10 @@
         "changed": { "type": "boolean", "description": "`--changed` was passed." },
         "watched": { "type": "boolean", "description": "`--watched` was passed." },
         "stale": { "type": "boolean", "description": "`--stale` was passed." },
+        "agent": {
+          "type": ["boolean", "null"],
+          "description": "true for `--agent` (only PRs a coding agent or bot opened), false for `--no-agent` (only a person's), null when neither was passed."
+        },
         "stale_after_days": {
           "type": "integer",
           "minimum": 1,
@@ -258,6 +262,10 @@
         "stale": {
           "type": "boolean",
           "description": "Waited `filters.stale_after_days` or longer at `generated_at` (events: at `at`)."
+        },
+        "agent": {
+          "type": "boolean",
+          "description": "Opened by a coding agent or another bot: GitHub's `Bot` account type, or an author config `agent_authors` names."
         },
         "size": {
           "type": ["object", "null"],

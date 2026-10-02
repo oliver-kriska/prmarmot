@@ -51,10 +51,10 @@ def rollup(state, number):
     }}
 
 
-def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
-       mergeable="MERGEABLE", labels=(), requested=(), teams=(), reviews=(), unresolved=0,
-       ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None, size=None,
-       updated=None):
+def pr(number, title, *, author="demo-user", author_type="User", draft=False,
+       decision="REVIEW_REQUIRED", mergeable="MERGEABLE", labels=(), requested=(), teams=(),
+       reviews=(), unresolved=0, ci="SUCCESS", stack=None, repo="demo-labs/atlas",
+       waited=None, size=None, updated=None):
     reviewers = [{"__typename": "User", "login": login} for login in requested] + [
         {"__typename": "Team", "slug": slug} for slug in teams
     ]
@@ -103,12 +103,11 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
         "additions": size[0],
         "deletions": size[1],
         "changedFiles": size[2],
-        "author": {"login": author},
+        "author": {"__typename": author_type, "login": author},
         "labels": {"nodes": [{"name": label} for label in labels]},
         "reviewRequests": {"totalCount": len(request_nodes), "nodes": request_nodes},
         "reviews": {"nodes": review_nodes},
         "reviewThreads": {"nodes":
-            [{"isResolved": False} for _ in range(unresolved)]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": rollup(ci, number)}}]},
         "timelineItems": {"nodes": timeline},
     }
@@ -167,6 +166,8 @@ REQUESTED = [
 AVAILABLE = [
     pr(524, "Add empty-state diagnostics", author="morgan", labels=("bug",), waited=30,
        size=(21, 4, 2)),
+    pr(529, "Tidy device activity fixtures", author="copilot", author_type="Bot",
+       labels=("mobile",), waited=12, size=(38, 9, 3)),
     pr(523, "Document atlas import boundaries", author="skyler", labels=("feature",),
        waited=150, size=(512, 131, 17)),
     # Included in the broad alias too; requested provenance must win after merge.

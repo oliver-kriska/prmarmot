@@ -557,6 +557,26 @@ impl RootView {
         }
     }
 
+    /// Whether the search holds the `is:agent` chip: the Agents pill is on.
+    fn agent_filtering(&self) -> bool {
+        let chip = agent_chip();
+        self.filter_chips.iter().any(|held| held.same_as(&chip))
+    }
+
+    /// The Agents pill adds the `is:agent` chip, or removes it, as if typed.
+    fn toggle_agent_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chip = agent_chip();
+        if let Some(index) = self
+            .filter_chips
+            .iter()
+            .position(|held| held.same_as(&chip))
+        {
+            self.remove_filter_chip(index, window, cx);
+        } else {
+            self.filter_by(chip, window, cx);
+        }
+    }
+
     /// A label, author, or repository was clicked: filter by it, show the
     /// search box, and keep the keyboard on the board.
     fn filter_by(&mut self, chip: FilterChip, window: &mut Window, cx: &mut Context<Self>) {
@@ -1850,15 +1870,21 @@ impl RootView {
 // The header sentence, the toggle tooltips and the two duration phrasings
 // live in `prmarmot_core::status`, so the iPad shows the same words.
 use prmarmot_core::status::{
-    changed_toggle_tooltip, header_counts as core_header_counts, loaded_more_text,
-    needs_you_toggle_tooltip, queue_loading_text, queue_sync_text as core_queue_sync_text,
-    relative, snoozed_toggle_tooltip, stale_toggle_tooltip, BadgeName, HeaderCounts,
-    NEEDS_YOU_TOGGLE_LABEL, REFRESH_NOTE, STALE_TOGGLE_LABEL, SYNC_STATUS_NOTE,
+    agent_toggle_tooltip, changed_toggle_tooltip, header_counts as core_header_counts,
+    loaded_more_text, needs_you_toggle_tooltip, queue_loading_text,
+    queue_sync_text as core_queue_sync_text, relative, snoozed_toggle_tooltip,
+    stale_toggle_tooltip, BadgeName, HeaderCounts, AGENT_TOGGLE_LABEL, NEEDS_YOU_TOGGLE_LABEL,
+    REFRESH_NOTE, STALE_TOGGLE_LABEL, SYNC_STATUS_NOTE,
 };
 
 /// The `is:stale` chip the Stale quick filter adds and removes.
 fn stale_chip() -> FilterChip {
     FilterChip::new(Qualifier::Is, "stale")
+}
+
+/// The `is:agent` chip the Agents quick filter adds and removes.
+fn agent_chip() -> FilterChip {
+    FilterChip::new(Qualifier::Is, "agent")
 }
 
 /// What the table area shows, derived from `AppState` truth (`last_synced` /

@@ -184,6 +184,7 @@ fn run_view(args: ViewArgs) -> ExitCode {
         changed: args.changed,
         watched: args.watched,
         stale: args.stale,
+        agent: args.agent,
         stale_after_days: setup.board.stale_after_days,
         query: args.filter.clone(),
     };

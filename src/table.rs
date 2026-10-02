@@ -2440,6 +2440,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: None,
+            agent: false,
             stack: None,
             queue_provenance: None,
             draft: matches!(category, Category::Draft),

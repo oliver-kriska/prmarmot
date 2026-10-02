@@ -486,6 +486,10 @@ pub struct PullRequest {
     pub url: String,
     pub title: String,
     pub author: Option<String>,
+    /// Opened by a coding agent or another bot: GitHub's `Bot` account type,
+    /// or an author `BoardSettings.agentAuthors` names (`is:agent`).
+    #[uniffi(default = false)]
+    pub agent: bool,
     pub draft: bool,
     pub category: Category,
     pub queue: Option<Queue>,
@@ -567,6 +571,7 @@ impl PullRequest {
             url: row.url.clone(),
             title: row.title.clone(),
             author: row.author.clone(),
+            agent: row.agent,
             draft: row.draft,
             category: row.category.into(),
             queue: row.queue_provenance.map(Into::into),
@@ -637,6 +642,7 @@ impl PullRequest {
             issue: self.issue.as_ref().map(|issue| issue.key.clone()),
             issue_url: self.issue.and_then(|issue| issue.url),
             author: self.author,
+            agent: self.agent,
             stack: self.stack.map(|stack| core_board::StackInfo {
                 number: stack.number,
                 size: stack.size,
@@ -751,6 +757,10 @@ pub struct BoardSettings {
     pub authored_only: bool,
     /// A PR waiting this many days for a reviewer is stale.
     pub stale_after_days: u64,
+    /// Authors whose PRs count as agent-authored on top of GitHub's `Bot`
+    /// accounts: logins or `*` patterns, ignoring case (`is:agent`).
+    #[uniffi(default = [])]
+    pub agent_authors: Vec<String>,
 }
 
 /// The settings the desktop app starts from, straight out of
@@ -771,6 +781,7 @@ impl Default for BoardSettings {
             issue_link: None,
             authored_only: false,
             stale_after_days: core.stale_after_days,
+            agent_authors: core.agent_authors,
         }
     }
 }
@@ -809,6 +820,7 @@ impl BoardSettings {
             issue_link,
             authored_only: self.authored_only,
             stale_after_days: self.stale_after_days,
+            agent_authors: self.agent_authors.clone(),
         })
     }
 }

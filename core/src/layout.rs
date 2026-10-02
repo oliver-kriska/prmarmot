@@ -615,6 +615,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: Some("alice".into()),
+            agent: false,
             stack: None,
             queue_provenance: None,
             draft: category == Category::Draft,

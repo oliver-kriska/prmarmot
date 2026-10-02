@@ -25,7 +25,8 @@ pub enum Qualifier {
     Label,
     Author,
     Repo,
-    /// `is:stale`: waited `stale_after_days` or longer for a reviewer.
+    /// `is:stale`: waited `stale_after_days` or longer for a reviewer;
+    /// `is:agent` / `is:human`: whether a coding agent or bot opened the PR.
     Is,
 }
 
@@ -77,7 +78,11 @@ impl Qualifier {
                 .as_deref()
                 .is_some_and(|author| same_text(author, value)),
             Qualifier::Repo => same_text(&row.repo, value),
-            Qualifier::Is => same_text(value, "stale") && stale.is_stale(row),
+            Qualifier::Is => {
+                (same_text(value, "stale") && stale.is_stale(row))
+                    || (same_text(value, "agent") && row.agent)
+                    || (same_text(value, "human") && !row.agent)
+            }
         }
     }
 }
@@ -495,6 +500,8 @@ pub struct QuickCounts {
     pub changed: usize,
     pub snoozed: usize,
     pub stale: usize,
+    /// Rows opened by a coding agent or bot (`is:agent`).
+    pub agent: usize,
     /// Watched or snoozed.
     pub followed: usize,
     /// The header's "need you": [`crate::status::need_you_count`].
@@ -517,6 +524,7 @@ pub fn query_board<'r>(
         counts.changed += usize::from(marks.is_changed(&row.id));
         counts.snoozed += usize::from(marks.is_snoozed(&row.id));
         counts.stale += usize::from(query.stale.is_stale(row));
+        counts.agent += usize::from(row.agent);
         counts.followed += usize::from(marks.is_followed(&row.id));
     }
     let shown = rows
@@ -551,6 +559,7 @@ mod tests {
             issue: None,
             issue_url: None,
             author: Some("alice".into()),
+            agent: false,
             stack: None,
             queue_provenance: None,
             draft: category == Category::Draft,
@@ -815,6 +824,22 @@ mod tests {
     }
 
     #[test]
+    fn is_agent_and_is_human_split_the_rows_by_who_opened_them() {
+        let mut r = row(9, Category::Todo);
+        r.title = "Bump deps".into();
+        assert!(!filtered(&r, "is:agent"));
+        assert!(filtered(&r, "is:human deps"));
+        r.agent = true;
+        assert!(filtered(&r, "IS:Agent"));
+        assert!(!filtered(&r, "is:human"));
+        assert!(!filtered(&r, "is:agent is:human"), "both can't hold");
+        let chip = FilterChip::new(Qualifier::Is, "agent");
+        assert_eq!(chip.term(), "is:agent");
+        assert!(chip.matches(&r, rule()));
+        assert!(!RemoteFilter::from_chips(&[chip]).sends(&FilterChip::new(Qualifier::Is, "agent")));
+    }
+
+    #[test]
     fn all_open_sends_labels_quoted_and_authors_as_user_or_app() {
         let chips = [
             FilterChip::new(Qualifier::Label, "Help Wanted"),
@@ -875,7 +900,8 @@ mod tests {
         let mut mine = row(1, Category::Action);
         mine.blockers = vec![crate::board::Blocker::CiFailing];
         mine.title = "Fix login".into();
-        let asked = row(2, Category::Todo);
+        let mut asked = row(2, Category::Todo);
+        asked.agent = true;
         let mut snoozed = row(3, Category::Todo);
         snoozed.title = "Fix logout".into();
         let waiting = row(4, Category::Await);
@@ -901,6 +927,7 @@ mod tests {
                 changed: 2,
                 snoozed: 1,
                 stale: 0,
+                agent: 1,
                 followed: 2,
                 needs_you: 2,
             }

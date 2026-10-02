@@ -158,11 +158,11 @@ mod tests {
                 &["prmarmot-cli", "all", "--"],
                 concat!(
                     "--repo --format --json --watched --snoozed --no-color --help ",
-                    "--host --auth --changed --stale --filter --pages"
+                    "--host --auth --changed --stale --agent --no-agent --filter --pages"
                 ),
             ),
             // One repository, and neither --authored nor --sort.
-            (&["prmarmot-cli", "all-open", "--a"], "--auth"),
+            (&["prmarmot-cli", "all-open", "--au"], "--auth"),
             (
                 &["prmarmot-cli", "watch", "--pr", "o/n#1", "--un"],
                 "--until",
@@ -224,7 +224,14 @@ mod tests {
         assert_eq!(offers("prmarmot-cli watch ").unwrap(), ["mine", "review"]);
         assert_eq!(offers("prmarmot-cli al").unwrap(), ["all"]);
         let all = offers("prmarmot-cli all --").unwrap();
-        for flag in ["--repo", "--filter", "--pages", "--stale"] {
+        for flag in [
+            "--repo",
+            "--filter",
+            "--pages",
+            "--stale",
+            "--agent",
+            "--no-agent",
+        ] {
             assert!(all.contains(&flag.to_owned()), "all lacks {flag}: {all:?}");
         }
         for flag in ["--all-repos", "--authored", "--sort", "--interval"] {
