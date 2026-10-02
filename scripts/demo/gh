@@ -34,6 +34,23 @@ def ago(hours):
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def rollup(state, number):
+    """GitHub's combined check status with its per-state counts, which the
+    Details panel's "Checks" line reads; a stable spread per PR."""
+    if state is None:
+        return None
+    passed = number % 7 + 5
+    runs = {
+        "SUCCESS": [("SUCCESS", passed), ("SKIPPED", 2)],
+        "FAILURE": [("FAILURE", 1), ("SUCCESS", passed), ("SKIPPED", 2)],
+        "PENDING": [("IN_PROGRESS", 2), ("SUCCESS", passed)],
+    }.get(state, [])
+    return {"state": state, "contexts": {
+        "checkRunCountsByState": [{"state": s, "count": c} for s, c in runs],
+        "statusContextCountsByState": [],
+    }}
+
+
 def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUIRED",
        mergeable="MERGEABLE", labels=(), requested=(), teams=(), reviews=(), unresolved=0,
        ci="SUCCESS", stack=None, repo="demo-labs/atlas", waited=None, size=None,
@@ -92,8 +109,7 @@ def pr(number, title, *, author="demo-user", draft=False, decision="REVIEW_REQUI
         "reviews": {"nodes": review_nodes},
         "reviewThreads": {"nodes":
             [{"isResolved": False} for _ in range(unresolved)]},
-        "commits": {"nodes": [{"commit": {"statusCheckRollup":
-            None if ci is None else {"state": ci}}}]},
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": rollup(ci, number)}}]},
         "timelineItems": {"nodes": timeline},
     }
     if stack:
@@ -205,8 +221,8 @@ def find(views, number):
 
 
 def set_ci(node, state):
-    rollup = None if state is None else {"state": state}
-    node["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = rollup
+    node["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = rollup(
+        state, node["number"])
 
 
 def push_commit(node, tag="next"):
@@ -548,6 +564,23 @@ def graphql(args):
     def scoped(nodes):
         return [node for node in nodes
                 if selected_repo is None or node["repository"]["nameWithOwner"] == selected_repo]
+    # All open: every open PR in the repository, newest update first, plus the
+    # ids of the ones asking for your review.
+    if "search(query:$q" in query and "$requested" in query:
+        seen, everything = set(), []
+        for node in scoped(all_nodes):
+            if node["id"] not in seen:
+                seen.add(node["id"])
+                everything.append(node)
+        everything.sort(key=lambda node: node["updatedAt"], reverse=True)
+        data = {
+            "search": page(everything),
+            "requested": {"nodes": [{"id": node["id"]} for node in scoped(REQUESTED)]},
+            "rateLimit": rate(4),
+        }
+        if "$tracked" in query:
+            data["tracked"] = tracked
+        return {"data": data}
     if "requested:" in query or "requested: search" in query:
         data = {"rateLimit": rate(5)}
         if "$requested" in query:
@@ -603,6 +636,22 @@ class FixtureTests(unittest.TestCase):
             for node in body["data"][alias]["nodes"]:
                 self.assertIn("totalCount", node["reviewRequests"])
                 self.assertIn("statusCheckRollup", node["commits"]["nodes"][0]["commit"])
+
+    def test_all_open_answers_every_open_pr_and_the_requested_ids(self):
+        body = graphql(["api", "graphql",
+                        "-f", "query=query($q:String!,$requested:String!){ search(query:$q) "
+                              "requested: search(query:$requested) }",
+                        "-f", "q=repo:demo-labs/atlas is:pr is:open sort:updated-desc",
+                        "-f", "requested=repo:demo-labs/atlas is:pr is:open"])
+        data = body["data"]
+        self.assertEqual(set(data), {"search", "requested", "rateLimit"})
+        repos = {node["repository"]["nameWithOwner"] for node in data["search"]["nodes"]}
+        self.assertEqual(repos, {"demo-labs/atlas"})
+        ids = [node["id"] for node in data["search"]["nodes"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        updated = [node["updatedAt"] for node in data["search"]["nodes"]]
+        self.assertEqual(updated, sorted(updated, reverse=True))
+        self.assertTrue(set(node["id"] for node in data["requested"]["nodes"]) <= set(ids))
 
     def test_waiting_prs_carry_recent_timeline_events(self):
         taylor = next(item for item in REQUESTED if item["number"] == 527)
@@ -868,7 +917,12 @@ def main():
                 marker.unlink()
                 print("Demo connection interrupted. Retry to load the fictional board.", file=sys.stderr)
                 raise SystemExit(1)
-            print(json.dumps(graphql(args)))
+            print(json.dumps(graphql(args)), flush=True)
+            # scripts/capture.sh waits for this before it trusts a still frame.
+            answered = os.environ.get("PRMARMOT_DEMO_ANSWERED")
+            if answered:
+                with open(answered, "a", encoding="utf-8") as log:
+                    log.write("graphql\n")
         else:
             raise ValueError("unexpected gh call")
     except (ValueError, KeyError) as error:

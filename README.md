@@ -139,9 +139,12 @@ curl -fsSL https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/install
 The installer downloads the latest macOS arm64 release, installs
 `/Applications/prmarmot.app` (`~/Applications` for accounts that cannot write
 `/Applications`; `--dir <dir>` to choose), verifies the published checksum,
-Developer ID signature, notarization ticket, and Gatekeeper acceptance, and
-creates the config file only when it can resolve an accessible repository. It never
-overwrites an existing config. It also links the bundled
+Developer ID signature, notarization ticket, Gatekeeper acceptance, and that the
+app is signed by PR Marmot's own Apple team (Gatekeeper accepts any notarized
+developer), and creates the config file only when it can resolve an accessible
+repository. It never overwrites an existing config, and it moves the installed
+app aside rather than deleting it, so a failed install leaves the previous
+version in place. It also links the bundled
 [terminal and agent CLI](#terminal-and-agent-cli) as `~/.local/bin/prmarmot-cli`
 (`--bin-dir <dir>` to choose another directory, `--bin-dir ""` to skip).
 
@@ -387,12 +390,18 @@ Every feature, with its limits and the version it shipped in, is listed in
 
 - **Shortcuts:** the footer opens the full keyboard reference. Character shortcuts
   work from dashboard controls, but never while typing in search, the repo picker,
-  or Settings. Arrow keys, Enter, and Space belong to the focused control.
+  or Settings. Arrow keys, Enter, and Space belong to the focused control;
+  choosing a repository in the picker gives them back to the board.
 - **Views:** click **Involving me** (or **My PRs**) / **Review queue** /
   **All open**, press `1` / `2` / `3`, or press `v` to cycle. All open needs one
   repository, so its tab is disabled while **All repositories** is selected.
 - **Navigate:** `↑` / `↓` selects; `Enter` or `o` opens the PR; `y` copies its
   URL with a brief footer confirmation; double-clicking a row opens it.
+- **Select several:** `⇧`-click a range, `⌘`-click (`Ctrl` on Linux) to add or
+  remove one, `⇧↑` / `⇧↓` to extend, `⌘A` for every PR on screen. The footer
+  counts them; `Enter` opens them (up to 10), `y` copies their URLs, `Y` copies
+  them as a list, `w` and `s` watch or snooze them all, and the right-click menu
+  has the same with the four copy formats. `Esc` goes back to one row.
 - **Inspect:** press `Space` or click **Details**; `Esc` closes the panel.
   Select text in the panel and press `⌘C` (macOS) or `Ctrl+C` (Linux) to copy it.
   The **Copy** menu offers the PR number, title, URL, or all details without selecting text.
@@ -505,17 +514,20 @@ Every feature, with its limits and the version it shipped in, is listed in
 - **Theme:** `t` cycles system → light → dark.
 - **Quit:** use **PR Marmot → Quit PR Marmot**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
   The global shortcut works even in Settings and text inputs. Plain `q` also
-  quits when no text input or dialog is active.
+  quits when no text input or dialog is active, and closing the window quits too.
 
 Mutable attention state is stored separately from preferences under
 `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), namespaced by GitHub host
 and account. Writes are bounded, coalesced, and atomic. A corrupt or newer state
-file is preserved and reported in the footer rather than overwritten.
+file is preserved and reported in the footer rather than overwritten. If the app
+ever panics, `panics.log` in the same directory gets one line (time, version,
+thread, source location, never the message), kept under 64 KiB.
 
 ![Selected stacked pull request with its reviewer, label, and stack-layer details](assets/screenshots/pr-details.png)
 
 *Select a row and open Details to inspect its loaded metadata: labels, the
-Note, author, CI, reviewers, and reviews. Scroll the panel for the rest,
+Note, author, CI and its checks counted by state, reviewers, and reviews.
+Scroll the panel for the rest,
 including the stack layer and base branch. This example uses fictional data;
 opening the panel makes no additional GitHub request.*
 
@@ -730,7 +742,8 @@ include any new flags.
 
 ## Data and queue limits
 
-Repository discovery runs at startup and **Repos** retries it. Discovery is
+Repository discovery runs once the first board has loaded (or when you open the
+picker first), and **Repos** retries it. Discovery is
 limited to 1,000 repositories (10 pages); configured, pinned, and current repos
 remain available if discovery fails. GitHub permissions and organization SSO
 determine what is visible.
@@ -860,7 +873,17 @@ scripts/demo.sh --fail-once # exercise the initial error and Retry recovery
 scripts/demo.sh --update-available # show a fictional stable update banner
 scripts/demo.sh --update-failed    # show a fictional prior helper failure
 scripts/demo.sh --self-test # validate the demo fixtures (Python 3 required)
+scripts/demo.sh --dark      # the same, in the dark theme
+make capture                # every scene below, light and dark -> target/captures
 ```
+
+`make capture` (macOS) runs `scripts/capture.sh`: it starts one demo instance per
+scene (`board`, `review-queue`, `all-open`, `pr-details`), brings its window to
+the front, sends any keys to that process only, and saves the window once the
+demo data has answered and two captures in a row are identical. It stops when
+the window is covered, and it refuses to run while a memory measurement is
+running. Name scenes to capture only those (`scripts/capture.sh pr-details`), or
+pass `--light`, `--dark` or `--out DIR`.
 
 The demo runs the real UI with a local, fail-closed `gh` stand-in. It requires
 Python 3 but no GitHub login or API requests, uses a temporary config, and never

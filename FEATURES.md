@@ -20,7 +20,9 @@ values in the code. New features get the next free number in their area.
 - **F-board-4** **Review queue** splits PRs that request your review (**Requested from you**) from other people's
   PRs with no pending user or team reviewer request (**Available to review**), an optional pool rather than an
   assignment. Your own PRs never appear, and it goes by review requests, not issue assignees. _since v0.1.0;
-  Available to review since v0.3.0_
+  Available to review since v0.3.0_ An empty Review queue says what it looked for. In one repository it offers
+  **Show all repositories**, and while GitHub has more to load it offers **Load more**, because the next page can
+  hold PRs the first did not. _unreleased_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
   - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_
@@ -57,20 +59,31 @@ values in the code. New features get the next free number in their area.
   - A single click on the blue PR number opens the PR, and on a linked-issue id opens the issue.
 
   _since v0.1.0; single-click links since v0.2.0_
+- **F-board-17** Several PRs at once: `⇧`-click selects every PR between the last selected row and the clicked one,
+  `⌘`-click (`Ctrl` on Linux) adds or removes one, `⇧↑` / `⇧↓` extends by one, and `⌘A` / `Ctrl+A` selects every PR
+  on screen (folded sections stay out). The footer counts them, and the row keys and the right-click menu act on all
+  of them: `Enter` / `o` opens them on GitHub (the first 10 of a larger selection), `y` copies their URLs, `Y` copies
+  them as a list, and the menu offers the four copy formats under the heading "Pull requests (N)", **Watch**,
+  **Unwatch**, **Snooze…** (one choice for all; "Waiting on" is not offered), and **Cancel snooze**. `Esc` returns to
+  one row. The selection survives a refresh; a PR that leaves the board leaves it. Details shows the row the caret
+  is on. _unreleased_
 - **F-board-9** Right-click a row for **Open on GitHub**, **Show details**, copy actions (URL, number,
   `owner/name#N` reference, title, all details), **Watch** / **Unwatch**, **Snooze…**, and **Cancel snooze**. The
   binoculars icon in the PR cell toggles watch. _since v0.3.0; watch and snooze since v0.6.0_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
+  - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _unreleased_
   - reviewers and reviews (your own review in the Review queue);
   - when the wait for a reviewer started;
   - stack layer and base branch;
   - whether it is changed, watched, or snoozed.
 
   It makes no extra request, and `Esc` closes it. _since v0.3.0_ It sits below the table or beside it
-  (F-board-16). _since v0.13.0_
+  (F-board-16). _since v0.13.0_ Each PR's Details open at the top, with no scroll position or text selection carried
+  over from the last PR. The Note line carries the same tone dot as the table's Note cell. _unreleased_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
-  background. _since v0.2.0_
+  background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
+  request. _unreleased_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
@@ -254,7 +267,7 @@ values in the code. New features get the next free number in their area.
 
   A conditional snooze wakes only when PR Marmot sees the PR, and missing data never wakes one. Snoozing again
   replaces a snooze, and **Cancel snooze** ends it. Up to 200 snoozes are kept; a 201st drops the oldest. _since
-  v0.6.0; the Snoozed count since v0.8.0_
+  v0.6.0; the Snoozed count since v0.8.0_ A snooze ends when PR Marmot sees the PR merged or closed. _unreleased_
 - **F-track-5** Desktop notifications for these changes:
   - merge conflict, changes requested, review again after new commits;
   - CI passed (with "and is approved" when it is);
@@ -265,13 +278,16 @@ values in the code. New features get the next free number in their area.
   the row you have selected, and the first refresh after launch never notify. Clicking a notification selects the
   PR, or opens a watched PR that isn't loaded on GitHub. Notifications and their sound can be turned off, and they
   arrive only while the app runs. _since v0.6.0_ Clicking one for any PR the board isn't showing opens it on GitHub.
-  _since v0.9.1_
+  _since v0.9.1_ A watched PR's merged, closed, or unavailable notification names the PR (`owner/name #N · title`).
+  Notifications nobody clicked no longer stop new ones after the 32nd. A click, and the answer to the permission
+  prompt, act the moment they arrive instead of on the app's next 5-second tick. _unreleased_
 - **F-track-6** The Dock badge counts, across both views, your PRs that need action plus review requests. It can
   be turned off. _since v0.6.0 · macOS only_
 - **F-track-7** Watches, snoozes, and change history are stored apart from preferences under
   `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), separately for each GitHub host and account. Writes are
   bounded, batched, and atomic. A corrupt file, or one written by a newer version, is kept and reported rather than
-  overwritten. _since v0.6.0_
+  overwritten. _since v0.6.0_ They are written as compact JSON; pretty-printed files from earlier
+  versions still read. _unreleased_
 
 ## Sharing
 
@@ -295,6 +311,8 @@ values in the code. New features get the next free number in their area.
 - **F-repo-3** The picker is searchable and fills from your accessible repositories. It lists up to 1,000
   repositories, read in 10 pages of 100, plus configured, pinned, and current ones. If discovery fails, those three
   still show, and **Repos** retries. Organization SSO and GitHub permissions decide what's visible. _since v0.3.0_
+  Discovery starts once the first board has loaded, or when you open the picker, so it never competes with the
+  board's first request. _unreleased_
 - **F-repo-4** **Pin** adds a repository shortcut to the toolbar, and **Pinned** removes it. Up to 12 pins are kept
   in order. Pins never fetch in the background. _since v0.4.0_
 - **F-repo-5** A repository that doesn't exist, or that the account can't see, gets its own error instead of an
@@ -330,7 +348,8 @@ values in the code. New features get the next free number in their area.
   in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _since v0.9.1_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
-  too. _since v0.9.0_
+  too. _since v0.9.0_ A keychain or token file that can't be read or written is reported as that, with the
+  system's reason, instead of "GitHub could not be reached". _unreleased_
 - **F-auth-7** Settings shows the host and the signed-in account. **Disconnect** removes a stored token from this
   machine; revoking the grant at GitHub is a separate step. _since v0.9.0_
 - **F-auth-8** Settings and `prmarmot-cli auth status` name the sign-in in use, including `PRMARMOT_TOKEN`, and
@@ -359,20 +378,28 @@ values in the code. New features get the next free number in their area.
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else
-  until a spent budget resets, rather than always the one-minute floor. _since v0.12.1_
+  until a spent budget resets, rather than always the one-minute floor. _since v0.12.1_ Both pauses say when the next
+  try is and count down to it ("GitHub API budget low (42 left) — retrying in 3m"). _unreleased_
 - **F-refresh-6** Each PR's data is capped: 20 labels, 15 review requests, 60 reviews, 100 review threads (so the
   unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_ The reviews and threads read are
   the newest ones, and a PR with more than 100 threads shows its unresolved count as a minimum ("5+ unresolved
   comments"). _since v0.14.0_
 - **F-refresh-7** If the first load fails, **Retry** tries again. A watched PR you can no longer see is reported as
-  unavailable, and the refresh still succeeds. _since v0.5.0; unavailable PRs since v0.7.0_
+  unavailable, and the refresh still succeeds. _since v0.5.0; unavailable PRs since v0.7.0_ Through the GitHub CLI,
+  an HTTP error GitHub explains in its response body (bad credentials, a rate limit, a timed-out query) gets its own
+  message and handling instead of "unexpected GitHub response". _unreleased_
 - **F-refresh-8** An idle window repaints at most once a minute, with no animated spinner, so the GPU stays idle.
-  _since v0.9.0_
+  _since v0.9.0_ Scrollbars still show while you scroll and hide when idle, but without the fade, which drew about
+  80 frames after every scroll or arrow key. _unreleased_
 - **F-refresh-9** GitHub stops a request after about 10 seconds, and a page of 60 PRs spread over many
   repositories can take longer. When GitHub gives up, PR Marmot asks again at once for 30 PRs, and that view keeps
   loading 30 at a time, Load more included, until you quit or change the repository. `prmarmot-cli watch` does the
   same between polls. A smaller page shows like any other partial page, with the **partial results** notice and
-  Load more (F-refresh-4); nothing says why it is smaller. _since v0.14.0_
+  Load more (F-refresh-4); nothing says why it is smaller. _since v0.14.0_ The `gh` path now recognizes GitHub's
+  cut-off when it arrives as an HTTP 502 or 504 with a body, and a view that timed out at both sizes, or whose All
+  open filter changed, stays on 30-row pages. One-shot `prmarmot-cli` runs remember a view that needed small pages
+  for an hour (`small-pages.json` beside the attention files), so the next run doesn't pay the timeout first.
+  _unreleased_
 
 ## Settings, theme, shortcuts
 
@@ -396,7 +423,10 @@ values in the code. New features get the next free number in their area.
   `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _since v0.12.0_ a `section_order`
   entry that is not a section; _since v0.13.0_ a `[collapsed_sections]` view or section it doesn't know, and a
   `details_position` other than `auto`, `bottom` or `right`), from the file or the environment.
-  It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_
+  It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_ A file it
+  can't read is left alone too, and so is a key of the wrong kind (`window = 900`), which no longer stops the app
+  when it saves. Each write goes through a temporary file and a rename, so a crash never leaves half a config, and
+  a symlinked config is still written through to its target. _unreleased_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_
@@ -405,21 +435,29 @@ values in the code. New features get the next free number in their area.
 - **F-settings-5** The window opens at 1440 × 860 and can't be made smaller than 900 × 560. Across launches the app
   remembers the scope, the last repository, the theme, the starting view, the window size, and pins. _since v0.1.0_
 - **F-settings-6** Keyboard shortcuts work from any dashboard control, but never while you type in search, the
-  repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_
+  repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_ Choosing a
+  repository in the picker gives the keyboard back to the board, and the footer names `Space` for Details.
+  _unreleased_
 - **F-settings-7** Quit from the app menu or with `⌘Q` / `Ctrl+Q`, which works everywhere, even in text fields.
-  Plain `q` quits when no text field or dialog is active. _since v0.5.0_
+  Plain `q` quits when no text field or dialog is active. _since v0.5.0_ Closing the window (the red button, `⌘W`)
+  quits too; before, the app kept running with no window and no refresh until Quit from the Dock menu.
+  _unreleased_
 - **F-settings-8** **Section order** in Settings puts the sections in your own order: one list for every view,
   each section moved with its up and down buttons, and **Reset to default**. The list says which views show each
   section; each view shows the ones it has, in that order. Snoozed stays last and stacks stay inside their
   section, and nothing is hidden or counted differently. It is saved as `section_order` in config.toml, written
   with the JSON section keys (`section_order = ["available", "await"]`); sections left out follow in their
-  default order. `prmarmot-cli` prints its views in the same order. _since v0.12.0_
+  default order. `prmarmot-cli` prints its views in the same order. _since v0.12.0_ The up and down buttons show
+  their arrows; from v0.12.0 to v0.14.0 the icon files were not in the app and the buttons were blank.
+  _unreleased_
 
 ## Updates and install
 
 - **F-install-1** Prebuilt releases are signed with a Developer ID and notarized. The installer checks the
   published checksum, the signature, the notarization ticket, and Gatekeeper acceptance before installing. _since
-  v0.6.0 · macOS on Apple silicon_
+  v0.6.0 · macOS on Apple silicon_ It also checks that the app is signed by PR Marmot's own Apple team, since
+  Gatekeeper accepts any notarized developer, and it moves the installed app aside rather than deleting it, so a
+  failed install leaves the previous version in place. _unreleased_
 - **F-install-2** Homebrew: `brew install --cask oliver-kriska/tap/prmarmot`. The cask also links `prmarmot-cli` and
   its shell completions. _since v0.6.0; the CLI since v0.7.0, completions since v0.8.0 · macOS_
 - **F-install-3** Every install path uses one `/Applications/prmarmot.app`, and the installer removes an older
@@ -471,6 +509,9 @@ values in the code. New features get the next free number in their area.
 - **F-cli-5** `--filter "<query>"` runs the desktop search grammar over the loaded PRs. _since v0.9.0_
 - **F-cli-6** Output formats: a width-aware table on a terminal, Markdown when piped, `--format markdown`, and
   `--json`. The table follows `COLUMNS`, and `--no-color`, `NO_COLOR`, or `TERM=dumb` turn colour off. _since v0.7.0_
+  The table and Markdown take each cell's words from the app's table: no checks show as "—", a PR nobody was asked
+  to review as "Not requested", and an empty Review queue says what it looked for. `--json` is unchanged.
+  _unreleased_
 - **F-cli-7** `--json` follows the versioned `prmarmot-cli/board@1` contract.
   - Sections have stable keys.
   - Each PR carries its categorization facts, pickup age, size, and attention state.
@@ -544,6 +585,10 @@ values in the code. New features get the next free number in their area.
   opens the release page. _since v0.6.0_
 - **F-platform-7** A stored token uses the login keychain on macOS and a `0600` file on Linux (F-auth-6).
   _since v0.9.0_
+- **F-platform-8** If the app ever panics, it writes one line to `$XDG_STATE_HOME/prmarmot/panics.log`
+  (default `~/.local/state/prmarmot/panics.log`): the time, the version, the thread, and the source location, never
+  the panic's message, since that can carry a PR title or an error body. The file stays under 64 KiB; the oldest
+  lines go first. A Dock-launched app has no terminal, so without this a panic leaves no trace. _unreleased_
 
 ## Not in the app, by design
 

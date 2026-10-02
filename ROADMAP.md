@@ -14,18 +14,25 @@ Two ways to influence it:
   (Phase 5), and the count decides how much goes into it and whether Cloud follows; TestFlight invitations go to
   that thread first.
 
-## Where things stand — 2026-09-17
+## Where things stand — 2026-10-02
 
-- **v0.8.1** is the current release: Developer-ID-signed and notarized `.app`, Homebrew cask in
+- **v0.14.0** is the current release: Developer-ID-signed and notarized `.app`, Homebrew cask in
   `oliver-kriska/homebrew-tap`, and `prmarmot-cli` bundled in the app and linked by the cask, with its
   shell completions. Homebrew, the install script and `make install` all use the same
   `/Applications/prmarmot.app`.
-- Shipped: **My PRs | Review queue** for one repository or all repositories, pinned repos, filters,
+- Shipped: **My PRs | Review queue | All open** for one repository or all repositories, pinned repos, filters,
   Load more, stack grouping, watch/snooze, "changed since you looked" markers with notifications and
   a dock badge, copy-a-group sharing, editable Settings, daily update checks, and the CLI (table,
   Markdown, stable JSON with a published schema, a blocking `watch` event stream with `--until`, and a
-  built-in coding-agent skill). Since v0.8.0: search chips (`label:` / `author:` / `repo:`), pickup age
-  with `is:stale`, and a Small / Medium / Large size band with a smallest-first sort.
+  built-in coding-agent skill). Since v0.9.0: sign-in without `gh` (device flow or a token, Enterprise hosts),
+  the `ffi/` crate that the iPad app builds on, All open with GitHub-side `label:` / `author:` chips, your own
+  section order, Needs you / Stale quick filters, foldable sections, Details beside the table, "approved but
+  can't merge yet", and refreshes that stay inside GitHub's query time limit.
+- **In the working tree for the next release:** select several PRs (⇧-click, ⌘-click, ⇧↑↓, ⌘A) and open, copy,
+  watch or snooze them together; a snooze that ends when its PR merges or closes; CI counted by state in Details;
+  notification and API-budget fixes from the 2026-10-01 audit; closing the window quits instead of leaving a
+  windowless process; the Settings section-order arrows draw again (blank from v0.12.0 to v0.14.0, the icon
+  files were never embedded); the sign-in code in a real monospace face.
 - **Gate G0 passed (2026-09-20):** a 37.4 h unattended soak of the installed v0.9.1 held a mean physical
   footprint of 106.7 MB with a slope of −0.77 MB/h — it ends lower than it starts — on 0.01 % of one core and
   0.1 ms of GPU time per minute. The idle repaint that spoiled the v0.8.1 run is gone: 2,092 of 2,131 minutes
@@ -36,9 +43,11 @@ Two ways to influence it:
   23 MB per drawable. A ceiling keeps what the bound was for, catching a build whose working set grows,
   without failing the app for drawing. Both numbers are published. Method, raw samples and every threshold
   against the result, including the 251 MB peak:
-  [`benchmarks/2026-09-20-memory-gate-v0.9.1.md`](benchmarks/2026-09-20-memory-gate-v0.9.1.md).
+  [`benchmarks/2026-09-20-memory-gate-v0.9.1.md`](benchmarks/2026-09-20-memory-gate-v0.9.1.md). It is re-run
+  on a shipped build whenever the framework, the refresh loop or the repaint path changes; the next release
+  changes the repaint path, so it gets a soak.
 - Platforms: macOS (Apple Silicon) binaries. Linux and Intel Macs build from source until the `.deb`
-  in Phase 2 ships.
+  in Phase 1 ships.
 
 ## The product ladder
 
@@ -90,7 +99,7 @@ historical release assets keep their old names.
 
 - [x] **1a. Notarized `.app`**: Developer ID signing, hardened runtime, `notarytool`, stapled, verified with `spctl`.
 - [x] **1b. Homebrew tap + cask**: `brew install --cask oliver-kriska/tap/prmarmot`; the release workflow updates the cask.
-- [ ] **1c. In-app update that runs Homebrew**: daily check via the existing transport; "Update" banner; on the
+- [x] **1c. In-app update that runs Homebrew** (v0.6.0; checks without `gh` since v0.9.1): daily check via the existing transport; "Update" banner; on the
       Homebrew channel the app quits before the binary is replaced (a detached helper runs `brew upgrade` and
       relaunches); failure path reopens the old app and shows the error; "Check for updates automatically" preference.
 - [ ] **1d. Website `prmarmot.dev`**: static; hero, one-line install, "No account. No server. No GitHub App to
@@ -99,6 +108,12 @@ historical release assets keep their old names.
 - [ ] **Linux `.deb`** (arm64 + x86_64) built in CI with declared runtime deps (Vulkan loader, fontconfig,
       libxkbcommon, Wayland/X11); `install.sh` Linux branch. Homebrew casks are macOS-only, so a Linux formula
       (source build) only if asked. NVIDIA + Wayland is the known GPUI trouble spot; documented, not hidden.
+      Found in a 2026-10-02 source read of another Rust desktop toolkit, to do with the package: follow the
+      desktop's font-antialiasing setting through the settings portal and take the UI font from `fc-match
+      system-ui` (GPUI otherwise asks for IBM Plex Sans, then a fixed list); recommend `fonts-noto-color-emoji`
+      (GPUI colours emoji only from Noto); detect an apt-owned install so the in-app updater never overwrites
+      it; handle a second launch; and build the GPUI binary on Linux in CI so `src/platform.rs`'s non-macOS
+      branches compile somewhere.
 
 ## Phase 2 — Growth features — shipped in v0.6 / v0.7
 
@@ -107,7 +122,7 @@ historical release assets keep their old names.
 - [x] Dock badge = rows that need you.
 - [x] Watch a PR → notifications on Note *transitions* ("Ready for you — CI passed and Alice approved"), never on every refresh; quiet on first refresh and while you are looking at the row.
 - [x] Snooze / follow-up with automatic return when the condition is met.
-- [ ] Onboarding when `gh` is missing or not logged in: detect, explain, one-click copy of `gh auth login`, Retry.
+- [x] Onboarding when `gh` is missing or not logged in — superseded by the sign-in screen (v0.9.0, v0.9.1): device flow or a pasted token, `gh` optional, and a sentence saying what each kind of token reaches.
 - [x] Click a label, author or repo to filter by it: `label:` / `author:` / `repo:` qualifiers in the search field, active qualifiers shown as removable chips (v0.8.0).
 - [x] ⌘F (Ctrl+F on Linux) opens the search field, same as `/` (v0.8.0).
 
@@ -156,6 +171,7 @@ reorder this list.
 | 16 | **Released in v0.12.0:** **All open**, every open PR in one repository. `label:` and `author:` chips go to GitHub's search, so a filter covers the whole repository and the count is GitHub's; the other views' sections, with Requested from you; other people's PRs never notify or badge; `prmarmot-cli all` | core → app + CLI, iPad next | M | View 1 of the original spec, asked for again on 2026-09-21; what it adds over GitHub's list is what the other views add: the Note, CI and review state, size band and stacks in one row |
 | 17 | **Released in v0.12.0:** **your own section order** — one name per section in every view, and the order they come in set in Settings or `section_order` in config.toml, for app and CLI alike; every header count is the open view's, and "need you" is the Dock badge's rule | core → app + CLI, iPad next | S | Asked for on 2026-09-22: different people read the board in a different order, e.g. what nobody was asked to review first |
 | 18 | **Released in v0.13.0:** **a board you can narrow and fold** — **Needs you** and **Stale** buttons beside Changed and Snoozed, each with its count; click a section header or press `c` to fold it, with a two-fact summary ("1 failing CI · 1 merge conflict"), remembered per view; Details beside the table on windows 1,480 px and wider (Settings → Details position), as label/value rows; the API budget turns amber under a tenth | core → app, iPad next | S–M | A long board scrolls past what matters; three interaction patterns borrowed from a GPUI component kit's review, built on our own palette with no new dependency |
+| 19 | **Next release:** **select several PRs** — ⇧-click a range, ⌘-click to add, ⇧↑ / ⇧↓ to extend, ⌘A for every PR on the board; then open them (ten at a time), copy their URLs or a Markdown list, watch, unwatch or snooze them together, from the keyboard or the right-click menu; the footer says "3 selected" | app, wording in core, iPad next | S–M | Asked for on 2026-10-01: a review queue is handled in batches, and copying one URL at a time was the slowest part of handing a group to someone |
 
 **Not on the list, on purpose:** saved-view systems and a filter language of our own (GitHub's filtered
 lists do that, free; All open is one fixed view, and its chips are GitHub's own `label:` and `author:`); stack
@@ -164,6 +180,35 @@ PRs since 2026-09-01; PR Marmot stays no-AI); write actions such as comment/appr
 top ask in any dashboard tracker; revisit only if Ideas votes overwhelm); an MCP server (independent
 2026 evals show a CLI is cheaper and faster for agents at equal correctness); Slack/Jira integrations
 and team dashboards; auto-closing stale PRs.
+
+## Queue — fixes and small work, in priority order (2026-10-02)
+
+Found by the 2026-10-01 code and UI audit and a 2026-10-02 source read of another Rust desktop toolkit
+(verdict on the dependency: skip; the techniques were worth reading). Worked top to bottom; each ships free.
+
+- [x] **Closing the window quits.** Before, the red button left a process with no window and no refresh
+      ticker, and a Dock click reopened nothing. Quit from the Dock menu was the only way out.
+- [x] **Settings section-order arrows draw.** The two Lucide arrow icons were never embedded, and GPUI draws a
+      missing asset as nothing, so the buttons were blank from v0.12.0 to v0.14.0. A test now checks that every
+      icon the app names is embedded.
+- [x] **The sign-in code in a monospace face.** It asked for the generic family "monospace", which GPUI does not
+      resolve; it now uses the theme's mono font.
+- [x] **Notification clicks and permission answers act at once.** Today they wait for the app's 5 s tick; a
+      click on "Ready for you" should open the row immediately.
+- [x] **A tone dot on the Details Note line.** The table shows a themed dot for the Note's tone; Details shows the
+      bare sentence, so the severity is lost on the one line that explains the row.
+- [x] **Release notes on the release page.** v0.14.0's GitHub release shows only a compare link, and the in-app
+      Update button on a direct install opens that page. Publish each version's changelog section as the notes
+      and fail the release when they are missing.
+- [x] **`install.sh` checks the publisher and keeps a backup.** Gatekeeper accepts any notarized developer, so the
+      script pins PR Marmot's Apple Team ID after the signature check; the old app is moved aside and restored if
+      the swap fails, instead of deleted first.
+- [x] **A panic record without the message.** A Dock-launched app loses every panic today. A hook writes time,
+      version, thread and source location — never the payload — to a size-capped file in the state directory.
+- [x] **CI on macOS and `--locked`.** The Keychain token store compiles only on macOS and CI runs on Linux; add a
+      macOS leg for the fast crates and build against the committed lockfile.
+- [x] **A contrast test.** `src/design.rs` claims WCAG AA for every text/background pair; a test checks it.
+- [x] **Tabular figures** on header counts and "synced Xm ago", so changing digits stop shifting the row.
 
 ## Phase 4 — Core becomes app-ready (parallel with post-launch measuring)
 
@@ -214,9 +259,17 @@ is paid for convenience. Requires the Phase 4 transport. Not a priority.
 ## Maybe / small
 
 - [ ] GitHub Enterprise hosts on desktop (`GH_HOST` passthrough) — only with a tester.
-- [ ] Launch at login.
-- [ ] Menu-bar / tray item — verify first that it fits GPUI's run loop; Linux is harder.
+- [ ] Launch at login. A hidden start must not wait for a first frame to draw.
+- [ ] Menu-bar / tray item — verify first that it fits GPUI's run loop. The 2026-10-02 source read found a
+      workable design: on macOS, create the status item after the run loop starts, with a template icon; on Linux,
+      the StatusNotifier D-Bus protocol with no GTK, icon names looked up through the hicolor theme, and a unique
+      bus name under Flatpak; no polling pump.
 - [ ] Always-on-top compact board.
+- [ ] A locale layer in core, if anyone asks for a translation: translations compiled at build time with English
+      as the fallback and incomplete plural sets dropped whole; in core it would reach the iPad through `ffi/`.
+- Decided against: a signed release manifest. The cask checksum lives in a separate repository, Gatekeeper checks
+  Homebrew downloads, releases are immutable, and the Team ID check in `install.sh` gives the same publisher
+  guarantee without a second key to protect.
 
 ## Metrics tracked weekly (no telemetry)
 

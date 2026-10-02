@@ -38,6 +38,13 @@ description: Screenshot-verify what the running prboard GPUI window actually ren
 4. For theme comparisons, capture once per theme; for before/after, keep both
    files and name them (`before-*.png` / `after-*.png`).
 
+On demo data, `make capture` (`scripts/capture.sh`) does all of this for the
+board, review queue, All open and a Details panel, in both themes. To press keys
+in an instance you launched, post them to its PID rather than typing into the
+focused window: `swiftc -O scripts/capture/post-event.swift -o "$SCRATCHPAD/post-event"`,
+then `"$SCRATCHPAD/post-event" <pid> key:125 key:49` (Down, Space). Posted
+clicks do not make GPUI clicks, so a scene behind a button needs a key.
+
 Launching a throwaway instance for verification is fine (`./target/debug/prboard
 --repo owner/name`) — quit it with a mouse click on close or `kill <pid>`,
 never a synthesized `q`, and leave any measured instance untouched.

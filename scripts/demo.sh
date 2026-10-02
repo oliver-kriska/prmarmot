@@ -11,11 +11,18 @@ fi
 FAIL_ONCE=false
 UPDATE_AVAILABLE=false
 UPDATE_FAILED=false
+THEME=light
+WIDTH=1440
 while [[ ${1:-} == --* ]]; do
   case "$1" in
     --fail-once) FAIL_ONCE=true ;;
     --update-available) UPDATE_AVAILABLE=true ;;
     --update-failed) UPDATE_FAILED=true ;;
+    --dark) THEME=dark ;;
+    --width)
+      WIDTH="${2:?--width needs a number of points}"
+      shift
+      ;;
     *) break ;;
   esac
   shift
@@ -40,13 +47,13 @@ mkdir -p "$DEMO_HOME/prmarmot"
 if $FAIL_ONCE; then
   touch "$DEMO_HOME/fail-next-graphql"
 fi
-cat >"$DEMO_HOME/prmarmot/config.toml" <<'TOML'
+cat >"$DEMO_HOME/prmarmot/config.toml" <<TOML
 repo = "demo-labs/atlas"
 scope = "all"
 repos = ["demo-labs/atlas", "demo-labs/mobile"]
 pinned_repos = ["demo-labs/atlas", "demo-labs/mobile"]
 refresh_secs = 300
-theme = "light"
+theme = "$THEME"
 view = "authored"
 default_reviewers = ["alex", "sam"]
 automatic_update_checks = true
@@ -56,7 +63,7 @@ pattern = "DEMO-[0-9]+"
 url_template = "https://example.com/issues/{id}"
 
 [window]
-width = 1440
+width = $WIDTH
 height = 800
 TOML
 

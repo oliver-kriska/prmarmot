@@ -13,3 +13,7 @@ measurements/
 /apple/Sources/PRMarmotCore/
 /apple/Tests/SmokeTests/Fixtures/
 /apple/.build/
+
+# Finder and Python scratch
+.DS_Store
+__pycache__/
