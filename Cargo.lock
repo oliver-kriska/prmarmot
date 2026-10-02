@@ -4470,7 +4470,6 @@ dependencies = [
  "futures-lite",
  "log",
  "mac-notification-sys",
- "mac-usernotifications",
  "serde",
  "tauri-winrt-notification",
  "zbus",
@@ -5420,6 +5419,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "mac-usernotifications",
  "notify-rust",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -5485,6 +5485,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
 ]
 
 [[package]]

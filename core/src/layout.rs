@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 
-use crate::board::{BoardRow, Category, Ci, Mode, ReviewState};
+use crate::board::{BoardRow, Category, Ci, Mode, ReviewState, ReviewVerdict};
 use crate::cells::unresolved_fact;
 use crate::pickup::{wait_label, waiting_secs};
 use crate::size::{ChangeSize, SizeBand};
@@ -424,10 +424,10 @@ pub fn is_available_section(mode: Mode, row: &BoardRow) -> bool {
     matches!(mode, Mode::Authored | Mode::AllOpen)
         && row.category == Category::Await
         && row.review_state == ReviewState::None
-        && !matches!(
-            row.my_review.as_deref(),
-            Some("APPROVED" | "COMMENTED" | "CHANGES_REQUESTED")
-        )
+        && !row
+            .my_review
+            .as_ref()
+            .is_some_and(ReviewVerdict::is_standing)
 }
 
 /// The section label for a category within a mode. One name per section in
@@ -575,7 +575,7 @@ pub fn section_summary<'a>(
         0 => None,
         n => Some(format!("{n} small")),
     };
-    let need_you = || match rows.iter().filter(|row| row_needs_you(mode, row)).count() {
+    let need_you = || match rows.iter().filter(|row| row_needs_you(row)).count() {
         0 => None,
         1 => Some("1 needs you".to_owned()),
         n => Some(format!("{n} need you")),
@@ -639,6 +639,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: String::new(),
         }
     }

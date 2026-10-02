@@ -230,10 +230,7 @@ fn connect_with(
             let stored = if supplied {
                 None
             } else {
-                store
-                    .load(&settings.host)
-                    .map_err(GhError::Network)?
-                    .map(|auth| auth.kind)
+                store.load(&settings.host)?.map(|auth| auth.kind)
             };
             let gh = if supplied || stored == Some(TokenKind::Token) {
                 GhLogin::SignedOut
@@ -290,7 +287,7 @@ fn direct_session(
             ));
         }
     }
-    let stored = store.load(&settings.host).map_err(GhError::Network)?;
+    let stored = store.load(&settings.host)?;
     let Some(stored) = stored else {
         return Err(GhError::NotAuthenticated);
     };
@@ -355,7 +352,7 @@ pub fn probe_transport(host: &str, token: &str, user_agent: &str) -> impl Github
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{StoreKind, StoredAuth};
+    use crate::auth::{StoreError, StoreKind, StoredAuth};
     use prmarmot_core::github::device_flow::TokenSet;
 
     /// `Session` holds trait objects and has no `Debug`; this keeps the
@@ -376,13 +373,13 @@ mod tests {
 
     struct Empty;
     impl TokenStore for Empty {
-        fn load(&self, _host: &str) -> Result<Option<StoredAuth>, String> {
+        fn load(&self, _host: &str) -> Result<Option<StoredAuth>, StoreError> {
             Ok(None)
         }
-        fn save(&self, _auth: &StoredAuth) -> Result<(), String> {
+        fn save(&self, _auth: &StoredAuth) -> Result<(), StoreError> {
             Ok(())
         }
-        fn delete(&self, _host: &str) -> Result<(), String> {
+        fn delete(&self, _host: &str) -> Result<(), StoreError> {
             Ok(())
         }
         fn describe(&self) -> String {
@@ -392,13 +389,13 @@ mod tests {
 
     struct Holds(StoredAuth);
     impl TokenStore for Holds {
-        fn load(&self, _host: &str) -> Result<Option<StoredAuth>, String> {
+        fn load(&self, _host: &str) -> Result<Option<StoredAuth>, StoreError> {
             Ok(Some(self.0.clone()))
         }
-        fn save(&self, _auth: &StoredAuth) -> Result<(), String> {
+        fn save(&self, _auth: &StoredAuth) -> Result<(), StoreError> {
             Ok(())
         }
-        fn delete(&self, _host: &str) -> Result<(), String> {
+        fn delete(&self, _host: &str) -> Result<(), StoreError> {
             Ok(())
         }
         fn describe(&self) -> String {

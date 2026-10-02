@@ -5,6 +5,7 @@
 //! operation. All return `rateLimit{}` so the UI reports the actual shared
 //! budget.
 
+use super::states::{Mergeable, PrState, ReviewDecision, ReviewVerdict};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -240,6 +241,43 @@ pub fn with_tracked_nodes(query: &str) -> Result<String, GhError> {
     Ok(extended)
 }
 
+/// Add a state-only `nodes(ids:)` selection, `trackedStatus`, for followed PRs
+/// whose full row the caller does not need: one already on the board, or a
+/// watch known to be closed. About a point and almost no server time, where
+/// the full fragment costs as much as a search result. The transport carries
+/// one id list (`$tracked`), so these ids are written into the operation, and
+/// each must look like a GitHub node id.
+pub fn with_tracked_status_nodes(query: &str, ids: &[String]) -> Result<String, GhError> {
+    if ids.is_empty() {
+        return Ok(query.to_owned());
+    }
+    if let Some(bad) = ids.iter().find(|id| !is_node_id(id)) {
+        return Err(GhError::Parse(format!("not a GitHub node id: {bad:?}")));
+    }
+    let list = ids
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    extend_operation(
+        query,
+        "",
+        &format!(
+            "  trackedStatus: nodes(ids:[{list}]){{ ... on PullRequest {{ id state merged }} }}\n"
+        ),
+    )
+}
+
+/// GitHub node ids are ASCII letters, digits, `_`, `-` and `=` (`PR_kwDO…`,
+/// and the older base64 `MDExOlB1bGxSZXF1ZXN0…`).
+fn is_node_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'='))
+}
+
 /// What became of specific PRs, and nothing else: state only, no connections,
 /// so it costs a point however many ids it carries (at most 100).
 pub const TRACKED_STATUS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  tracked: nodes(ids:$tracked){ ... on PullRequest { id state merged } }\n}";
@@ -449,7 +487,7 @@ pub struct ReviewRequestNode {
 pub struct ReviewNode {
     #[serde(default)]
     pub author: Option<Login>,
-    pub state: String,
+    pub state: ReviewVerdict,
     #[serde(default)]
     pub submitted_at: Option<String>,
 }
@@ -457,7 +495,7 @@ pub struct ReviewNode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatestReview {
-    pub state: String,
+    pub state: ReviewVerdict,
     pub submitted_at: Option<String>,
     pub commit: Option<ReviewCommit>,
 }
@@ -563,16 +601,16 @@ pub struct RawPr {
     #[serde(default)]
     pub head_ref_oid: Option<String>,
     #[serde(default)]
-    pub state: Option<String>,
+    pub state: Option<PrState>,
     #[serde(default)]
     pub merged: bool,
     pub number: u64,
     pub title: String,
     pub is_draft: bool,
     #[serde(default)]
-    pub review_decision: Option<String>,
+    pub review_decision: Option<ReviewDecision>,
     #[serde(default)]
-    pub mergeable: Option<String>,
+    pub mergeable: Option<Mergeable>,
     /// GitHub's verdict on the merge button (`CLEAN`, `UNSTABLE`, `BLOCKED`,
     /// …). Absent in prototype fixtures.
     #[serde(default)]
@@ -716,7 +754,10 @@ fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
             .iter()
             .filter(|error| {
                 !(error.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
-                    && error.pointer("/path/0").and_then(Value::as_str) == Some("tracked"))
+                    && matches!(
+                        error.pointer("/path/0").and_then(Value::as_str),
+                        Some("tracked" | "trackedStatus")
+                    ))
             })
             .collect();
         if !errors.is_empty() {
@@ -917,8 +958,14 @@ mod tests {
     #[test]
     fn github_giving_up_on_a_query_is_told_apart_from_other_failures() {
         for timeout in [
-            GhError::Network("gh: HTTP 502".into()),
-            GhError::Network("GitHub is having trouble (504)".into()),
+            GhError::Http {
+                status: 502,
+                message: "gh: HTTP 502".into(),
+            },
+            GhError::Http {
+                status: 504,
+                message: "GitHub is having trouble (504)".into(),
+            },
             GhError::Network(
                 "gh: We couldn't respond to your request in time. Sorry about that.".into(),
             ),
@@ -935,8 +982,16 @@ mod tests {
                 reset_epoch: None,
                 retry_after_secs: None,
             },
-            GhError::Network("gh timed out after 60s — killed".into()),
-            GhError::Network("GitHub refused the request (403)".into()),
+            GhError::Timeout("gh timed out after 60s — killed".into()),
+            GhError::Http {
+                status: 403,
+                message: "GitHub refused the request (403)".into(),
+            },
+            // The status decides, whatever the sentence says.
+            GhError::Http {
+                status: 500,
+                message: "GitHub is having trouble (500): 504 upstream".into(),
+            },
             GhError::GraphqlErrors(vec!["Could not resolve to a Repository".into()]),
             GhError::Parse("missing /data/search/nodes".into()),
         ] {

@@ -6,16 +6,15 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use prmarmot_core::attention::{Observation, SnapshotNamespace};
 use prmarmot_core::board::{
-    fetch_all_open, fetch_board_scoped_with_tracked, fetch_more_board_scoped, BoardConfig,
-    BoardFetch, BoardRow, BoardScope, Mode,
+    fetch_more_board_scoped, fetch_view, BoardConfig, BoardFetch, BoardRow, BoardScope, Mode,
+    Tracked,
 };
 use prmarmot_core::github::rate_limit::RateLimitInfo;
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::layout::{layout_ordered, LayoutItem, SectionOrder, Sort};
 use prmarmot_core::pickup::{is_stale, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::search::{
-    local_only_terms, matches_filter, take_filter_chips, FilterChip, Qualifier, RemoteFilter,
-    StaleRule,
+    local_only_terms, take_filter_chips, FilterChip, Qualifier, RemoteFilter, Search, StaleRule,
 };
 use prmarmot_local::attention_state::AttentionState;
 use prmarmot_local::config::{self, AuthMode, AuthSettings, FileConfig};
@@ -42,12 +41,8 @@ pub fn setup(
         warnings.push(warning);
         FileConfig::default()
     });
-    let scope = config::resolve_scope(
-        cli_scope,
-        std::env::var("PRMARMOT_REPO").ok(),
-        std::env::var("PRMARMOT_SCOPE").ok().as_deref(),
-        &file,
-    );
+    let env = config::EnvOverrides::current();
+    let scope = config::resolve_scope(cli_scope, env.repo, env.scope.as_deref(), &file);
     let (board, warning) = config::board_config(&file);
     warnings.extend(warning);
     let auth = config::auth_settings(&file, cli_host, cli_auth, &mut warnings);
@@ -73,8 +68,34 @@ pub fn connect(setup: &Setup) -> Result<Session, GhError> {
 }
 
 /// The app's attention file for this account, loaded for reading only.
+/// The view's key in [`prmarmot_local::small_pages`]: whose board, which scope
+/// and which view, the authored-only search counted apart.
+pub fn small_pages_key(
+    host: &str,
+    login: &str,
+    scope: &BoardScope,
+    mode: Mode,
+    authored_only: bool,
+) -> String {
+    let scope = match scope {
+        BoardScope::AllRepositories => "all",
+        BoardScope::Repository(repo) => repo.as_str(),
+    };
+    let view = format!(
+        "{}{}",
+        crate::render::mode_key(mode),
+        if authored_only { "-authored" } else { "" }
+    );
+    prmarmot_local::small_pages::key(host, login, scope, &view)
+}
+
 pub fn attention(host: &str, login: &str) -> AttentionState {
     AttentionState::load(SnapshotNamespace::new(host, login))
+}
+
+/// The attention file's write stamp (`attention_state::file_stamp`).
+pub fn attention_stamp(host: &str, login: &str) -> Option<(std::time::SystemTime, u64)> {
+    prmarmot_local::attention_state::file_stamp(&SnapshotNamespace::new(host, login))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,20 +254,16 @@ pub fn fetch(
     pages: u8,
     small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
-    let mut board = match (mode, scope.repository()) {
-        (Mode::AllOpen, Some(repo)) => {
-            fetch_all_open(transport, repo, viewer, config, filter, &[], small_pages)?
-        }
-        _ => fetch_board_scoped_with_tracked(
-            transport,
-            mode,
-            scope,
-            viewer,
-            config,
-            &[],
-            small_pages,
-        )?,
-    };
+    let mut board = fetch_view(
+        transport,
+        mode,
+        scope,
+        viewer,
+        config,
+        filter,
+        Tracked::default(),
+        small_pages,
+    )?;
     for _ in 1..pages {
         if !board.pagination.can_load_more(mode) {
             break;
@@ -272,19 +289,17 @@ pub fn build(
     let mut rows = Vec::with_capacity(board.rows.len());
     let mut marks = Vec::with_capacity(board.rows.len());
     let total = board.rows.len();
+    let search = filters.query.as_deref().map(Search::query);
+    let stale = StaleRule {
+        now,
+        after_days: filters.stale_after_days,
+    };
     for row in board.rows {
         let mut row_marks = marks_for(&row, attention, &mut snapshots, now);
         row_marks.stale = is_stale(&row, now, filters.stale_after_days);
-        let query_matches = filters.query.as_deref().is_none_or(|query| {
-            matches_filter(
-                &row,
-                query,
-                StaleRule {
-                    now,
-                    after_days: filters.stale_after_days,
-                },
-            )
-        });
+        let query_matches = search
+            .as_ref()
+            .is_none_or(|search| search.matches(&row, stale));
         if (filters.changed && !row_marks.changed)
             || (filters.watched && !row_marks.watched)
             || (filters.stale && !row_marks.stale)
@@ -391,6 +406,7 @@ pub mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: "🟡 waiting on bob".into(),
         }
     }

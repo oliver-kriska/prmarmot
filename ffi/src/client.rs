@@ -136,13 +136,14 @@ impl BoardClient {
         let small_pages = self.small_pages(core_mode);
         let fetched = self
             .run(move |core| {
-                core_board::fetch_board_scoped_with_tracked(
+                core_board::fetch_view(
                     core,
                     core_mode,
                     &core_scope,
                     &viewer,
                     &cfg,
-                    &[],
+                    &RemoteFilter::default(),
+                    core_board::Tracked::default(),
                     small_pages,
                 )
             })
@@ -207,13 +208,14 @@ impl BoardClient {
         let small_pages = self.small_pages(core_mode);
         let fetched = self
             .run(move |core| {
-                core_board::fetch_board_scoped_with_tracked(
+                core_board::fetch_view(
                     core,
                     core_mode,
                     &core_scope,
                     &viewer,
                     &cfg,
-                    &tracked_ids,
+                    &RemoteFilter::default(),
+                    core_board::Tracked::rows(&tracked_ids),
                     small_pages,
                 )
             })
@@ -248,7 +250,7 @@ impl BoardClient {
                     &viewer,
                     &cfg,
                     &remote,
-                    &tracked_ids,
+                    core_board::Tracked::rows(&tracked_ids),
                     small_pages,
                 )
             })

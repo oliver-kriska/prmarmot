@@ -74,7 +74,12 @@ impl From<GhError> for FfiError {
                 message: prmarmot_core::github::access::unique_messages(&messages).join("; "),
             },
             GhError::Parse(message) => Self::Parse { message },
-            GhError::Network(message) => Self::Network { message },
+            // Swift's error type predates these three, and an added case
+            // would break every exhaustive `switch` there; each was `Network`.
+            GhError::Network(message)
+            | GhError::Http { message, .. }
+            | GhError::Timeout(message)
+            | GhError::Storage(message) => Self::Network { message },
             GhError::NeedsRepository => Self::Invalid {
                 message: GhError::NeedsRepository.to_string(),
             },

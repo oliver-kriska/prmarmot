@@ -20,7 +20,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::board::{BoardRow, Category, ReviewState};
+use crate::board::{BoardRow, Category, ReviewState, ReviewVerdict};
 use crate::github::query::{RawPr, RequestedReviewer, TimelineEvent};
 
 /// A PR that has waited this many days is stale (`stale_after_days`).
@@ -122,10 +122,10 @@ pub(crate) fn pickup_since(pr: &RawPr, row: &BoardRow, me: &str) -> Option<Strin
                 .author
                 .as_deref()
                 .is_some_and(|author| !author.eq_ignore_ascii_case(me))
-                && matches!(
-                    row.my_review.as_deref(),
-                    Some("APPROVED" | "COMMENTED" | "CHANGES_REQUESTED")
-                );
+                && row
+                    .my_review
+                    .as_ref()
+                    .is_some_and(ReviewVerdict::is_standing);
             match row.review_state {
                 _ if reviewed_someone_elses => return None,
                 ReviewState::Waiting => requests(pr)

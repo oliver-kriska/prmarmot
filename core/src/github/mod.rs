@@ -10,6 +10,7 @@ pub mod http;
 pub mod query;
 pub mod rate_limit;
 pub mod response;
+pub mod states;
 
 use std::fmt;
 
@@ -39,6 +40,17 @@ pub enum GhError {
     PullRequestNotFound(String),
     /// All open was asked for across all repositories; it covers one.
     NeedsRepository,
+    /// GitHub answered with an HTTP error status. `message` is already a
+    /// sentence for a person; `status` is there so a caller decides by the
+    /// number, never by reading the sentence.
+    Http { status: u16, message: String },
+    /// This client stopped waiting: the `gh` watchdog or the HTTP client's
+    /// deadline. Not GitHub giving up on the query
+    /// ([`GhError::is_query_timeout`]), so a smaller page would not help.
+    Timeout(String),
+    /// The saved sign-in could not be read or written (the Keychain, the
+    /// token file): nothing to do with the network.
+    Storage(String),
     /// Subprocess / network-level failure (non-zero exit without a parseable body).
     Network(String),
     /// Response body did not match the expected shape.
@@ -84,7 +96,10 @@ impl fmt::Display for GhError {
             }
             // Neutral wording: this variant now also carries direct-HTTP
             // failures, where naming `gh` would send people the wrong way.
-            GhError::Network(msg) => write!(f, "{msg}"),
+            GhError::Network(msg) | GhError::Timeout(msg) | GhError::Storage(msg) => {
+                write!(f, "{msg}")
+            }
+            GhError::Http { message, .. } => write!(f, "{message}"),
             GhError::Parse(msg) => write!(f, "unexpected GitHub response: {msg}"),
         }
     }
@@ -97,8 +112,10 @@ impl GhError {
     /// GraphQL request after about 10 s (HTTP 502 or 504, "couldn't respond to
     /// your request in time", or a GraphQL error that mentions a timeout) and
     /// ends one that exceeds its resource limits. The same request with fewer
-    /// rows may get through. Our own watchdog kill of a hung `gh` is not one:
-    /// that is the network, and a smaller page would not help.
+    /// rows may get through. Our own deadline ([`GhError::Timeout`]) is not
+    /// one: a smaller page would not help. The status decides when there is
+    /// one; GitHub's words only where it sent no status (a GraphQL error, or
+    /// a body `gh` printed without one).
     pub fn is_query_timeout(&self) -> bool {
         let says = |message: &str| {
             let message = message.to_lowercase();
@@ -107,9 +124,8 @@ impl GhError {
                 || message.contains("resource limit")
         };
         match self {
-            GhError::Network(message) => {
-                message.contains("502") || message.contains("504") || says(message)
-            }
+            GhError::Http { status, .. } => matches!(status, 502 | 504),
+            GhError::Network(message) => says(message),
             GhError::GraphqlErrors(messages) => messages.iter().any(|message| says(message)),
             _ => false,
         }

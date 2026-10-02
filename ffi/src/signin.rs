@@ -217,6 +217,18 @@ pub fn organization_approval_note() -> String {
     prmarmot_core::status::organization_approval_note().to_owned()
 }
 
+/// The one-time-code screen when the code ran out before anyone entered it.
+#[uniffi::export]
+pub fn device_code_expired_text() -> String {
+    prmarmot_core::status::device_code_expired_text().to_owned()
+}
+
+/// The one-time-code screen when the person declined at GitHub.
+#[uniffi::export]
+pub fn device_request_declined_text() -> String {
+    prmarmot_core::status::device_request_declined_text().to_owned()
+}
+
 /// What the one-time-code screen says while it waits, with the page to open.
 #[uniffi::export]
 pub fn device_code_waiting_note(verification_uri: String) -> String {

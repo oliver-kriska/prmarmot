@@ -331,6 +331,51 @@ impl From<core_size::SizeBand> for SizeBand {
     }
 }
 
+/// The latest commit's checks counted by state (core's `CheckCounts`); the
+/// Details panel's "Checks" line says them in words.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
+)]
+pub struct CheckCounts {
+    /// Failed, timed out, failed to start, needing action, a failing status,
+    /// or a state this build does not know.
+    pub failed: u64,
+    pub running: u64,
+    pub passed: u64,
+    pub cancelled: u64,
+    pub skipped: u64,
+    pub neutral: u64,
+    pub stale: u64,
+}
+
+impl From<core_board::CheckCounts> for CheckCounts {
+    fn from(checks: core_board::CheckCounts) -> Self {
+        Self {
+            failed: checks.failed,
+            running: checks.running,
+            passed: checks.passed,
+            cancelled: checks.cancelled,
+            skipped: checks.skipped,
+            neutral: checks.neutral,
+            stale: checks.stale,
+        }
+    }
+}
+
+impl From<CheckCounts> for core_board::CheckCounts {
+    fn from(checks: CheckCounts) -> Self {
+        Self {
+            failed: checks.failed,
+            running: checks.running,
+            passed: checks.passed,
+            cancelled: checks.cancelled,
+            skipped: checks.skipped,
+            neutral: checks.neutral,
+            stale: checks.stale,
+        }
+    }
+}
+
 /// GitHub's change counts, plus the band they fall in.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
@@ -424,6 +469,11 @@ pub struct PullRequest {
     pub issue: Option<IssueRef>,
     pub stack: Option<StackRef>,
     pub size: Option<ChangeSize>,
+    /// The latest commit's checks counted by state; `None` when GitHub
+    /// reported no counts or the token may not read them.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub checks: Option<CheckCounts>,
     /// Derived at the `now` of the fetch: seconds this PR has been waiting.
     pub waiting_secs: Option<u64>,
     /// Derived: `waiting_secs` in the app's words ("3d", "<1h").
@@ -455,7 +505,7 @@ impl PullRequest {
             merge_state: row.merge_state.map(Into::into),
             cannot_rebase: row.cannot_rebase,
             rebase_only: row.rebase_only,
-            review_decision: row.review_decision.clone(),
+            review_decision: row.review_decision.as_ref().map(|d| d.as_str().to_owned()),
             review_state: row.review_state.into(),
             requested_reviewers: row.requested.clone(),
             requested_teams: row.requested_teams.clone(),
@@ -464,11 +514,11 @@ impl PullRequest {
                 .iter()
                 .map(|review| Review {
                     login: review.login.clone(),
-                    state: review.state.clone(),
+                    state: review.state.as_str().to_owned(),
                     submitted_at: review.submitted_at.clone(),
                 })
                 .collect(),
-            my_review: row.my_review.clone(),
+            my_review: row.my_review.as_ref().map(|r| r.as_str().to_owned()),
             unresolved_threads: row.unresolved as u32,
             unresolved_capped: row.unresolved_capped,
             labels: row.labels.clone(),
@@ -492,6 +542,7 @@ impl PullRequest {
                 position: stack.position,
             }),
             size: row.size.map(Into::into),
+            checks: row.checks.map(Into::into),
             waiting_secs,
             wait_label: waiting_secs.map(pickup::wait_label),
             stale: pickup::is_stale(row, now, stale_days),
@@ -531,7 +582,7 @@ impl PullRequest {
             merge_state: self.merge_state.map(Into::into),
             cannot_rebase: self.cannot_rebase,
             rebase_only: self.rebase_only,
-            review_decision: self.review_decision,
+            review_decision: self.review_decision.map(Into::into),
             review_state: self.review_state.into(),
             requested: self.requested_reviewers,
             requested_teams: self.requested_teams,
@@ -540,11 +591,11 @@ impl PullRequest {
                 .into_iter()
                 .map(|review| core_board::ReviewSummary {
                     login: review.login,
-                    state: review.state,
+                    state: review.state.into(),
                     submitted_at: review.submitted_at,
                 })
                 .collect(),
-            my_review: self.my_review,
+            my_review: self.my_review.map(Into::into),
             unresolved: self.unresolved_threads as usize,
             unresolved_capped: self.unresolved_capped,
             blockers: self
@@ -555,6 +606,7 @@ impl PullRequest {
             created_at: self.created_at,
             waiting_since: self.waiting_since,
             size: self.size.map(Into::into),
+            checks: self.checks.map(Into::into),
             note: self.note,
         }
     }

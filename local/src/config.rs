@@ -201,6 +201,40 @@ pub fn normalized_pins(repos: &[String]) -> Vec<String> {
     pins
 }
 
+/// The `PRMARMOT_*` variables that override config.toml, read in one place so
+/// the app, its Settings screen and the CLI agree on each name and how its
+/// value is read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvOverrides {
+    /// `PRMARMOT_REPO`: one repository, ahead of the file's scope.
+    pub repo: Option<String>,
+    /// `PRMARMOT_SCOPE`: `all` or `repo`.
+    pub scope: Option<String>,
+    /// `PRMARMOT_DEFAULT_REVIEWERS`, comma-separated; never empty.
+    pub reviewers: Option<String>,
+    /// `PRMARMOT_REFRESH_SECS`, when it is a number.
+    pub refresh_secs: Option<u64>,
+    /// `PRMARMOT_THEME`: `light`, `dark`, or anything else for the system's.
+    pub theme: Option<String>,
+    /// `PRMARMOT_ISSUE_PATTERN` and `PRMARMOT_ISSUE_URL_TEMPLATE`, only as a
+    /// pair.
+    pub issue_link: Option<(String, String)>,
+}
+
+impl EnvOverrides {
+    pub fn current() -> Self {
+        let var = |name: &str| std::env::var(name).ok();
+        Self {
+            repo: var("PRMARMOT_REPO"),
+            scope: var("PRMARMOT_SCOPE"),
+            reviewers: var("PRMARMOT_DEFAULT_REVIEWERS").filter(|value| !value.is_empty()),
+            refresh_secs: var("PRMARMOT_REFRESH_SECS").and_then(|value| value.parse().ok()),
+            theme: var("PRMARMOT_THEME"),
+            issue_link: var("PRMARMOT_ISSUE_PATTERN").zip(var("PRMARMOT_ISSUE_URL_TEMPLATE")),
+        }
+    }
+}
+
 pub fn resolve_scope(
     cli: Option<BoardScope>,
     env_repo: Option<String>,
@@ -245,7 +279,7 @@ pub fn resolve_scope(
 /// warning.
 pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
     let mut warnings = Vec::new();
-    let config = board_rules(file, &mut warnings);
+    let config = board_rules(file, &EnvOverrides::current(), &mut warnings);
     let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     (config, warning)
 }
@@ -257,7 +291,7 @@ pub fn board_config(file: &FileConfig) -> (BoardConfig, Option<String>) {
 /// since a launch from Finder or Spotlight never shows stderr.
 pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     let mut warnings = Vec::new();
-    board_rules(file, &mut warnings);
+    board_rules(file, &EnvOverrides::current(), &mut warnings);
     warnings.extend(SectionOrder::from_keys(&file.section_order).1);
     collapsed_section_warnings(file, &mut warnings);
     warnings.extend(details_position_warning(file));
@@ -369,7 +403,7 @@ fn collapsed_section_warnings(file: &FileConfig, warnings: &mut Vec<String>) {
     }
 }
 
-fn board_rules(file: &FileConfig, warnings: &mut Vec<String>) -> BoardConfig {
+fn board_rules(file: &FileConfig, env: &EnvOverrides, warnings: &mut Vec<String>) -> BoardConfig {
     let mut config = BoardConfig::default();
     if !file.default_reviewers.is_empty() {
         config.default_reviewers = file.default_reviewers.clone();
@@ -380,22 +414,14 @@ fn board_rules(file: &FileConfig, warnings: &mut Vec<String>) -> BoardConfig {
         Some(days) => config.stale_after_days = days,
         None => {}
     }
-    if let Some(reviewers) = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
+    if let Some(reviewers) = &env.reviewers {
         config.default_reviewers = reviewers.split(',').map(|s| s.trim().to_string()).collect();
     }
-    let issue_rule = match (
-        std::env::var("PRMARMOT_ISSUE_PATTERN"),
-        std::env::var("PRMARMOT_ISSUE_URL_TEMPLATE"),
-    ) {
-        (Ok(pattern), Ok(template)) => Some((pattern, template)),
-        _ => file
-            .issue_link
+    let issue_rule = env.issue_link.clone().or_else(|| {
+        file.issue_link
             .as_ref()
-            .map(|l| (l.pattern.clone(), l.url_template.clone())),
-    };
+            .map(|l| (l.pattern.clone(), l.url_template.clone()))
+    });
     if let Some((pattern, template)) = issue_rule {
         match IssueLinkRule::new(&pattern, &template) {
             Ok(rule) => config.issue_link = Some(rule),
@@ -457,9 +483,8 @@ fn repo_reviewers(
 /// Refresh interval: `PRMARMOT_REFRESH_SECS` > config file > default, always
 /// clamped to the hard floor.
 pub fn refresh_interval(config_secs: Option<u64>) -> Duration {
-    let secs = std::env::var("PRMARMOT_REFRESH_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    let secs = EnvOverrides::current()
+        .refresh_secs
         .or(config_secs)
         .unwrap_or(DEFAULT_REFRESH_SECS)
         .max(MIN_REFRESH_SECS);

@@ -14,7 +14,9 @@
 //! caller shortens the tail and never the phrase that carries the exception.
 
 use crate::board::strip_note_glyphs;
-use crate::board::{Blocker, BoardRow, Category, Ci, ReviewState, CANNOT_REBASE_NOTE};
+use crate::board::{
+    Blocker, BoardRow, Category, Ci, ReviewState, ReviewVerdict, CANNOT_REBASE_NOTE,
+};
 
 /// How alarming a cell is. Each front end maps this to its own palette; the
 /// decision about which is which is made here so both make it the same way.
@@ -220,7 +222,7 @@ pub fn note_presentation(row: &BoardRow) -> NotePresentation {
         // "You approved" is good news; "you commented / requested changes" is
         // neutral — the ball is on the author, nothing is wrong.
         Category::Done => {
-            if row.my_review.as_deref() == Some("APPROVED") {
+            if row.my_review == Some(ReviewVerdict::Approved) {
                 plain_note(Tone::Success, tooltip)
             } else {
                 plain_note(Tone::Routine, tooltip)
@@ -269,14 +271,14 @@ pub enum ReviewCell {
 
 /// Calm reviewer-state glyph and its tone. Rendered before the login: on
 /// truncation the glyph is the information.
-fn review_glyph(state: &str) -> (&'static str, Tone) {
+fn review_glyph(state: &ReviewVerdict) -> (&'static str, Tone) {
     match state {
-        "APPROVED" => ("✓", Tone::Success),
-        "COMMENTED" => ("·", Tone::Muted),
-        "CHANGES_REQUESTED" => ("±", Tone::Danger),
+        ReviewVerdict::Approved => ("✓", Tone::Success),
+        ReviewVerdict::Commented => ("·", Tone::Muted),
+        ReviewVerdict::ChangesRequested => ("±", Tone::Danger),
         // ✕, not "–": a bare dash reads as "nothing" — dismissed is an
         // invalidated review, which is information.
-        "DISMISSED" => ("✕", Tone::Muted),
+        ReviewVerdict::Dismissed => ("✕", Tone::Muted),
         _ => ("·", Tone::Muted),
     }
 }
@@ -294,12 +296,12 @@ fn review_state_word_aggregate(state: ReviewState) -> &'static str {
 }
 
 /// One reviewer's state, in the words the hover text uses.
-fn review_state_word(state: &str) -> &'static str {
+fn review_state_word(state: &ReviewVerdict) -> &'static str {
     match state {
-        "APPROVED" => "approved",
-        "COMMENTED" => "commented",
-        "CHANGES_REQUESTED" => "requested changes",
-        "DISMISSED" => "dismissed",
+        ReviewVerdict::Approved => "approved",
+        ReviewVerdict::Commented => "commented",
+        ReviewVerdict::ChangesRequested => "requested changes",
+        ReviewVerdict::Dismissed => "dismissed",
         _ => "reviewed",
     }
 }
@@ -503,6 +505,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: "⚠ merge conflict".into(),
         }
     }

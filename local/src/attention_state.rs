@@ -5,14 +5,15 @@
 //! The desktop app is the only writer. The CLI loads this file read-only and
 //! never calls [`AttentionState::save`], so the two can run side by side.
 
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, Offset, Utc};
-use prmarmot_core::attention::{Observation, SnapshotNamespace, SnapshotStore};
-use prmarmot_core::board::{BoardRow, Category, Ci, Mode};
+use prmarmot_core::attention::{Observation, PersistedStore, SnapshotNamespace, SnapshotStore};
+use prmarmot_core::board::{BoardRow, Category, Mode, ReviewDecision, ReviewVerdict};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_SCHEMA_VERSION: u32 = 1;
@@ -40,6 +41,42 @@ pub enum TrackedStatus {
     Merged,
     Inaccessible,
     Unknown,
+}
+
+/// Core's, built by [`AttentionState::marks`].
+pub use prmarmot_core::attention::Marks;
+
+/// What [`AttentionState::apply_tracked_status`] changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackedUpdate {
+    /// The watch's status before, when this changed it: the news.
+    pub changed_from: Option<TrackedStatus>,
+    /// A snooze held the PR when the status arrived. Snoozed PRs never
+    /// notify, and a merge or close that ends the snooze is no exception.
+    pub was_snoozed: bool,
+    /// The PR merged or closed, and its snooze ended here.
+    pub snooze_ended: bool,
+}
+
+impl TrackedUpdate {
+    /// Whether the saved state changed.
+    pub fn changed(&self) -> bool {
+        self.changed_from.is_some() || self.snooze_ended
+    }
+}
+
+impl TrackedStatus {
+    /// The status as a reader sees it, after the PR: "acme/widgets#7 ·
+    /// merged".
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Merged => "merged",
+            Self::Inaccessible => "no longer available",
+            Self::Unknown => "status unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,34 +107,15 @@ pub enum SnoozeCondition {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ObservedCi {
-    Pass,
-    Fail,
-    None,
-    Running,
-}
-
-impl From<Ci> for ObservedCi {
-    fn from(value: Ci) -> Self {
-        match value {
-            Ci::Pass => Self::Pass,
-            Ci::Fail => Self::Fail,
-            Ci::None => Self::None,
-            Ci::Running => Self::Running,
-            // Unknown to this token: a CI snooze waits rather than waking.
-            Ci::Hidden => Self::None,
-        }
-    }
-}
+/// Core's, so the snooze file and the snapshot store spell CI one way.
+pub use prmarmot_core::attention::ObservedCi;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRelevant {
     head_oid: Option<String>,
-    review_decision: Option<String>,
+    review_decision: Option<ReviewDecision>,
     requested: Vec<String>,
-    reviews: Vec<(Option<String>, String, Option<String>)>,
+    reviews: Vec<(Option<String>, ReviewVerdict, Option<String>)>,
     unresolved: usize,
     draft: bool,
 }
@@ -188,6 +206,7 @@ impl Snooze {
                 })
             }),
             SnoozeCondition::WaitingCi { baseline } => row.is_some_and(|row| {
+                // CI this token can't see reads as none: the snooze waits.
                 let current = ObservedCi::from(row.ci);
                 current != *baseline && matches!(current, ObservedCi::Pass | ObservedCi::Fail)
             }),
@@ -207,15 +226,30 @@ pub struct AttentionState {
     writable: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Envelope {
+#[derive(Deserialize)]
+struct Header {
     schema_version: u32,
+}
+
+#[derive(Deserialize)]
+struct Envelope {
     namespace: SnapshotNamespace,
-    snapshots: serde_json::Value,
+    snapshots: PersistedStore,
     #[serde(default)]
     watches: VecDeque<Watch>,
     #[serde(default)]
     snoozes: VecDeque<Snooze>,
+}
+
+/// [`Envelope`] as written: borrowed, so a save serializes the state in one
+/// pass without copying it.
+#[derive(Serialize)]
+struct EnvelopeRef<'a> {
+    schema_version: u32,
+    namespace: &'a SnapshotNamespace,
+    snapshots: &'a SnapshotStore,
+    watches: &'a VecDeque<Watch>,
+    snoozes: &'a VecDeque<Snooze>,
 }
 
 impl AttentionState {
@@ -259,19 +293,21 @@ impl AttentionState {
         if bytes.len() > MAX_STATE_BYTES {
             return Err(format!("file is too large ({} bytes)", bytes.len()));
         }
-        let envelope: Envelope = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if envelope.schema_version != STATE_SCHEMA_VERSION {
-            return Err(format!("unsupported schema {}", envelope.schema_version));
+        // The version first, so a newer release's file is named as that
+        // rather than as whatever shape it no longer matches.
+        let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        if header.schema_version != STATE_SCHEMA_VERSION {
+            return Err(format!("unsupported schema {}", header.schema_version));
         }
+        let envelope: Envelope = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         if envelope.namespace != namespace {
             return Err("account/host namespace mismatch".into());
         }
         if envelope.watches.len() > MAX_WATCHES || envelope.snoozes.len() > MAX_SNOOZES {
             return Err("persisted collection exceeds its bound".into());
         }
-        let snapshot_bytes = serde_json::to_vec(&envelope.snapshots).map_err(|e| e.to_string())?;
-        let snapshots = SnapshotStore::from_json_slice(namespace, &snapshot_bytes)
-            .map_err(|e| e.to_string())?;
+        let snapshots =
+            SnapshotStore::restore(namespace, envelope.snapshots).map_err(|e| e.to_string())?;
         Ok(Self {
             snapshots,
             watches: envelope.watches,
@@ -281,17 +317,22 @@ impl AttentionState {
         })
     }
 
+    /// Compact JSON, written in one pass; `from_bytes` also reads the
+    /// pretty-printed files earlier versions wrote.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        let snapshot_bytes = self.snapshots.to_json_vec().map_err(|e| e.to_string())?;
-        let snapshots = serde_json::from_slice(&snapshot_bytes).map_err(|e| e.to_string())?;
-        serde_json::to_vec_pretty(&Envelope {
+        self.snapshots.validate().map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(&EnvelopeRef {
             schema_version: STATE_SCHEMA_VERSION,
-            namespace: self.snapshots.namespace().clone(),
-            snapshots,
-            watches: self.watches.clone(),
-            snoozes: self.snoozes.clone(),
+            namespace: self.snapshots.namespace(),
+            snapshots: &self.snapshots,
+            watches: &self.watches,
+            snoozes: &self.snoozes,
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_STATE_BYTES {
+            return Err(format!("state is too large ({} bytes)", bytes.len()));
+        }
+        Ok(bytes)
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -317,6 +358,30 @@ impl AttentionState {
             .snapshot(pr_id)
             .map(|snapshot| snapshot.change_summary())
             .unwrap_or_default()
+    }
+
+    /// The PR ids each mark applies to, gathered once, so a board of
+    /// hundreds of rows looks each row up in a set rather than scanning the
+    /// stores (up to 1,000 snapshots, 50 watches, 200 snoozes) per row.
+    pub fn marks(&self) -> Marks<'_> {
+        Marks {
+            changed: self
+                .snapshots
+                .iter()
+                .filter(|snapshot| snapshot.changed_since_acknowledgement)
+                .map(|snapshot| snapshot.pr_id.as_str())
+                .collect(),
+            watched: self
+                .watches
+                .iter()
+                .map(|watch| watch.pr_id.as_str())
+                .collect(),
+            snoozed: self
+                .snoozes
+                .iter()
+                .map(|snooze| snooze.pr_id.as_str())
+                .collect(),
+        }
     }
 
     pub fn is_watched(&self, pr_id: &str) -> bool {
@@ -381,6 +446,23 @@ impl AttentionState {
         (previous != status).then_some(previous)
     }
 
+    /// What GitHub said about a followed PR (watched, snoozed, or both). The
+    /// watch takes the new status, and a snooze on a PR that merged or closed
+    /// ends with it: it could never wake on a board, and would ride every
+    /// refresh. Both front ends call this, so neither keeps its own copy of
+    /// the rule.
+    pub fn apply_tracked_status(&mut self, pr_id: &str, status: TrackedStatus) -> TrackedUpdate {
+        let changed_from = self.update_watch_status(pr_id, status);
+        let was_snoozed = self.snooze(pr_id).is_some();
+        let snooze_ended = matches!(status, TrackedStatus::Merged | TrackedStatus::Closed)
+            && self.cancel_snooze(pr_id);
+        TrackedUpdate {
+            changed_from,
+            was_snoozed,
+            snooze_ended,
+        }
+    }
+
     /// Stop watching a PR by its id alone. A watch outlives the board that
     /// showed it: a merged, closed or long-idle PR may be on no board a
     /// front end has loaded, and the list of watches is where it is removed.
@@ -432,10 +514,13 @@ impl AttentionState {
             .is_some()
     }
 
-    pub fn wake_due(&mut self, rows: &[BoardRow], now: DateTime<Utc>) -> Vec<String> {
+    pub fn wake_due<R: Borrow<BoardRow>>(&mut self, rows: &[R], now: DateTime<Utc>) -> Vec<String> {
         let mut woke = Vec::new();
         self.snoozes.retain(|snooze| {
-            let row = rows.iter().find(|row| row.id == snooze.pr_id);
+            let row = rows
+                .iter()
+                .map(Borrow::borrow)
+                .find(|row| row.id == snooze.pr_id);
             if snooze.should_wake(row, now) {
                 woke.push(snooze.pr_id.clone());
                 false
@@ -505,6 +590,14 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// When the state file was last written, and its length: a reader that
+/// polls it (the CLI's `watch`) reads it again only when this changes.
+/// `None` when there is no file to look at.
+pub fn file_stamp(namespace: &SnapshotNamespace) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = fs::metadata(state_path(namespace)).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
 pub fn state_path(namespace: &SnapshotNamespace) -> PathBuf {
     let safe = |value: &str| {
         value
@@ -525,7 +618,7 @@ pub fn state_path(namespace: &SnapshotNamespace) -> PathBuf {
     ))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(
@@ -559,7 +652,7 @@ pub fn observation(row: &BoardRow) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prmarmot_core::board::{Category, QueueProvenance, ReviewState, ReviewSummary};
+    use prmarmot_core::board::{Category, Ci, QueueProvenance, ReviewState, ReviewSummary};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn row(number: u64) -> BoardRow {
@@ -600,6 +693,7 @@ mod tests {
             created_at: String::new(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: "needs your review".into(),
         }
     }
@@ -722,6 +816,47 @@ mod tests {
             state.watch("PR_1").map(|watch| watch.status),
             Some(TrackedStatus::Merged)
         );
+    }
+
+    #[test]
+    fn a_snooze_ends_when_its_pr_merges_or_closes_and_stays_quiet() {
+        let mut state = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        for number in 1..=4 {
+            let pr = row(number);
+            state.set_snooze(AttentionState::snooze_for(
+                &pr,
+                AttentionState::waiting_ci(&pr),
+            ));
+        }
+        state.toggle_watch(&row(1));
+
+        let merged = state.apply_tracked_status("PR_1", TrackedStatus::Merged);
+        assert_eq!(
+            merged,
+            TrackedUpdate {
+                changed_from: Some(TrackedStatus::Open),
+                was_snoozed: true,
+                snooze_ended: true,
+            },
+            "news for the watch, but it was snoozed: no notification"
+        );
+        assert!(state.snooze("PR_1").is_none());
+
+        // Snoozed and not watched: the snooze still ends.
+        let closed = state.apply_tracked_status("PR_2", TrackedStatus::Closed);
+        assert_eq!(closed.changed_from, None);
+        assert!(closed.snooze_ended && closed.changed());
+        assert!(state.snooze("PR_2").is_none());
+
+        // Open or out of sight is no end: the snooze stays.
+        for (id, status) in [
+            ("PR_3", TrackedStatus::Open),
+            ("PR_4", TrackedStatus::Inaccessible),
+        ] {
+            let update = state.apply_tracked_status(id, status);
+            assert!(update.was_snoozed && !update.snooze_ended && !update.changed());
+            assert!(state.snooze(id).is_some());
+        }
     }
 
     #[test]

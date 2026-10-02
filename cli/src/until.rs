@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use prmarmot_core::board::{BoardRow, Category, Ci, ReviewState, TrackedPrStatus};
+use prmarmot_core::board::{
+    BoardRow, Category, Ci, ReviewDecision, ReviewState, ReviewVerdict, TrackedPrStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Condition {
@@ -96,22 +98,22 @@ pub enum Outcome {
 /// `review_state` (other people's) plus the viewer's own `my_review`, with a
 /// change request from anyone outweighing approvals, as on the board.
 fn approved(row: &BoardRow) -> bool {
-    match row.review_decision.as_deref() {
-        Some(decision) => decision == "APPROVED",
+    match &row.review_decision {
+        Some(decision) => *decision == ReviewDecision::Approved,
         None => {
             !changes_requested(row)
                 && (row.review_state == ReviewState::Approved
-                    || row.my_review.as_deref() == Some("APPROVED"))
+                    || row.my_review == Some(ReviewVerdict::Approved))
         }
     }
 }
 
 fn changes_requested(row: &BoardRow) -> bool {
-    match row.review_decision.as_deref() {
-        Some(decision) => decision == "CHANGES_REQUESTED",
+    match &row.review_decision {
+        Some(decision) => *decision == ReviewDecision::ChangesRequested,
         None => {
             row.review_state == ReviewState::Changes
-                || row.my_review.as_deref() == Some("CHANGES_REQUESTED")
+                || row.my_review == Some(ReviewVerdict::ChangesRequested)
         }
     }
 }

@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::board::{BoardRow, Ci};
+use crate::board::{BoardRow, Category, Ci, ReviewDecision, ReviewVerdict, TrackedPrStatus};
 
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 pub const MAX_SNAPSHOTS: usize = 1_000;
@@ -45,7 +45,7 @@ pub struct SemanticObservation {
     pub draft: bool,
     pub ci: ObservedCi,
     pub conflict: bool,
-    pub review_decision: Option<String>,
+    pub review_decision: Option<ReviewDecision>,
     pub requested: Vec<String>,
     pub reviews: Vec<ObservedReview>,
     pub unresolved: usize,
@@ -128,7 +128,7 @@ impl From<Ci> for ObservedCi {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ObservedReview {
     pub login: Option<String>,
-    pub state: String,
+    pub state: ReviewVerdict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,11 +180,11 @@ impl Snapshot {
             .collect();
         for review in &new_reviews {
             let login = review.login.as_deref().unwrap_or("deleted user");
-            changes.push(match review.state.as_str() {
-                "APPROVED" => format!("{login} approved"),
-                "CHANGES_REQUESTED" => format!("{login} requested changes"),
-                "COMMENTED" => format!("{login} commented"),
-                "DISMISSED" => format!("{login}'s review was dismissed"),
+            changes.push(match review.state {
+                ReviewVerdict::Approved => format!("{login} approved"),
+                ReviewVerdict::ChangesRequested => format!("{login} requested changes"),
+                ReviewVerdict::Commented => format!("{login} commented"),
+                ReviewVerdict::Dismissed => format!("{login}'s review was dismissed"),
                 _ => format!("{login} reviewed"),
             });
         }
@@ -192,8 +192,8 @@ impl Snapshot {
         if new_reviews.is_empty() && old.review_decision != new.review_decision {
             changes.push(format!(
                 "Review decision {} → {}",
-                decision_word(old.review_decision.as_deref()),
-                decision_word(new.review_decision.as_deref())
+                decision_word(old.review_decision.as_ref()),
+                decision_word(new.review_decision.as_ref())
             ));
         }
         let added: Vec<&str> = new
@@ -253,13 +253,13 @@ impl ObservedCi {
     }
 }
 
-fn decision_word(decision: Option<&str>) -> String {
+fn decision_word(decision: Option<&ReviewDecision>) -> String {
     match decision {
         None => "none".to_string(),
-        Some("APPROVED") => "approved".to_string(),
-        Some("CHANGES_REQUESTED") => "changes requested".to_string(),
-        Some("REVIEW_REQUIRED") => "review required".to_string(),
-        Some(other) => other.to_lowercase().replace('_', " "),
+        Some(ReviewDecision::Approved) => "approved".to_string(),
+        Some(ReviewDecision::ChangesRequested) => "changes requested".to_string(),
+        Some(ReviewDecision::ReviewRequired) => "review required".to_string(),
+        Some(ReviewDecision::Other(other)) => other.to_lowercase().replace('_', " "),
     }
 }
 
@@ -309,6 +309,11 @@ impl SnapshotStore {
 
     pub fn snapshot(&self, pr_id: &str) -> Option<&Snapshot> {
         self.snapshots.iter().find(|entry| entry.pr_id == pr_id)
+    }
+
+    /// Every snapshot, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = &Snapshot> {
+        self.snapshots.iter()
     }
 
     /// The merge-conflict state last observed for a PR, for
@@ -443,6 +448,16 @@ impl SnapshotStore {
         }
 
         let wire: PersistedStore = serde_json::from_slice(bytes).map_err(RestoreError::Json)?;
+        Self::restore(expected_namespace, wire)
+    }
+
+    /// Validate a store read as part of a larger document (the desktop's
+    /// attention file embeds one), as [`SnapshotStore::from_json_slice`] does
+    /// for a store on its own.
+    pub fn restore(
+        expected_namespace: SnapshotNamespace,
+        wire: PersistedStore,
+    ) -> Result<Self, RestoreError> {
         let store = Self {
             schema_version: wire.schema_version,
             namespace: wire.namespace,
@@ -459,8 +474,9 @@ impl SnapshotStore {
     }
 }
 
-#[derive(Deserialize)]
-struct PersistedStore {
+/// A [`SnapshotStore`] as read, before [`SnapshotStore::restore`] checks it.
+#[derive(Debug, Deserialize)]
+pub struct PersistedStore {
     schema_version: u32,
     namespace: SnapshotNamespace,
     snapshots: VecDeque<Snapshot>,
@@ -570,7 +586,13 @@ fn validate_observation(observation: &Observation) -> Result<(), ValidationError
     validate_optional_string("updated_at", observation.updated_at.as_deref())?;
     let semantic = &observation.semantic;
     validate_optional_string("head_oid", semantic.head_oid.as_deref())?;
-    validate_optional_string("review_decision", semantic.review_decision.as_deref())?;
+    validate_optional_string(
+        "review_decision",
+        semantic
+            .review_decision
+            .as_ref()
+            .map(ReviewDecision::as_str),
+    )?;
     validate_optional_string("reviewed_oid", semantic.reviewed_oid.as_deref())?;
     validate_optional_string("reviewed_at", semantic.reviewed_at.as_deref())?;
     validate_list("requested", &semantic.requested, |value| {
@@ -584,7 +606,7 @@ fn validate_observation(observation: &Observation) -> Result<(), ValidationError
     }
     for review in &semantic.reviews {
         validate_optional_string("reviews[].login", review.login.as_deref())?;
-        validate_string("reviews[].state", &review.state, MAX_FACT_BYTES)?;
+        validate_string("reviews[].state", review.state.as_str(), MAX_FACT_BYTES)?;
     }
     Ok(())
 }
@@ -666,8 +688,61 @@ pub fn semantic_needs_action(observation: &Observation) -> bool {
     let semantic = &observation.semantic;
     semantic.conflict
         || semantic.ci == ObservedCi::Fail
-        || semantic.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+        || semantic.review_decision == Some(ReviewDecision::ChangesRequested)
         || semantic.unresolved > 0
+}
+
+/// What decides whether a semantic change becomes a notification, besides
+/// the change itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotifyCase<'a> {
+    /// Notifications are on.
+    pub notifications: bool,
+    /// "Notify me when any of my PRs needs action", not only watched ones.
+    pub all_needs_action: bool,
+    /// The signed-in login.
+    pub me: &'a str,
+    pub watched: bool,
+    pub snoozed: bool,
+    /// The PR is selected in a focused window: the person is looking at it.
+    pub focused: bool,
+    /// Whether the observation before this one needed the author to act;
+    /// `None` on a first sighting.
+    pub needed_action_before: Option<bool>,
+}
+
+/// Whether a semantic change to `row` becomes a notification: never while
+/// notifications are off, the PR is snoozed or the person is looking at it;
+/// otherwise when it is watched, or when it is your own PR that has just
+/// started needing you and you asked to hear about all of those. A PR that
+/// has needed you all along is not news. Both front ends ask this after
+/// their own first-sighting rule.
+pub fn should_notify(case: &NotifyCase<'_>, row: &BoardRow) -> bool {
+    if !case.notifications || case.snoozed || case.focused {
+        return false;
+    }
+    let entered_action = case.all_needs_action
+        && row.category == Category::Action
+        && row.author.as_deref() == Some(case.me)
+        && case.needed_action_before != Some(true);
+    case.watched || entered_action
+}
+
+/// A watched PR's notification when GitHub says it was merged or closed, or
+/// no longer returns it. Open is not news.
+pub fn watched_status_notice(
+    status: TrackedPrStatus,
+    repo: &str,
+    number: u64,
+    title: &str,
+) -> Option<(&'static str, String)> {
+    let heading = match status {
+        TrackedPrStatus::Merged => "Watched PR merged",
+        TrackedPrStatus::Closed => "Watched PR closed",
+        TrackedPrStatus::Inaccessible => "Watched PR unavailable",
+        TrackedPrStatus::Open => return None,
+    };
+    Some((heading, format!("{repo} #{number} · {title}")))
 }
 
 /// The one most important thing that changed between `previous` and `row`.
@@ -691,8 +766,8 @@ pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option
             ),
         );
     }
-    if old.review_decision.as_deref() != Some("CHANGES_REQUESTED")
-        && row.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+    if old.review_decision != Some(ReviewDecision::ChangesRequested)
+        && row.review_decision == Some(ReviewDecision::ChangesRequested)
     {
         return notice(
             NoticeKind::ChangesRequested,
@@ -711,7 +786,7 @@ pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option
         );
     }
     if old.ci != ObservedCi::Pass && row.ci == Ci::Pass {
-        let approval = if row.review_decision.as_deref() == Some("APPROVED") {
+        let approval = if row.review_decision == Some(ReviewDecision::Approved) {
             " and is approved"
         } else {
             ""
@@ -727,6 +802,35 @@ pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option
         "Pull request changed",
         format!("{} #{} · {}", row.repo, row.number, row.title),
     )
+}
+
+/// Which PRs are changed since you looked, watched and snoozed, gathered
+/// once for a pass over the board (a desktop's attention state builds it),
+/// so each row is looked up in a set rather than in the stores.
+#[derive(Debug, Default)]
+pub struct Marks<'a> {
+    pub changed: HashSet<&'a str>,
+    pub watched: HashSet<&'a str>,
+    pub snoozed: HashSet<&'a str>,
+}
+
+impl Marks<'_> {
+    pub fn is_changed(&self, pr_id: &str) -> bool {
+        self.changed.contains(pr_id)
+    }
+
+    pub fn is_watched(&self, pr_id: &str) -> bool {
+        self.watched.contains(pr_id)
+    }
+
+    pub fn is_snoozed(&self, pr_id: &str) -> bool {
+        self.snoozed.contains(pr_id)
+    }
+
+    /// Watched or snoozed: the header's "followed".
+    pub fn is_followed(&self, pr_id: &str) -> bool {
+        self.is_watched(pr_id) || self.is_snoozed(pr_id)
+    }
 }
 
 #[cfg(test)]
@@ -754,6 +858,90 @@ mod tests {
             },
             ci_hidden: false,
         }
+    }
+
+    #[test]
+    fn a_change_notifies_when_watched_or_when_your_pr_starts_needing_you() {
+        let mut row = board_row();
+        row.category = Category::Action;
+        let case = NotifyCase {
+            notifications: true,
+            all_needs_action: true,
+            me: "octocat",
+            watched: false,
+            snoozed: false,
+            focused: false,
+            needed_action_before: Some(false),
+        };
+        assert!(
+            should_notify(&case, &row),
+            "your PR just started needing you"
+        );
+        assert!(
+            !should_notify(
+                &NotifyCase {
+                    needed_action_before: Some(true),
+                    ..case
+                },
+                &row
+            ),
+            "it needed you all along"
+        );
+        assert!(!should_notify(
+            &NotifyCase {
+                all_needs_action: false,
+                ..case
+            },
+            &row
+        ));
+        for quiet in [
+            NotifyCase {
+                notifications: false,
+                watched: true,
+                ..case
+            },
+            NotifyCase {
+                snoozed: true,
+                watched: true,
+                ..case
+            },
+            NotifyCase {
+                focused: true,
+                watched: true,
+                ..case
+            },
+        ] {
+            assert!(!should_notify(&quiet, &row), "{quiet:?}");
+        }
+        row.author = Some("teammate".into());
+        assert!(!should_notify(&case, &row), "someone else's PR");
+        assert!(should_notify(
+            &NotifyCase {
+                watched: true,
+                ..case
+            },
+            &row
+        ));
+    }
+
+    #[test]
+    fn a_watched_pr_that_ended_names_itself() {
+        assert_eq!(
+            watched_status_notice(TrackedPrStatus::Merged, "acme/widgets", 7, "Fix cache"),
+            Some((
+                "Watched PR merged",
+                "acme/widgets #7 · Fix cache".to_owned()
+            ))
+        );
+        assert_eq!(
+            watched_status_notice(TrackedPrStatus::Inaccessible, "acme/widgets", 7, "Fix")
+                .map(|(heading, _)| heading),
+            Some("Watched PR unavailable")
+        );
+        assert_eq!(
+            watched_status_notice(TrackedPrStatus::Open, "acme/widgets", 7, "Fix"),
+            None
+        );
     }
 
     #[test]
@@ -1134,6 +1322,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: String::new(),
         }
     }

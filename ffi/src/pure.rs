@@ -226,10 +226,11 @@ pub fn search(
         after_days: stale_after_days,
     };
     let rows = into_rows(rows);
+    let search = core_search::Search::query(&query);
     Ok(rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| core_search::matches_filter(row, &query, rule))
+        .filter(|(_, row)| search.matches(row, rule))
         .map(|(index, _)| index as u32)
         .collect())
 }
@@ -416,10 +417,12 @@ pub fn needs_you_here(mode: Mode, category: crate::types::Category) -> bool {
 
 /// Whether this row counts toward "need you": the icon badge's rule in every
 /// view. Requested from you plus your own PRs under Needs action; never a
-/// teammate's, and never Available to review.
+/// teammate's, and never Available to review. `mode` no longer changes the
+/// answer; it stays so the Swift call site keeps compiling.
 #[uniffi::export]
 pub fn row_needs_you(mode: Mode, row: PullRequest) -> bool {
-    core_status::row_needs_you(mode.into(), &row.into_row())
+    let _ = mode;
+    core_status::row_needs_you(&row.into_row())
 }
 
 /// What Load more added, said once it lands: its rows join their sections
@@ -520,6 +523,159 @@ pub fn queue_empty_text(mode: Mode, all_repos: bool) -> String {
     core_status::queue_empty_text(mode.into(), all_repos).to_owned()
 }
 
+/// What an empty board offers to do about being empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum EmptyAction {
+    /// One repository's review queue is empty; another may be asking.
+    ShowAllRepositories,
+    /// Only part of GitHub's answer is loaded.
+    LoadMore,
+}
+
+impl From<core_status::EmptyAction> for EmptyAction {
+    fn from(action: core_status::EmptyAction) -> Self {
+        match action {
+            core_status::EmptyAction::ShowAllRepositories => Self::ShowAllRepositories,
+            core_status::EmptyAction::LoadMore => Self::LoadMore,
+        }
+    }
+}
+
+impl From<EmptyAction> for core_status::EmptyAction {
+    fn from(action: EmptyAction) -> Self {
+        match action {
+            EmptyAction::ShowAllRepositories => Self::ShowAllRepositories,
+            EmptyAction::LoadMore => Self::LoadMore,
+        }
+    }
+}
+
+/// An empty queue's body: what it says and the one thing it offers.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct QueueEmpty {
+    pub text: String,
+    pub action: Option<EmptyAction>,
+}
+
+/// [`queue_empty_text`] with the button that goes with it. `can_load_more`
+/// is GitHub having another page for this view: one page of the review
+/// queue's candidates can all have reviewers while the next does not.
+#[uniffi::export]
+pub fn queue_empty(mode: Mode, all_repos: bool, can_load_more: bool) -> QueueEmpty {
+    let empty = core_status::queue_empty(mode.into(), all_repos, can_load_more);
+    QueueEmpty {
+        text: empty.text.to_owned(),
+        action: empty.action.map(EmptyAction::from),
+    }
+}
+
+/// The empty board's button label: "Show all repositories", "Load more".
+#[uniffi::export]
+pub fn empty_action_label(action: EmptyAction) -> String {
+    core_status::EmptyAction::from(action).label().to_owned()
+}
+
+/// The empty body when a search matched none of the loaded PRs and GitHub
+/// may have more. `filter` is the search as shown.
+#[uniffi::export]
+pub fn no_loaded_match_text(filter: String) -> String {
+    core_status::no_loaded_match_text(&filter)
+}
+
+/// The view's name: "My PRs", "Involving me" (My PRs across all
+/// repositories), "Review queue", "All open". `authored_only` is the CLI's
+/// `--authored`; the iPad passes `false`.
+#[uniffi::export]
+pub fn view_title(mode: Mode, all_repos: bool, authored_only: bool) -> String {
+    core_status::view_title(mode.into(), all_repos, authored_only).to_owned()
+}
+
+/// Why fetching waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PauseReason {
+    /// GitHub refused a request as rate limited.
+    RateLimited,
+    /// The hourly budget is down to the reserve; `remaining` points left.
+    BudgetLow { remaining: u32 },
+}
+
+/// The paused line, with how long is left: "GitHub rate limited — retrying
+/// in 4m". Pass the time left on each redraw so it counts down.
+#[uniffi::export]
+pub fn paused_text(reason: PauseReason, retry_in_secs: u64) -> String {
+    let reason = match reason {
+        PauseReason::RateLimited => core_status::PauseReason::RateLimited,
+        PauseReason::BudgetLow { remaining } => core_status::PauseReason::BudgetLow { remaining },
+    };
+    core_status::paused_text(reason, retry_in_secs)
+}
+
+/// The footer while several rows are selected: "3 selected".
+#[uniffi::export]
+pub fn selected_count_text(count: u64) -> String {
+    core_status::selected_count_text(count as usize)
+}
+
+/// The heading a copied selection goes under ("Pull requests (3) ·
+/// acme/widgets"): pass it as `share_group`'s title.
+#[uniffi::export]
+pub fn selection_title() -> String {
+    prmarmot_core::share::SELECTION_TITLE.to_owned()
+}
+
+/// Open together on GitHub at most this many of a selection.
+#[uniffi::export]
+pub fn max_open_together() -> u64 {
+    core_status::MAX_OPEN_TOGETHER as u64
+}
+
+/// What an action over a selection did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SelectionDone {
+    /// `opened` of `selected` PRs went to the browser.
+    Opened {
+        opened: u64,
+        selected: u64,
+    },
+    UrlsCopied {
+        count: u64,
+    },
+    Watching {
+        count: u64,
+    },
+    Unwatched {
+        count: u64,
+    },
+    Snoozed {
+        count: u64,
+    },
+    SnoozesCancelled {
+        count: u64,
+    },
+}
+
+/// The footer after an action over a selection: "Opened 3 PRs on GitHub",
+/// "Opened the first 10 of 23 PRs on GitHub", "4 PR URLs copied".
+#[uniffi::export]
+pub fn selection_done_text(done: SelectionDone) -> String {
+    let done = match done {
+        SelectionDone::Opened { opened, selected } => core_status::SelectionDone::Opened {
+            opened: opened as usize,
+            selected: selected as usize,
+        },
+        SelectionDone::UrlsCopied { count } => {
+            core_status::SelectionDone::UrlsCopied(count as usize)
+        }
+        SelectionDone::Watching { count } => core_status::SelectionDone::Watching(count as usize),
+        SelectionDone::Unwatched { count } => core_status::SelectionDone::Unwatched(count as usize),
+        SelectionDone::Snoozed { count } => core_status::SelectionDone::Snoozed(count as usize),
+        SelectionDone::SnoozesCancelled { count } => {
+            core_status::SelectionDone::SnoozesCancelled(count as usize)
+        }
+    };
+    core_status::selection_done_text(done)
+}
+
 /// Why All open is unavailable with all repositories selected — for the
 /// disabled tab and the error alike.
 #[uniffi::export]
@@ -595,6 +751,7 @@ pub fn detail_lines(
 pub enum DetailKind {
     Note,
     Facts,
+    Checks,
     RequestedReviewers,
     Reviews,
     YourReview,
@@ -611,6 +768,7 @@ impl From<core_detail::DetailKind> for DetailKind {
         match kind {
             Core::Note => Self::Note,
             Core::Facts => Self::Facts,
+            Core::Checks => Self::Checks,
             Core::RequestedReviewers => Self::RequestedReviewers,
             Core::Reviews => Self::Reviews,
             Core::YourReview => Self::YourReview,

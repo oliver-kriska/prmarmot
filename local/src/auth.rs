@@ -83,10 +83,36 @@ impl StoredAuth {
 
 /// Read, write and forget the token for one host. Errors are strings because
 /// every caller renders them, and none can recover.
+/// The token store could not be read or written: a sentence for a person,
+/// typed so it can only ever surface as [`GhError::Storage`], never as a
+/// network failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreError(pub String);
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+impl From<String> for StoreError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl From<StoreError> for GhError {
+    fn from(error: StoreError) -> Self {
+        GhError::Storage(error.0)
+    }
+}
+
 pub trait TokenStore: Send + Sync {
-    fn load(&self, host: &str) -> Result<Option<StoredAuth>, String>;
-    fn save(&self, auth: &StoredAuth) -> Result<(), String>;
-    fn delete(&self, host: &str) -> Result<(), String>;
+    fn load(&self, host: &str) -> Result<Option<StoredAuth>, StoreError>;
+    fn save(&self, auth: &StoredAuth) -> Result<(), StoreError>;
+    fn delete(&self, host: &str) -> Result<(), StoreError>;
     /// Where the token is, in words, for `auth status`.
     fn describe(&self) -> String;
 }
@@ -203,18 +229,18 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 impl TokenStore for FileTokenStore {
-    fn load(&self, host: &str) -> Result<Option<StoredAuth>, String> {
+    fn load(&self, host: &str) -> Result<Option<StoredAuth>, StoreError> {
         Ok(self.read()?.hosts.remove(&normalize_host(host)))
     }
 
-    fn save(&self, auth: &StoredAuth) -> Result<(), String> {
+    fn save(&self, auth: &StoredAuth) -> Result<(), StoreError> {
         let mut file = self.read()?;
         file.version = 1;
         file.hosts.insert(normalize_host(&auth.host), auth.clone());
-        self.write(&file)
+        Ok(self.write(&file)?)
     }
 
-    fn delete(&self, host: &str) -> Result<(), String> {
+    fn delete(&self, host: &str) -> Result<(), StoreError> {
         let mut file = self.read()?;
         if file.hosts.remove(&normalize_host(host)).is_none() {
             return Ok(());
@@ -223,10 +249,13 @@ impl TokenStore for FileTokenStore {
             return match std::fs::remove_file(&self.path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(format!("could not remove {}: {e}", self.path.display())),
+                Err(e) => Err(StoreError(format!(
+                    "could not remove {}: {e}",
+                    self.path.display()
+                ))),
             };
         }
-        self.write(&file)
+        Ok(self.write(&file)?)
     }
 
     fn describe(&self) -> String {
@@ -240,37 +269,39 @@ pub struct KeychainTokenStore;
 
 #[cfg(target_os = "macos")]
 impl TokenStore for KeychainTokenStore {
-    fn load(&self, host: &str) -> Result<Option<StoredAuth>, String> {
+    fn load(&self, host: &str) -> Result<Option<StoredAuth>, StoreError> {
         let host = normalize_host(host);
         match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, &host) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|e| format!("the keychain item for {host} is unreadable: {e}")),
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+                StoreError(format!("the keychain item for {host} is unreadable: {e}"))
+            }),
             // errSecItemNotFound — nothing stored for this host yet.
             Err(e) if e.code() == -25300 => Ok(None),
-            Err(e) => Err(format!("could not read the keychain: {e}")),
+            Err(e) => Err(StoreError(format!("could not read the keychain: {e}"))),
         }
     }
 
-    fn save(&self, auth: &StoredAuth) -> Result<(), String> {
-        let bytes =
-            serde_json::to_vec(auth).map_err(|e| format!("could not encode the token: {e}"))?;
+    fn save(&self, auth: &StoredAuth) -> Result<(), StoreError> {
+        let bytes = serde_json::to_vec(auth)
+            .map_err(|e| StoreError(format!("could not encode the token: {e}")))?;
         security_framework::passwords::set_generic_password(
             KEYCHAIN_SERVICE,
             &normalize_host(&auth.host),
             &bytes,
         )
-        .map_err(|e| format!("could not write to the keychain: {e}"))
+        .map_err(|e| StoreError(format!("could not write to the keychain: {e}")))
     }
 
-    fn delete(&self, host: &str) -> Result<(), String> {
+    fn delete(&self, host: &str) -> Result<(), StoreError> {
         match security_framework::passwords::delete_generic_password(
             KEYCHAIN_SERVICE,
             &normalize_host(host),
         ) {
             Ok(()) => Ok(()),
             Err(e) if e.code() == -25300 => Ok(()),
-            Err(e) => Err(format!("could not remove the keychain item: {e}")),
+            Err(e) => Err(StoreError(format!(
+                "could not remove the keychain item: {e}"
+            ))),
         }
     }
 
@@ -316,7 +347,7 @@ impl StoredTokenSource {
 
     /// The stored record as it is right now, without refreshing. For
     /// `auth status`.
-    pub fn stored(&self) -> Result<Option<StoredAuth>, String> {
+    pub fn stored(&self) -> Result<Option<StoredAuth>, StoreError> {
         self.store.load(&self.host)
     }
 }
@@ -330,13 +361,9 @@ impl TokenSource for StoredTokenSource {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| GhError::Network("the token store lock was poisoned".into()))?;
+            .map_err(|_| GhError::Storage("the token store lock was poisoned".into()))?;
         if state.is_none() {
-            *state = self
-                .store
-                .load(&self.host)
-                .map_err(GhError::Network)?
-                .or(None);
+            *state = self.store.load(&self.host)?.or(None);
         }
         let Some(auth) = state.as_mut() else {
             return Err(GhError::NotAuthenticated);
@@ -364,7 +391,7 @@ impl TokenSource for StoredTokenSource {
         auth.token = refreshed;
         // A store that cannot be written still leaves this process signed in;
         // the next launch would ask for a new sign-in, which is honest.
-        self.store.save(auth).map_err(GhError::Network)?;
+        self.store.save(auth)?;
         Ok(auth.token.access_token.clone())
     }
 }

@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use prmarmot_core::github::response::{classify, graphql_body, ResponseMeta};
+use prmarmot_core::github::response::{classify, form_encode, graphql_body, ResponseMeta};
 use prmarmot_core::github::{
     graphql_url, rest_url, AuthTransport as CoreAuthTransport, GhError,
     GithubTransport as CoreTransport, RestTransport as CoreRestTransport,
@@ -385,33 +385,6 @@ fn read(answer: Result<HttpResponse, FfiError>) -> Answer {
         .collect();
     let meta = ResponseMeta::new(response.status).with_headers(headers);
     classify(meta, &response.body)
-}
-
-/// `application/x-www-form-urlencoded`, so Swift never has to think about
-/// escaping `urn:ietf:params:oauth:grant-type:device_code`.
-fn form_encode(fields: &[(&str, &str)]) -> String {
-    let mut out = String::new();
-    for (key, value) in fields {
-        if !out.is_empty() {
-            out.push('&');
-        }
-        percent_encode(key, &mut out);
-        out.push('=');
-        percent_encode(value, &mut out);
-    }
-    out
-}
-
-fn percent_encode(text: &str, out: &mut String) {
-    for byte in text.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            b' ' => out.push('+'),
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
 }
 
 #[cfg(test)]

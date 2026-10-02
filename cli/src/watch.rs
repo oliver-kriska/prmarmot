@@ -19,6 +19,7 @@ use prmarmot_core::github::rate_limit::{
     backoff_secs, rate_limited_wait_secs, should_back_off, RateLimitInfo, MIN_REFRESH_SECS,
 };
 use prmarmot_core::github::{GhError, GithubTransport};
+use prmarmot_core::status::{paused_text, retrying_text, PauseReason};
 use prmarmot_local::attention_state::AttentionState;
 use serde_json::{json, Value};
 
@@ -27,6 +28,7 @@ use crate::render::{mode_key, pr_json, scope_json, scope_label, view_title};
 use crate::term::{Paint, Tone};
 use crate::until::{self, Condition, Outcome};
 use crate::view::{self, BoardView, Filters};
+use prmarmot_local::small_pages;
 
 pub const EVENT_SCHEMA: &str = "prmarmot-cli/event@1";
 /// Removed PRs resolved per poll; the GraphQL `nodes(ids:)` batch is bounded.
@@ -510,27 +512,29 @@ pub fn event_text(
                 paint.tone(Tone::Muted, &seen.url)
             )
         }
-        Event::RateLimited { retry_in_secs, .. } => format!(
-            "{time}  {} {}",
-            paint.tone(Tone::Warning, "!"),
-            paint.tone(
-                Tone::Warning,
-                &format!(
-                    "GitHub API budget low — next check in {}",
-                    human_duration(*retry_in_secs)
-                )
+        Event::RateLimited {
+            retry_in_secs,
+            rate,
+        } => {
+            let reason = match rate {
+                Some(budget) => PauseReason::BudgetLow {
+                    remaining: budget.remaining,
+                },
+                None => PauseReason::RateLimited,
+            };
+            format!(
+                "{time}  {} {}",
+                paint.tone(Tone::Warning, "!"),
+                paint.tone(Tone::Warning, &paused_text(reason, *retry_in_secs))
             )
-        ),
+        }
         Event::Error {
             message,
             retry_in_secs,
         } => format!(
             "{time}  {} {}",
             paint.tone(Tone::Danger, "!"),
-            paint.tone(
-                Tone::Danger,
-                &format!("{message} — retrying in {}", human_duration(*retry_in_secs))
-            )
+            paint.tone(Tone::Danger, &retrying_text(message, *retry_in_secs))
         ),
         Event::Until { outcome, pr } => {
             let url = pr["url"].as_str().unwrap_or("");
@@ -830,12 +834,28 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
     let mut counted = 0u64;
     // Set when the next poll lands on the `--timeout` deadline.
     let mut last_look = false;
-    // Once GitHub gave up on a full page, later polls ask for the smaller one.
-    let mut small_pages = false;
+    // Once GitHub gave up on a full page, later polls ask for the smaller one;
+    // so does the first, when a run in the last hour already found that out.
+    let small_pages_key = view::small_pages_key(
+        &session.host,
+        &session.viewer,
+        &session.scope,
+        session.mode,
+        session.board.authored_only,
+    );
+    let mut small_pages =
+        followed.is_none() && small_pages::remembered(&small_pages_key, Utc::now().timestamp());
+    let mut attention = view::attention(&session.host, &session.viewer);
+    let mut attention_stamp = view::attention_stamp(&session.host, &session.viewer);
     loop {
         let now = Utc::now();
-        // Re-read each poll: watches and snoozes change in the app meanwhile.
-        let attention = view::attention(&session.host, &session.viewer);
+        // Watches and snoozes change in the app meanwhile: read the file
+        // again whenever it was written since.
+        let stamp = view::attention_stamp(&session.host, &session.viewer);
+        if stamp.is_none() || stamp != attention_stamp {
+            attention = view::attention(&session.host, &session.viewer);
+            attention_stamp = stamp;
+        }
         let fetched = match &followed {
             Some((pr, id)) => fetch_pull_request(&session, pr, id),
             None => view::fetch(
@@ -854,6 +874,17 @@ pub fn run(session: Session, out: &mut dyn Write, clock: &mut dyn Clock) -> Stop
                 (fetch, None)
             }),
         };
+        if followed.is_none() {
+            // GitHub giving up even on the small page still means small next.
+            let gave_up = match &fetched {
+                Ok((fetch, _)) => fetch.pagination.small_pages(),
+                Err(error) => error.is_query_timeout(),
+            };
+            if gave_up {
+                small_pages = true;
+                small_pages::remember(&small_pages_key, now.timestamp());
+            }
+        }
         let mut finish = None;
         let (events, rate, wait) = match fetched {
             Ok((mut fetch, gone)) => {
@@ -1257,7 +1288,26 @@ mod tests {
             Paint::new(false),
         );
         assert!(
-            text.ends_with("! GitHub API budget low — next check in 15m"),
+            text.ends_with("! GitHub rate limited — retrying in 15m"),
+            "{text}"
+        );
+        let text = event_text(
+            &Event::RateLimited {
+                retry_in_secs: 900,
+                rate: Some(RateLimitInfo {
+                    limit: 5000,
+                    cost: 1,
+                    remaining: 42,
+                    reset_at: "2026-09-11T15:00:00Z".into(),
+                }),
+            },
+            &ctx,
+            at,
+            None,
+            Paint::new(false),
+        );
+        assert!(
+            text.ends_with("! GitHub API budget low (42 left) — retrying in 15m"),
             "{text}"
         );
     }

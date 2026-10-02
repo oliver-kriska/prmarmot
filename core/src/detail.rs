@@ -12,7 +12,7 @@
 
 use chrono::{DateTime, FixedOffset, Utc};
 
-use crate::board::{strip_note_glyphs, BoardRow, Mode};
+use crate::board::{strip_note_glyphs, BoardRow, CheckCounts, Mode, ReviewVerdict};
 use crate::pickup::{wait_label, waiting_secs};
 use crate::size::ChangeSize;
 
@@ -27,23 +27,42 @@ pub fn size_text(size: ChangeSize) -> String {
     )
 }
 
+/// "1 failed · 12 passed · 3 skipped": each state that has a check, the ones
+/// that want a look first. The CI column says one word; this says why.
+pub fn checks_text(checks: CheckCounts) -> String {
+    [
+        (checks.failed, "failed"),
+        (checks.running, "running"),
+        (checks.passed, "passed"),
+        (checks.cancelled, "cancelled"),
+        (checks.skipped, "skipped"),
+        (checks.neutral, "neutral"),
+        (checks.stale, "stale"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, word)| format!("{count} {word}"))
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 /// A review state in plain words ("changes requested"), never GitHub's enum.
-pub fn review_state_words(state: &str) -> String {
+pub fn review_state_words(state: &ReviewVerdict) -> String {
     match state {
-        "APPROVED" => "approved".into(),
-        "CHANGES_REQUESTED" => "changes requested".into(),
-        "COMMENTED" => "commented".into(),
-        "DISMISSED" => "dismissed".into(),
-        other => other.to_lowercase().replace('_', " "),
+        ReviewVerdict::Approved => "approved".into(),
+        ReviewVerdict::ChangesRequested => "changes requested".into(),
+        ReviewVerdict::Commented => "commented".into(),
+        ReviewVerdict::Dismissed => "dismissed".into(),
+        other => other.as_str().to_lowercase().replace('_', " "),
     }
 }
 
 /// Your standing review in plain words; `None` when there isn't one.
-pub fn my_review_text(review: &str) -> Option<&'static str> {
+pub fn my_review_text(review: &ReviewVerdict) -> Option<&'static str> {
     match review {
-        "APPROVED" => Some("approved"),
-        "CHANGES_REQUESTED" => Some("changes requested"),
-        "COMMENTED" => Some("commented"),
+        ReviewVerdict::Approved => Some("approved"),
+        ReviewVerdict::ChangesRequested => Some("changes requested"),
+        ReviewVerdict::Commented => Some("commented"),
         _ => None,
     }
 }
@@ -56,6 +75,8 @@ pub enum DetailKind {
     Note,
     /// Author, CI and the open threads.
     Facts,
+    /// The latest commit's checks counted by state.
+    Checks,
     RequestedReviewers,
     Reviews,
     /// Your standing review, in the review queue.
@@ -120,6 +141,10 @@ pub struct DetailField {
     pub kind: DetailKind,
     pub label: Option<&'static str>,
     pub value: String,
+    /// How the PR stands — CI, the checks, open threads, the wait, the size
+    /// — rather than who and where (author, reviewers, reviews, issue,
+    /// stack). The desktop's right panel gives these their own column.
+    pub standing: bool,
 }
 
 /// Every fact of the panel, in the order it is shown: the one source of
@@ -130,14 +155,26 @@ pub fn detail_fields(
     now: DateTime<Utc>,
     tz_offset_secs: i32,
 ) -> Vec<DetailField> {
-    let field = |kind, label, value: String| DetailField { kind, label, value };
+    let field = |kind, label, value: String| DetailField {
+        kind,
+        label,
+        value,
+        standing: matches!(
+            kind,
+            DetailKind::Facts | DetailKind::Checks | DetailKind::Waiting | DetailKind::Size
+        ),
+    };
     let mut fields = vec![
         field(DetailKind::Note, None, strip_note_glyphs(&row.note)),
-        field(
-            DetailKind::Facts,
-            Some("Author"),
-            row.author.as_deref().unwrap_or("unknown").to_owned(),
-        ),
+        DetailField {
+            // One of the facts, but it says who, not how the PR stands.
+            standing: false,
+            ..field(
+                DetailKind::Facts,
+                Some("Author"),
+                row.author.as_deref().unwrap_or("unknown").to_owned(),
+            )
+        },
         field(DetailKind::Facts, Some("CI"), row.ci.as_str().to_owned()),
         field(
             DetailKind::Facts,
@@ -148,6 +185,15 @@ pub fn detail_fields(
                 row.unresolved.to_string()
             },
         ),
+    ];
+    if let Some(checks) = row.checks {
+        fields.push(field(
+            DetailKind::Checks,
+            Some("Checks"),
+            checks_text(checks),
+        ));
+    }
+    fields.extend([
         field(
             DetailKind::RequestedReviewers,
             Some("Requested reviewers"),
@@ -176,11 +222,11 @@ pub fn detail_fields(
                     .join(", ")
             },
         ),
-    ];
+    ]);
     // Your own PR has no review of yours to show.
     if let Some(review) = row
         .my_review
-        .as_deref()
+        .as_ref()
         .filter(|_| mode == Mode::Review)
         .and_then(my_review_text)
     {
@@ -285,7 +331,7 @@ pub fn copy_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Category, Ci, ReviewState, ReviewSummary, StackInfo};
+    use crate::board::{Category, CheckCounts, Ci, ReviewState, ReviewSummary, StackInfo};
     use crate::size::ChangeSize;
 
     fn row() -> BoardRow {
@@ -326,6 +372,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: "🟡 ⏳ Waiting for your review".into(),
         }
     }
@@ -372,6 +419,12 @@ mod tests {
             deletions: 2,
             changed_files: 3,
         });
+        pr.checks = Some(CheckCounts {
+            passed: 11,
+            cancelled: 1,
+            skipped: 9,
+            ..CheckCounts::default()
+        });
         pr.labels = vec!["backend".into(), "bug".into()];
         pr.issue = Some("ACME-7".into());
         pr.stack = Some(StackInfo {
@@ -390,6 +443,7 @@ mod tests {
             vec![
                 "⏳ Waiting for your review",
                 "Author: alice · CI: pass · Unresolved comments: 0",
+                "Checks: 11 passed · 1 cancelled · 9 skipped",
                 "Requested reviewers: bob, kim",
                 "Reviews: bob — changes requested, deleted user — approved",
                 "Your review: commented",
@@ -418,6 +472,7 @@ mod tests {
                 (Some("Author"), "alice"),
                 (Some("CI"), "pass"),
                 (Some("Unresolved comments"), "0"),
+                (Some("Checks"), "11 passed · 1 cancelled · 9 skipped"),
                 (Some("Requested reviewers"), "bob, kim"),
                 (
                     Some("Reviews"),
@@ -434,6 +489,19 @@ mod tests {
     }
 
     #[test]
+    fn the_author_says_who_and_the_other_facts_say_how_it_stands() {
+        let standing: Vec<&str> = detail_fields(&full_row(), Mode::Review, now(), 0)
+            .into_iter()
+            .filter(|field| field.standing)
+            .filter_map(|field| field.label)
+            .collect();
+        assert_eq!(
+            standing,
+            ["CI", "Unresolved comments", "Checks", "Waiting", "Size"]
+        );
+    }
+
+    #[test]
     fn each_line_says_what_it_is_in_the_order_it_is_shown() {
         let pr = full_row();
         let items = detail_items(&pr, Mode::Review, now(), 0);
@@ -442,6 +510,7 @@ mod tests {
             vec![
                 DetailKind::Note,
                 DetailKind::Facts,
+                DetailKind::Checks,
                 DetailKind::RequestedReviewers,
                 DetailKind::Reviews,
                 DetailKind::YourReview,
@@ -468,6 +537,29 @@ mod tests {
                 DetailKind::RequestedReviewers,
                 DetailKind::Reviews,
             ]
+        );
+    }
+
+    #[test]
+    fn checks_name_each_state_that_has_one_failures_first() {
+        assert_eq!(
+            checks_text(CheckCounts {
+                failed: 1,
+                running: 2,
+                passed: 12,
+                cancelled: 1,
+                skipped: 3,
+                neutral: 1,
+                stale: 1,
+            }),
+            "1 failed · 2 running · 12 passed · 1 cancelled · 3 skipped · 1 neutral · 1 stale"
+        );
+        assert_eq!(
+            checks_text(CheckCounts {
+                passed: 4,
+                ..CheckCounts::default()
+            }),
+            "4 passed"
         );
     }
 

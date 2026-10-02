@@ -1,14 +1,13 @@
 //! Rendering a [`BoardView`] as JSON (for agents), Markdown (for agents and
 //! documents), or a terminal table. Sections and order come from the shared
-//! core layout; wording and tone mirror the app's table (`src/table.rs`),
-//! which is where presentation rules live — core only owns the facts.
+//! core layout, and each cell's words and tone from core's `cells`, the same
+//! source the app's table and the iPad draw from.
 
 use chrono::Local;
 use prmarmot_core::board::{
-    strip_note_glyphs, Blocker, BoardRow, BoardScope, Category, Ci, Mode, QueueProvenance,
-    ReviewState,
+    strip_note_glyphs, Blocker, BoardRow, BoardScope, Ci, Mode, QueueProvenance,
 };
-use prmarmot_core::cells::unresolved_fact;
+use prmarmot_core::cells;
 use prmarmot_core::layout::{section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
 use prmarmot_core::status::{
@@ -21,15 +20,11 @@ use crate::view::{BoardView, Marks};
 
 pub const BOARD_SCHEMA: &str = "prmarmot-cli/board@1";
 
-/// The app's switcher label: across all repositories the authored search
-/// widens to every open PR involving you, unless `--authored` keeps it to yours.
+/// The app's switcher label (core's [`prmarmot_core::status::view_title`]):
+/// across all repositories the authored search widens to every open PR
+/// involving you, unless `--authored` keeps it to yours.
 pub fn view_title(mode: Mode, scope: &BoardScope, authored_only: bool) -> &'static str {
-    match mode {
-        Mode::Authored if scope.is_all() && !authored_only => "Involving me",
-        Mode::Authored => "My PRs",
-        Mode::Review => "Review queue",
-        Mode::AllOpen => "All open",
-    }
+    prmarmot_core::status::view_title(mode, scope.is_all(), authored_only)
 }
 
 pub fn mode_key(mode: Mode) -> &'static str {
@@ -77,14 +72,9 @@ fn empty_message(view: &BoardView) -> String {
     if view.filtered_out > 0 {
         return "No PRs match the filter".into();
     }
-    match view.mode {
-        Mode::Authored if view.all_repos() && !view.authored_only => {
-            "No open pull requests involve you".into()
-        }
-        Mode::Authored => "You have no open PRs".into(),
-        Mode::Review => "No requested or available reviews in this result set".into(),
-        Mode::AllOpen => queue_empty_text(view.mode, view.all_repos()).into(),
-    }
+    // `--authored` across all repositories is My PRs, not Involving me.
+    let widened = view.all_repos() && !(view.mode == Mode::Authored && view.authored_only);
+    queue_empty_text(view.mode, widened).into()
 }
 
 /// All open and the review queue name each PR's author in their own column;
@@ -246,55 +236,42 @@ fn pr_ref(row: &BoardRow, all_repos: bool) -> String {
     }
 }
 
+/// Core's tone in the terminal's palette. The terminal draws no status dot,
+/// so Routine (a dot, muted text in the app) is muted text here.
+fn term_tone(tone: cells::Tone) -> Tone {
+    match tone {
+        cells::Tone::Danger => Tone::Danger,
+        cells::Tone::Warning => Tone::Warning,
+        cells::Tone::Success => Tone::Success,
+        cells::Tone::Routine | cells::Tone::Muted => Tone::Muted,
+    }
+}
+
+/// The CI column, as the app shows it (`cells::ci_cell`).
 fn ci_cell(ci: Ci) -> (&'static str, Tone) {
-    match ci {
-        Ci::Pass => ("pass", Tone::Success),
-        Ci::Fail => ("fail", Tone::Danger),
-        Ci::Running => ("running", Tone::Warning),
-        Ci::None => ("none", Tone::Muted),
-        Ci::Hidden => ("hidden", Tone::Muted),
-    }
+    let (word, tone) = cells::ci_cell(ci);
+    (word, term_tone(tone))
 }
 
-fn review_glyph(state: &str) -> (&'static str, Tone) {
-    match state {
-        "APPROVED" => ("✓", Tone::Success),
-        "CHANGES_REQUESTED" => ("±", Tone::Danger),
-        "DISMISSED" => ("✕", Tone::Muted),
-        _ => ("·", Tone::Muted),
-    }
-}
-
-fn review_aggregate(state: ReviewState) -> &'static str {
-    match state {
-        ReviewState::Approved => "approved",
-        ReviewState::Changes => "changes requested",
-        ReviewState::Commented => "commented",
-        ReviewState::Waiting => "requested",
-        ReviewState::None => "reviewed",
-    }
-}
-
-/// Completed reviews win over pending requests, as in the app's Review column.
+/// The Review column on one line, from the app's cell (`cells::review_cell`):
+/// completed reviews win over pending requests.
 fn review_text(row: &BoardRow) -> String {
-    if !row.reviews.is_empty() {
-        let reviewers = row
-            .reviews
-            .iter()
-            .map(|review| {
-                format!(
-                    "{} {}",
-                    review_glyph(&review.state).0,
-                    review.login.as_deref().unwrap_or("?")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("{reviewers} — {}", review_aggregate(row.review_state))
-    } else if !row.requested.is_empty() {
-        format!("→ {} — requested", row.requested.join(", "))
-    } else {
-        "not requested".into()
+    match cells::review_cell(row) {
+        cells::ReviewCell::Reviewed { marks, summary, .. } => {
+            let reviewers = marks
+                .iter()
+                .map(|mark| format!("{} {}", mark.glyph, mark.login))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{reviewers} {summary}")
+        }
+        cells::ReviewCell::Requested {
+            names,
+            arrow,
+            suffix,
+            ..
+        } => format!("{arrow} {names} {suffix}"),
+        cells::ReviewCell::NotRequested { text } => text,
     }
 }
 
@@ -315,99 +292,27 @@ fn title_text(row: &BoardRow, stack_branch: Option<&str>) -> String {
 }
 
 /// The Note as primary phrase, optional remedy and context facts, with the
-/// app's tone: exceptional blockers are danger, routine follow-up a warning.
+/// app's tone (`cells::note_presentation`): exceptional blockers are danger,
+/// routine follow-up a warning.
 pub struct Note {
     pub tone: Tone,
     pub text: String,
 }
 
-fn blocker_rank(blocker: &Blocker) -> u8 {
-    match blocker {
-        Blocker::MergeConflict => 0,
-        Blocker::CannotRebase => 1,
-        Blocker::CiFailing => 2,
-        Blocker::ChangesRequested => 3,
-        Blocker::UnresolvedComments(_) => 4,
-        Blocker::NoReviewers { .. } => 5,
-    }
-}
-
-fn blocker_primary(blocker: &Blocker, unresolved_capped: bool) -> String {
-    match blocker {
-        Blocker::MergeConflict => "merge conflict — rebase".into(),
-        Blocker::CannotRebase => "can't rebase — rebase locally".into(),
-        Blocker::CiFailing => "CI failing".into(),
-        Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) if unresolved_capped => format!("resolve {n}+ comments"),
-        Blocker::UnresolvedComments(n) => {
-            format!("resolve {n} comment{}", if *n == 1 { "" } else { "s" })
-        }
-        Blocker::NoReviewers { suggested } if suggested.is_empty() => "assign reviewers".into(),
-        Blocker::NoReviewers { suggested } => format!("assign {}", suggested.join(" + ")),
-    }
-}
-
-fn blocker_context(blocker: &Blocker, unresolved_capped: bool) -> String {
-    match blocker {
-        Blocker::MergeConflict => "merge conflict".into(),
-        Blocker::CannotRebase => "can't rebase".into(),
-        Blocker::CiFailing => "CI failing".into(),
-        Blocker::ChangesRequested => "changes requested".into(),
-        Blocker::UnresolvedComments(n) => unresolved_fact(*n, unresolved_capped),
-        Blocker::NoReviewers { .. } => "reviewers missing".into(),
-    }
-}
-
 pub fn note(row: &BoardRow) -> Note {
-    let plain = strip_note_glyphs(&row.note);
-    match row.category {
-        Category::Action => {
-            let mut ranked: Vec<&Blocker> = row.blockers.iter().collect();
-            ranked.sort_by_key(|b| blocker_rank(b));
-            let Some((primary, rest)) = ranked.split_first() else {
-                return Note {
-                    tone: Tone::Warning,
-                    text: plain,
-                };
-            };
-            let tone = if matches!(
-                primary,
-                Blocker::MergeConflict
-                    | Blocker::CannotRebase
-                    | Blocker::CiFailing
-                    | Blocker::ChangesRequested
-            ) {
-                Tone::Danger
-            } else {
-                Tone::Warning
-            };
-            let mut text = blocker_primary(primary, row.unresolved_capped);
-            for blocker in rest {
-                text.push_str(" · ");
-                text.push_str(&blocker_context(blocker, row.unresolved_capped));
-            }
-            Note { tone, text }
-        }
-        Category::Todo | Category::Available if row.ci == Ci::Fail || row.conflict => Note {
-            tone: Tone::Danger,
-            text: plain,
-        },
-        Category::Todo | Category::Available => Note {
-            tone: Tone::Warning,
-            text: plain,
-        },
-        Category::Await => Note {
-            tone: Tone::Success,
-            text: plain,
-        },
-        Category::Done if row.my_review.as_deref() == Some("APPROVED") => Note {
-            tone: Tone::Success,
-            text: plain,
-        },
-        Category::Done | Category::Draft => Note {
-            tone: Tone::Muted,
-            text: plain,
-        },
+    let presentation = cells::note_presentation(row);
+    let mut text = presentation.primary;
+    if let Some(remedy) = presentation.remedy {
+        text.push_str(" — ");
+        text.push_str(&remedy);
+    }
+    for fact in presentation.context {
+        text.push_str(" · ");
+        text.push_str(&fact);
+    }
+    Note {
+        tone: term_tone(presentation.tone),
+        text,
     }
 }
 
@@ -810,12 +715,14 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
                     fit(row.author.as_deref().unwrap_or("?"), w.middle)
                 } else {
                     let text = fit(&review_text(row), w.middle);
-                    match row.reviews.first() {
-                        Some(first) => {
-                            let (glyph, tone) = review_glyph(&first.state);
-                            paint_leading(&paint, tone, &text, glyph)
-                        }
-                        None => paint.tone(Tone::Muted, &text),
+                    match cells::review_cell(row) {
+                        cells::ReviewCell::Reviewed { marks, .. } => match marks.first() {
+                            Some(first) => {
+                                paint_leading(&paint, term_tone(first.tone), &text, &first.glyph)
+                            }
+                            None => paint.tone(Tone::Muted, &text),
+                        },
+                        _ => paint.tone(Tone::Muted, &text),
                     }
                 };
                 let note = note_for(view, *ix);
@@ -878,7 +785,7 @@ mod tests {
     use crate::view::{build, Filters};
     use chrono::{TimeZone, Utc};
     use prmarmot_core::attention::SnapshotNamespace;
-    use prmarmot_core::board::{Category, StackInfo};
+    use prmarmot_core::board::{Category, ReviewState, StackInfo};
     use prmarmot_core::size::ChangeSize;
     use prmarmot_local::attention_state::{AttentionState, SnoozeCondition};
 
@@ -1462,7 +1369,8 @@ mod tests {
             Filters::default(),
             Utc::now(),
         );
-        assert!(table(&empty, 80, Paint::new(false), false)
-            .contains("No requested or available reviews in this result set"));
+        assert!(table(&empty, 80, Paint::new(false), false).contains(
+            "No one has asked for your review, and no PR involving you is waiting for a reviewer."
+        ));
     }
 }

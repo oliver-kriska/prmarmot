@@ -112,22 +112,22 @@ pub fn classify(meta: ResponseMeta, body: &str) -> Result<Value, GhError> {
         {
             Err(rate_limited())
         }
-        403 => Err(GhError::Network(format!(
-            "GitHub refused the request (403){}",
-            detail(body)
-        ))),
-        404 => Err(GhError::Network(format!(
-            "GitHub returned 404{}",
-            detail(body)
-        ))),
-        500..=599 => Err(GhError::Network(format!(
-            "GitHub is having trouble ({status}){}",
-            detail(body)
-        ))),
-        other => Err(GhError::Network(format!(
-            "GitHub returned {other}{}",
-            detail(body)
-        ))),
+        403 => Err(GhError::Http {
+            status,
+            message: format!("GitHub refused the request (403){}", detail(body)),
+        }),
+        404 => Err(GhError::Http {
+            status,
+            message: format!("GitHub returned 404{}", detail(body)),
+        }),
+        500..=599 => Err(GhError::Http {
+            status,
+            message: format!("GitHub is having trouble ({status}){}", detail(body)),
+        }),
+        other => Err(GhError::Http {
+            status,
+            message: format!("GitHub returned {other}{}", detail(body)),
+        }),
     }
 }
 
@@ -168,6 +168,35 @@ pub fn detail(body: &str) -> String {
         String::new()
     } else {
         format!(": {message}")
+    }
+}
+
+/// `application/x-www-form-urlencoded`, hand-rolled so the crate does not grow
+/// a URL dependency for five short fields. Shared with the iPad's transport,
+/// so Swift never has to think about escaping
+/// `urn:ietf:params:oauth:grant-type:device_code`.
+pub fn form_encode(fields: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for (key, value) in fields {
+        if !out.is_empty() {
+            out.push('&');
+        }
+        percent_encode(key, &mut out);
+        out.push('=');
+        percent_encode(value, &mut out);
+    }
+    out
+}
+
+fn percent_encode(text: &str, out: &mut String) {
+    for byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
     }
 }
 
@@ -236,7 +265,7 @@ mod tests {
         // Same status, no evidence: a permission problem, not a wait.
         let refused = classify(meta(403), r#"{"message":"Resource not accessible"}"#).unwrap_err();
         assert!(
-            matches!(&refused, GhError::Network(m) if m.contains("403") && m.contains("not accessible")),
+            matches!(&refused, GhError::Http { status: 403, message } if message.contains("not accessible")),
             "{refused:?}"
         );
 
@@ -325,15 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn server_trouble_and_anything_unexpected_read_as_network_errors() {
+    fn server_trouble_and_anything_unexpected_keep_their_status() {
         let error = classify(meta(502), "<html>502 Bad Gateway</html>").unwrap_err();
         assert!(
-            matches!(&error, GhError::Network(m) if m.contains("having trouble (502)")),
+            matches!(&error, GhError::Http { status: 502, message } if message.contains("having trouble (502)")),
             "{error:?}"
         );
         let error = classify(meta(418), "{}").unwrap_err();
         assert!(
-            matches!(&error, GhError::Network(m) if m.contains("418")),
+            matches!(&error, GhError::Http { status: 418, message } if message.contains("418")),
             "{error:?}"
         );
     }
@@ -358,17 +387,26 @@ mod tests {
         let error = classify(meta(502), "<html>upstream is unhappy</html>").unwrap_err();
         assert_eq!(
             error,
-            GhError::Network("GitHub is having trouble (502)".into())
+            GhError::Http {
+                status: 502,
+                message: "GitHub is having trouble (502)".into()
+            }
         );
         let error = classify(meta(503), "Service Unavailable").unwrap_err();
         assert_eq!(
             error,
-            GhError::Network("GitHub is having trouble (503)".into())
+            GhError::Http {
+                status: 503,
+                message: "GitHub is having trouble (503)".into()
+            }
         );
         let error = classify(meta(500), r#"{"documentation_url":"x"}"#).unwrap_err();
         assert_eq!(
             error,
-            GhError::Network("GitHub is having trouble (500)".into())
+            GhError::Http {
+                status: 500,
+                message: "GitHub is having trouble (500)".into()
+            }
         );
     }
 
@@ -377,12 +415,18 @@ mod tests {
         let error = classify(meta(502), r#"{"message":"Server Error"}"#).unwrap_err();
         assert_eq!(
             error,
-            GhError::Network("GitHub is having trouble (502): Server Error".into())
+            GhError::Http {
+                status: 502,
+                message: "GitHub is having trouble (502): Server Error".into()
+            }
         );
         let error = classify(meta(404), r#"{"message":"Not Found"}"#).unwrap_err();
         assert_eq!(
             error,
-            GhError::Network("GitHub returned 404: Not Found".into())
+            GhError::Http {
+                status: 404,
+                message: "GitHub returned 404: Not Found".into()
+            }
         );
     }
 }

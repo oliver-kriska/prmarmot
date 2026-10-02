@@ -13,8 +13,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::rate_limit::RateLimitInfo;
-use super::response::{classify, graphql_body, ResponseMeta};
+use super::response::{classify, form_encode, graphql_body, ResponseMeta};
 use super::{
     graphql_url, normalize_host, rest_url, AuthTransport, GhError, GithubTransport, RestTransport,
     TokenSource,
@@ -184,7 +183,7 @@ fn finish(sent: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result
 
 fn transport_error(error: ureq::Error) -> GhError {
     match error {
-        ureq::Error::Timeout(_) => GhError::Network(format!(
+        ureq::Error::Timeout(_) => GhError::Timeout(format!(
             "GitHub did not answer within {}s",
             REQUEST_TIMEOUT.as_secs()
         )),
@@ -201,39 +200,6 @@ fn header_u64(response: &ureq::http::Response<ureq::Body>, name: &str) -> Option
         .trim()
         .parse()
         .ok()
-}
-
-/// `application/x-www-form-urlencoded`, hand-rolled so the crate does not grow
-/// a URL dependency for five short fields.
-fn form_encode(fields: &[(&str, &str)]) -> String {
-    let mut out = String::new();
-    for (key, value) in fields {
-        if !out.is_empty() {
-            out.push('&');
-        }
-        percent_encode(key, &mut out);
-        out.push('=');
-        percent_encode(value, &mut out);
-    }
-    out
-}
-
-fn percent_encode(text: &str, out: &mut String) {
-    for byte in text.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            b' ' => out.push('+'),
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-}
-
-/// The live budget from a response body, for callers that want it without
-/// going through the board parser.
-pub fn rate_limit_of(body: &Value) -> Option<RateLimitInfo> {
-    serde_json::from_value(body.pointer("/data/rateLimit")?.clone()).ok()
 }
 
 #[cfg(test)]

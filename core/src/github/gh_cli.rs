@@ -4,14 +4,12 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{GhError, GithubTransport, TokenSource};
+use super::{GhError, GithubTransport};
 
 /// A hung `gh` (network black hole) must never freeze the data layer: with
 /// no timeout, `syncing` stays true forever and the refresh dedup silently
@@ -30,52 +28,30 @@ pub struct RepoDiscovery {
     pub truncated: bool,
 }
 
-/// `Command::output()` with a watchdog: a helper thread SIGKILLs the child
-/// (via `kill -9 <pid>`, no extra deps) if it outlives `timeout`. Output is
-/// still collected by `wait_with_output`, so pipes drain normally.
+/// What `gh` may print before the rest is dropped: the HTTP transport's
+/// response cap, far above the largest board.
+const MAX_GH_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+
+/// `Command::output()` with a deadline and a cap on the output.
 fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<Output, GhError> {
-    run_with_timeout(cmd, timeout, Stdio::piped())
+    run_with_timeout(cmd, timeout, true)
 }
 
-/// [`output_with_timeout`] with the child's stdout sent where the caller
-/// says; `Stdio::null()` leaves `Output::stdout` empty.
+/// [`output_with_timeout`]; without `capture_stdout` the child's stdout goes
+/// nowhere and `Output::stdout` is empty.
 fn run_with_timeout(
     cmd: &mut Command,
     timeout: Duration,
-    stdout: Stdio,
+    capture_stdout: bool,
 ) -> Result<Output, GhError> {
-    let child = cmd
-        .stdout(stdout)
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|e| classify_spawn_error(&e))?;
-    let pid = child.id();
-    let done = Arc::new(AtomicBool::new(false));
-    let done_flag = done.clone();
-    let watchdog = std::thread::spawn(move || {
-        let step = Duration::from_millis(100);
-        let mut waited = Duration::ZERO;
-        while waited < timeout {
-            if done_flag.load(Ordering::Relaxed) {
-                return false;
-            }
-            std::thread::sleep(step);
-            waited += step;
-        }
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-        true
-    });
-    let out = child.wait_with_output();
-    done.store(true, Ordering::Relaxed);
-    let killed = watchdog.join().unwrap_or(false);
-    if killed {
-        return Err(GhError::Network(format!(
+    match crate::process::run_bounded(cmd, timeout, MAX_GH_OUTPUT_BYTES, capture_stdout) {
+        Ok(Some(output)) => Ok(output),
+        Ok(None) => Err(GhError::Timeout(format!(
             "gh timed out after {}s — killed",
             timeout.as_secs()
-        )));
+        ))),
+        Err(error) => Err(classify_spawn_error(&error)),
     }
-    out.map_err(|e| GhError::Network(e.to_string()))
 }
 
 /// Locate `gh`. Apps launched from Spotlight/Finder inherit a minimal PATH
@@ -142,24 +118,39 @@ impl GithubTransport for GhCliTransport {
             cmd.arg("-F").arg(format!("tracked[]={id}"));
         }
         let out = output_with_timeout(&mut cmd, GRAPHQL_TIMEOUT)?;
+        graphql_outcome(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        )
+    }
+}
 
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-
-        // gh prints the GraphQL response body to stdout even on non-zero exit
-        // (e.g. errors[] present). Prefer parsing the body over exit codes.
-        if let Ok(body) = serde_json::from_str::<Value>(stdout.trim()) {
+/// What one `gh api graphql` run answered. gh prints the response body to
+/// stdout even when it exits non-zero, and that body is one of two things:
+/// a GraphQL answer carrying `errors[]` (kept, so the caller reads them), or
+/// an HTTP failure's own body, `{"message": …}` (a 502 when GitHub gave up on
+/// the query, 401 bad credentials, a 403 rate limit). The second is no
+/// GraphQL answer; it is classified from stderr, where gh names the message
+/// and `(HTTP <status>)`, so a timeout still reads as one.
+fn graphql_outcome(success: bool, stdout: &str, stderr: &str) -> Result<Value, GhError> {
+    if let Ok(body) = serde_json::from_str::<Value>(stdout.trim()) {
+        if success || body.get("data").is_some() || body.get("errors").is_some() {
             return Ok(body);
         }
-
-        if !out.status.success() {
-            return Err(classify_failure(&stderr));
+        if stderr.trim().is_empty() {
+            let message = body.get("message").and_then(Value::as_str).unwrap_or("");
+            return Err(classify_failure(message));
         }
-        Err(GhError::Parse(format!(
-            "gh returned non-JSON output: {}",
-            stdout.chars().take(200).collect::<String>()
-        )))
+        return Err(classify_failure(stderr));
     }
+    if !success {
+        return Err(classify_failure(stderr));
+    }
+    Err(GhError::Parse(format!(
+        "gh returned non-JSON output: {}",
+        stdout.chars().take(200).collect::<String>()
+    )))
 }
 
 fn classify_spawn_error(e: &io::Error) -> GhError {
@@ -172,7 +163,12 @@ fn classify_spawn_error(e: &io::Error) -> GhError {
 
 fn classify_failure(stderr: &str) -> GhError {
     let s = stderr.to_lowercase();
-    if s.contains("gh auth login") || s.contains("not logged in") || s.contains("authentication") {
+    if s.contains("gh auth login")
+        || s.contains("not logged in")
+        || s.contains("authentication")
+        || s.contains("bad credentials")
+        || s.contains("(http 401)")
+    {
         GhError::NotAuthenticated
     } else if s.contains("rate limit") || s.contains("rate_limited") {
         // `gh api` prints no response headers on this path, so there is no
@@ -182,57 +178,21 @@ fn classify_failure(stderr: &str) -> GhError {
             retry_after_secs: None,
         }
     } else {
-        GhError::Network(stderr.trim().chars().take(300).collect())
-    }
-}
-
-/// Token via `gh auth token`. Unused by `GhCliTransport` (auth stays inside
-/// `gh`); the future direct-HTTP transport is seeded from this.
-pub struct GhCliTokenSource {
-    gh_path: String,
-}
-
-impl GhCliTokenSource {
-    pub fn new() -> Self {
-        Self {
-            gh_path: resolve_gh_path(),
+        let message: String = stderr.trim().chars().take(300).collect();
+        match http_status(stderr) {
+            Some(status) => GhError::Http { status, message },
+            None => GhError::Network(message),
         }
     }
 }
 
-impl Default for GhCliTokenSource {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TokenSource for GhCliTokenSource {
-    fn token(&self) -> Result<String, GhError> {
-        let out = output_with_timeout(
-            Command::new(&self.gh_path).args(["auth", "token"]),
-            QUICK_TIMEOUT,
-        )?;
-        if !out.status.success() {
-            return Err(GhError::NotAuthenticated);
-        }
-        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if token.is_empty() {
-            return Err(GhError::NotAuthenticated);
-        }
-        Ok(token)
-    }
-}
-
-/// `owner/name` of the repo the given directory belongs to, via `gh repo view`.
-pub fn detect_repo(dir: &std::path::Path) -> Result<String, GhError> {
-    run_gh_line(Command::new(resolve_gh_path()).current_dir(dir).args([
-        "repo",
-        "view",
-        "--json",
-        "nameWithOwner",
-        "--jq",
-        ".nameWithOwner",
-    ]))
+/// The status in gh's `HTTP 502` / `(HTTP 502)`, read once here so nothing
+/// downstream parses the sentence again.
+fn http_status(stderr: &str) -> Option<u16> {
+    stderr.split("HTTP ").skip(1).find_map(|rest| {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        (digits.len() == 3).then(|| digits.parse().ok()).flatten()
+    })
 }
 
 /// Whether `gh` holds a login for `host`. `gh auth token` reads it locally, so
@@ -243,7 +203,7 @@ pub fn has_login(host: &str) -> Result<bool, GhError> {
     let out = run_with_timeout(
         Command::new(resolve_gh_path()).args(["auth", "token", "--hostname", &host]),
         PROBE_TIMEOUT,
-        Stdio::null(),
+        false,
     )?;
     Ok(out.status.success())
 }
@@ -355,6 +315,64 @@ fn run_gh_line(cmd: &mut Command) -> Result<String, GhError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_http_failure_body_is_classified_from_stderr_not_returned_as_an_answer() {
+        // gh's real shape for a 404: the JSON body on stdout, exit 1, and the
+        // message with its status on stderr.
+        let timeout = graphql_outcome(
+            false,
+            r#"{"message":"We couldn't respond to your request in time. Sorry about that."}"#,
+            "gh: We couldn't respond to your request in time. Sorry about that. (HTTP 502)\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(timeout, GhError::Http { status: 502, .. }),
+            "{timeout:?}"
+        );
+        assert!(timeout.is_query_timeout(), "{timeout:?}");
+
+        let bad_login = graphql_outcome(
+            false,
+            r#"{"message":"Bad credentials","status":"401"}"#,
+            "gh: Bad credentials (HTTP 401)",
+        );
+        assert_eq!(bad_login, Err(GhError::NotAuthenticated));
+
+        let limited = graphql_outcome(
+            false,
+            r#"{"message":"API rate limit exceeded for user ID 1."}"#,
+            "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        );
+        assert!(matches!(limited, Err(GhError::RateLimited { .. })));
+
+        // No stderr: the body's own message is what there is to go on.
+        let quiet = graphql_outcome(false, r#"{"message":"Bad credentials"}"#, "");
+        assert_eq!(quiet, Err(GhError::NotAuthenticated));
+    }
+
+    #[test]
+    fn the_status_is_read_from_ghs_sentence_once() {
+        assert_eq!(http_status("gh: Server Error (HTTP 504)"), Some(504));
+        assert_eq!(http_status("gh: HTTP 502: Bad Gateway"), Some(502));
+        assert_eq!(http_status("HTTP 5021 HTTP 404"), Some(404));
+        assert_eq!(http_status("gh: connection refused"), None);
+    }
+
+    #[test]
+    fn a_graphql_answer_is_returned_whatever_the_exit_code() {
+        let errors = r#"{"data":null,"errors":[{"message":"Could not resolve to a Repository"}]}"#;
+        assert!(graphql_outcome(false, errors, "gh: Could not resolve").is_ok());
+        assert!(graphql_outcome(true, r#"{"data":{}}"#, "").is_ok());
+        assert!(matches!(
+            graphql_outcome(true, "not json", ""),
+            Err(GhError::Parse(_))
+        ));
+        assert!(matches!(
+            graphql_outcome(false, "", "gh: connection refused"),
+            Err(GhError::Network(_))
+        ));
+    }
 
     #[test]
     fn repo_discovery_paginates_and_deduplicates() {

@@ -27,8 +27,14 @@ use serde_json::{json, Value};
 pub const HIDDEN_TEAM: &str = "hidden team";
 
 /// The top-level fields whose items are pull requests: the board searches'
-/// aliases and the tracked `nodes(ids:)` list.
-const PULL_REQUEST_LISTS: [&str; 4] = ["search", "requested", "available", "tracked"];
+/// aliases and the tracked `nodes(ids:)` lists, full and state-only.
+const PULL_REQUEST_LISTS: [&str; 5] = [
+    "search",
+    "requested",
+    "available",
+    "tracked",
+    "trackedStatus",
+];
 
 /// How many pull requests had something withheld, by what. Each pull request
 /// counts at most once per kind.

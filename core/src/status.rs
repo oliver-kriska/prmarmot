@@ -28,21 +28,19 @@ pub fn needs_you_here(mode: Mode, category: Category) -> bool {
 /// rule, applied to the view on screen. That is Requested from you, plus your
 /// own PRs under Needs action; a teammate's merge conflict is not yours to act
 /// on. Your own are the rows with blockers, because someone else's PR carries
-/// facts and never blockers. The rule is the same in every view, so `mode`
-/// only says which view the row came from.
-pub fn row_needs_you(_mode: Mode, row: &BoardRow) -> bool {
+/// facts and never blockers. The rule is the same in every view.
+pub fn row_needs_you(row: &BoardRow) -> bool {
     row.category == Category::Todo || (row.category == Category::Action && !row.blockers.is_empty())
 }
 
 /// How many of these rows need you, snoozed ones excluded: the header's "need
 /// you" and the Needs you quick filter's count, which must be one number.
 pub fn need_you_count<'a>(
-    mode: Mode,
     rows: impl IntoIterator<Item = &'a BoardRow>,
     snoozed: impl Fn(&BoardRow) -> bool,
 ) -> usize {
     rows.into_iter()
-        .filter(|row| row_needs_you(mode, row) && !snoozed(row))
+        .filter(|row| row_needs_you(row) && !snoozed(row))
         .count()
 }
 
@@ -324,6 +322,17 @@ pub fn device_code_waiting_note(verification_uri: &str) -> String {
     )
 }
 
+/// What the one-time-code screen says when the code ran out before anyone
+/// entered it.
+pub fn device_code_expired_text() -> &'static str {
+    "The code expired. Start again to get a new one."
+}
+
+/// What the one-time-code screen says when the person declined at GitHub.
+pub fn device_request_declined_text() -> &'static str {
+    "The request was declined at GitHub."
+}
+
 /// What the token was not allowed to read on this board, in one line, or
 /// `None` when it read everything. The rows still show; this says why some of
 /// their CI reads "hidden" and what would show it.
@@ -410,6 +419,54 @@ pub fn loaded_more_text(added: usize) -> String {
     }
 }
 
+/// Open together on GitHub at most this many of a selection. Past it, the
+/// browser gets the first ones and the footer says how many were left: a
+/// selection of a hundred rows is a copy, not a hundred tabs.
+pub const MAX_OPEN_TOGETHER: usize = 10;
+
+fn prs(count: usize) -> String {
+    match count {
+        1 => "1 PR".to_owned(),
+        n => format!("{n} PRs"),
+    }
+}
+
+/// The footer while several rows are selected: "3 selected".
+pub fn selected_count_text(count: usize) -> String {
+    format!("{count} selected")
+}
+
+/// What a selection's action did, for the footer. `Opened` says when the
+/// cap left some PRs unopened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionDone {
+    /// `opened` of `selected` PRs went to the browser.
+    Opened {
+        opened: usize,
+        selected: usize,
+    },
+    UrlsCopied(usize),
+    Watching(usize),
+    Unwatched(usize),
+    Snoozed(usize),
+    SnoozesCancelled(usize),
+}
+
+pub fn selection_done_text(done: SelectionDone) -> String {
+    match done {
+        SelectionDone::Opened { opened, selected } if opened < selected => {
+            format!("Opened the first {opened} of {selected} PRs on GitHub")
+        }
+        SelectionDone::Opened { opened, .. } => format!("Opened {} on GitHub", prs(opened)),
+        SelectionDone::UrlsCopied(1) => "PR URL copied".to_owned(),
+        SelectionDone::UrlsCopied(n) => format!("{n} PR URLs copied"),
+        SelectionDone::Watching(n) => format!("Watching {}", prs(n)),
+        SelectionDone::Unwatched(n) => format!("Stopped watching {}", prs(n)),
+        SelectionDone::Snoozed(n) => format!("Snoozed {}", prs(n)),
+        SelectionDone::SnoozesCancelled(n) => format!("Snooze cancelled for {}", prs(n)),
+    }
+}
+
 /// Why All open cannot show while All repositories is selected: the view is
 /// one repository's open PRs, and every repository's would be most of GitHub.
 /// The desktop's disabled tab and the error both say it.
@@ -453,18 +510,117 @@ pub fn queue_loading_text(mode: Mode, all_repos: bool) -> &'static str {
     }
 }
 
-/// The centered body copy when a queue has loaded and holds nothing.
-///
-/// Each queue says its own "nothing here", so an empty review queue never
-/// reads as "you have no PRs".
+/// The view's name: the desktop's switcher, the CLI's heading and its JSON
+/// `view`. Across all repositories My PRs widens to every open PR involving
+/// you and is called Involving me, unless `authored_only` (the CLI's
+/// `--authored`) keeps it to yours.
+pub fn view_title(mode: Mode, all_repos: bool, authored_only: bool) -> &'static str {
+    match mode {
+        Mode::Authored if all_repos && !authored_only => "Involving me",
+        Mode::Authored => "My PRs",
+        Mode::Review => "Review queue",
+        Mode::AllOpen => "All open",
+    }
+}
+
+/// The centered body copy when a queue has loaded and holds nothing:
+/// [`queue_empty`]'s sentence when nothing more can load.
 pub fn queue_empty_text(mode: Mode, all_repos: bool) -> &'static str {
-    match (mode, all_repos) {
+    queue_empty(mode, all_repos, false).text
+}
+
+/// What an empty board offers to do about being empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyAction {
+    /// One repository's review queue is empty; another repository may be
+    /// asking for you.
+    ShowAllRepositories,
+    /// Only part of GitHub's answer is loaded, and the rest may hold some.
+    LoadMore,
+}
+
+impl EmptyAction {
+    /// The button's label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ShowAllRepositories => "Show all repositories",
+            Self::LoadMore => "Load more",
+        }
+    }
+}
+
+/// An empty queue's body: what it says and the one thing it offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueEmpty {
+    pub text: &'static str,
+    pub action: Option<EmptyAction>,
+}
+
+/// The centered body when a queue has loaded and holds nothing. Each queue
+/// says its own "nothing here", so an empty review queue never reads as "you
+/// have no PRs", and says what it looked for. `can_load_more` is GitHub having
+/// another page for this view: the review queue leaves out candidates that
+/// already have a reviewer, so one page can hold none of them while the next
+/// does.
+pub fn queue_empty(mode: Mode, all_repos: bool, can_load_more: bool) -> QueueEmpty {
+    let text = match (mode, all_repos) {
+        (Mode::Review, _) if can_load_more => {
+            return QueueEmpty {
+                text: "Nothing in the PRs loaded so far needs your review.",
+                action: Some(EmptyAction::LoadMore),
+            }
+        }
+        (Mode::Review, false) => {
+            return QueueEmpty {
+                text: "No one has asked for your review, and no open PR here is waiting for a \
+                       reviewer.",
+                action: Some(EmptyAction::ShowAllRepositories),
+            }
+        }
+        (Mode::Review, true) => {
+            "No one has asked for your review, and no PR involving you is waiting for a reviewer."
+        }
         (Mode::Authored, true) => "No open pull requests involve you",
         (Mode::Authored, false) => "You have no open PRs",
-        (Mode::Review, _) => "No requested or available reviews in this result set",
         (Mode::AllOpen, true) => all_open_needs_repository(),
         (Mode::AllOpen, false) => "No open PRs in this repository",
+    };
+    QueueEmpty { text, action: None }
+}
+
+/// The empty body when the search matched none of the loaded PRs and GitHub
+/// may have more: a statement about what is loaded, not about the
+/// repository. `filter` is the search as the reader wrote it.
+pub fn no_loaded_match_text(filter: &str) -> String {
+    format!("No loaded PRs match {filter} — clear the search or load more.")
+}
+
+/// Why fetching waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseReason {
+    /// GitHub refused a request as rate limited.
+    RateLimited,
+    /// The hourly budget is down to the reserve kept for the person's own
+    /// `gh` and `git` use; `remaining` points are left.
+    BudgetLow { remaining: u32 },
+}
+
+/// The one sentence for a fetch that waits, with how long: the desktop's
+/// status line and empty board, the CLI's `watch` stream. Front ends that
+/// redraw it pass the time left, so it counts down.
+pub fn paused_text(reason: PauseReason, retry_in_secs: u64) -> String {
+    let wait = human_duration(retry_in_secs);
+    match reason {
+        PauseReason::RateLimited => format!("GitHub rate limited — retrying in {wait}"),
+        PauseReason::BudgetLow { remaining } => {
+            format!("GitHub API budget low ({remaining} left) — retrying in {wait}")
+        }
     }
+}
+
+/// A failed check that will be tried again: `message` is the error.
+pub fn retrying_text(message: &str, retry_in_secs: u64) -> String {
+    format!("{message} — retrying in {}", human_duration(retry_in_secs))
 }
 
 /// All open's empty body when GitHub answered the whole filter, or every open
@@ -502,6 +658,49 @@ pub fn queue_sync_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selection_s_footer_says_what_happened_and_counts_in_prs() {
+        assert_eq!(selected_count_text(3), "3 selected");
+        assert_eq!(
+            selection_done_text(SelectionDone::Opened {
+                opened: 3,
+                selected: 3
+            }),
+            "Opened 3 PRs on GitHub"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::Opened {
+                opened: MAX_OPEN_TOGETHER,
+                selected: 23
+            }),
+            "Opened the first 10 of 23 PRs on GitHub"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::UrlsCopied(1)),
+            "PR URL copied"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::UrlsCopied(4)),
+            "4 PR URLs copied"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::Watching(1)),
+            "Watching 1 PR"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::Unwatched(2)),
+            "Stopped watching 2 PRs"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::Snoozed(2)),
+            "Snoozed 2 PRs"
+        );
+        assert_eq!(
+            selection_done_text(SelectionDone::SnoozesCancelled(2)),
+            "Snooze cancelled for 2 PRs"
+        );
+    }
 
     #[test]
     fn the_token_reach_notes_stand_alone_one_per_kind_of_token() {
@@ -678,6 +877,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: String::new(),
         }
     }
@@ -697,14 +897,12 @@ mod tests {
             row(Category::Done, false),
             row(Category::Draft, true),
         ];
-        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-            let counted: Vec<_> = rows
-                .iter()
-                .filter(|row| row_needs_you(mode, row))
-                .map(|row| row.id.as_str())
-                .collect();
-            assert_eq!(counted, ["PR_Action_true", "PR_Todo_false"], "{mode:?}");
-        }
+        let counted: Vec<_> = rows
+            .iter()
+            .filter(|row| row_needs_you(row))
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(counted, ["PR_Action_true", "PR_Todo_false"]);
         assert!(needs_you_here(Mode::Authored, Category::Action));
         assert!(needs_you_here(Mode::Review, Category::Todo));
         assert!(!needs_you_here(Mode::Review, Category::Available));
@@ -720,14 +918,11 @@ mod tests {
             row(Category::Todo, false),
             row(Category::Available, false),
         ];
-        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-            assert_eq!(need_you_count(mode, &rows, |_| false), 2, "{mode:?}");
-            assert_eq!(
-                need_you_count(mode, &rows, |row| row.category == Category::Todo),
-                1,
-                "{mode:?}"
-            );
-        }
+        assert_eq!(need_you_count(&rows, |_| false), 2);
+        assert_eq!(
+            need_you_count(&rows, |row| row.category == Category::Todo),
+            1
+        );
     }
 
     /// Once both views have loaded, the badge is the total, but the header
@@ -970,12 +1165,66 @@ mod tests {
         );
         assert_eq!(
             queue_empty_text(Mode::Review, true),
-            "No requested or available reviews in this result set",
+            "No one has asked for your review, and no PR involving you is waiting for a reviewer.",
             "an empty review queue must never read as having no PRs at all"
         );
+    }
+
+    #[test]
+    fn an_empty_review_queue_says_what_it_looked_for_and_offers_the_next_step() {
         assert_eq!(
-            queue_empty_text(Mode::Review, false),
-            queue_empty_text(Mode::Review, true)
+            queue_empty(Mode::Review, false, false),
+            QueueEmpty {
+                text: "No one has asked for your review, and no open PR here is waiting for a \
+                       reviewer.",
+                action: Some(EmptyAction::ShowAllRepositories),
+            }
+        );
+        assert_eq!(queue_empty(Mode::Review, true, false).action, None);
+        for all_repos in [false, true] {
+            assert_eq!(
+                queue_empty(Mode::Review, all_repos, true),
+                QueueEmpty {
+                    text: "Nothing in the PRs loaded so far needs your review.",
+                    action: Some(EmptyAction::LoadMore),
+                },
+                "a page of candidates that all have reviewers is not the whole answer"
+            );
+        }
+        assert_eq!(
+            EmptyAction::ShowAllRepositories.label(),
+            "Show all repositories"
+        );
+        assert_eq!(EmptyAction::LoadMore.label(), "Load more");
+        assert_eq!(queue_empty(Mode::Authored, false, true).action, None);
+    }
+
+    #[test]
+    fn the_view_is_called_involving_me_only_across_all_repositories() {
+        assert_eq!(view_title(Mode::Authored, false, false), "My PRs");
+        assert_eq!(view_title(Mode::Authored, true, false), "Involving me");
+        assert_eq!(view_title(Mode::Authored, true, true), "My PRs");
+        assert_eq!(view_title(Mode::Review, true, false), "Review queue");
+        assert_eq!(view_title(Mode::AllOpen, false, false), "All open");
+    }
+
+    #[test]
+    fn a_paused_fetch_says_why_and_for_how_long() {
+        assert_eq!(
+            paused_text(PauseReason::RateLimited, 240),
+            "GitHub rate limited — retrying in 4m"
+        );
+        assert_eq!(
+            paused_text(PauseReason::BudgetLow { remaining: 42 }, 900),
+            "GitHub API budget low (42 left) — retrying in 15m"
+        );
+        assert_eq!(
+            retrying_text("network unreachable", 60),
+            "network unreachable — retrying in 1m"
+        );
+        assert_eq!(
+            no_loaded_match_text("label:bug"),
+            "No loaded PRs match label:bug — clear the search or load more."
         );
     }
 

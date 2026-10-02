@@ -53,6 +53,81 @@ pub struct Notice {
     pub body: String,
 }
 
+/// Whether a change becomes a notification, the desktop's rule: never while
+/// notifications are off, the PR is snoozed or the person is looking at it
+/// (`focused`); otherwise when it is watched, or when it is your own PR
+/// that has just started needing you (`needed_action_before` from the
+/// observation) and `all_needs_action` is on. Ask it after your own
+/// first-sighting rule and only for a semantic change with a notice.
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub fn should_notify(
+    row: PullRequest,
+    me: String,
+    notifications: bool,
+    all_needs_action: bool,
+    watched: bool,
+    snoozed: bool,
+    focused: bool,
+    needed_action_before: Option<bool>,
+) -> bool {
+    core_attention::should_notify(
+        &core_attention::NotifyCase {
+            notifications,
+            all_needs_action,
+            me: &me,
+            watched,
+            snoozed,
+            focused,
+            needed_action_before,
+        },
+        &row.into_row(),
+    )
+}
+
+/// A watched PR's notification when it was merged or closed or GitHub no
+/// longer returns it: "Watched PR merged" / "acme/widgets #7 · Fix cache".
+/// `None` while it is open or its status is unknown.
+#[uniffi::export]
+pub fn watched_status_notice(
+    status: WatchStatus,
+    repo: String,
+    number: u64,
+    title: String,
+) -> Option<WatchedNotice> {
+    let status = match status {
+        WatchStatus::Open | WatchStatus::Unknown => return None,
+        WatchStatus::Closed => core_board::TrackedPrStatus::Closed,
+        WatchStatus::Merged => core_board::TrackedPrStatus::Merged,
+        WatchStatus::Inaccessible => core_board::TrackedPrStatus::Inaccessible,
+    };
+    core_attention::watched_status_notice(status, &repo, number, &title).map(|(heading, body)| {
+        WatchedNotice {
+            title: heading.to_owned(),
+            body,
+        }
+    })
+}
+
+/// A watched PR's state notification.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WatchedNotice {
+    pub title: String,
+    pub body: String,
+}
+
+/// What `AttentionStore.applyTrackedStatus` changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct TrackedStatusUpdate {
+    /// The watch's status changed: news, unless `was_snoozed`.
+    pub news: bool,
+    /// A snooze held the PR when the status arrived; snoozed PRs never
+    /// notify, even when the merge or close ends the snooze.
+    pub was_snoozed: bool,
+    /// The PR merged or closed and its snooze ended: save the store.
+    pub snooze_ended: bool,
+}
+
 /// What observing a PR did to the store.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum Observed {
@@ -422,6 +497,19 @@ impl AttentionStore {
         self.lock()
             .update_watch_status(&pr_id, status.into())
             .is_some()
+    }
+
+    /// What GitHub said about a followed PR, watched or snoozed, by the
+    /// desktop's rule: the watch takes the status, and a snooze on a PR that
+    /// merged or closed ends with it. Notify only when `news` and not
+    /// `wasSnoozed` (then ask `shouldNotify` / `watchedStatusNotice`).
+    pub fn apply_tracked_status(&self, pr_id: String, status: WatchStatus) -> TrackedStatusUpdate {
+        let update = self.lock().apply_tracked_status(&pr_id, status.into());
+        TrackedStatusUpdate {
+            news: update.changed_from.is_some(),
+            was_snoozed: update.was_snoozed,
+            snooze_ended: update.snooze_ended,
+        }
     }
 
     // -- Snooze -----------------------------------------------------------

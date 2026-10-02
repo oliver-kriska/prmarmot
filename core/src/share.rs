@@ -32,6 +32,10 @@ pub struct SharePayload {
     pub plain: String,
 }
 
+/// The heading of a copied selection, which belongs to no one section:
+/// "Pull requests (3) · acme/widgets".
+pub const SELECTION_TITLE: &str = "Pull requests";
+
 /// Render one group (`title`, e.g. "Awaiting review") in `format`. Rows keep
 /// the order given; the caller passes them in board display order.
 pub fn share_group(
@@ -427,6 +431,7 @@ mod tests {
             created_at: String::new(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: String::new(),
         }
     }

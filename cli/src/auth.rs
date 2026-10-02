@@ -159,7 +159,10 @@ fn poll_until_signed_in(
                 return Ok(None);
             }
             DevicePoll::Denied => {
-                eprintln!("prmarmot-cli: the request was declined at GitHub");
+                eprintln!(
+                    "prmarmot-cli: {}",
+                    prmarmot_core::status::device_request_declined_text()
+                );
                 return Ok(None);
             }
         }
@@ -170,8 +173,8 @@ fn poll_until_signed_in(
 
 fn store(settings: &AuthSettings, stored: &StoredAuth, login: &str, how: &str) -> Outcome {
     let store = token_store(settings.store);
-    if let Err(message) = store.save(stored) {
-        return Outcome::Failed(GhError::Network(message));
+    if let Err(error) = store.save(stored) {
+        return Outcome::Failed(error.into());
     }
     println!("Signed in to {} as {login} with {how}.", settings.host);
     println!("Token stored in {}.", store.describe());
@@ -289,15 +292,15 @@ fn status(settings: &AuthSettings, agent: &str) -> Outcome {
 fn logout(settings: &AuthSettings) -> Outcome {
     let store = token_store(settings.store);
     match store.load(&settings.host) {
-        Err(message) => return Outcome::Failed(GhError::Network(message)),
+        Err(error) => return Outcome::Failed(error.into()),
         Ok(None) => {
             println!("No stored token for {}.", settings.host);
             return Outcome::Ok;
         }
         Ok(Some(_)) => {}
     }
-    if let Err(message) = store.delete(&settings.host) {
-        return Outcome::Failed(GhError::Network(message));
+    if let Err(error) = store.delete(&settings.host) {
+        return Outcome::Failed(error.into());
     }
     println!("Removed the stored token for {}.", settings.host);
     // Honest wording: revoking the grant at GitHub needs the client secret we

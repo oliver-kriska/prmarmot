@@ -19,16 +19,20 @@ use crate::github::query::{
     parse_alias_response, parse_pull_request_id, parse_review_response, parse_search_response,
     parse_tracked_response, pull_request_id_query, requested_ids, scope_repository_error,
     search_string, with_page_size, with_requested_ids, with_scope_repository, with_tracked_nodes,
-    RawPr, ReviewNode, RollupContexts, StateCount, PAGE_SIZE, PR_SEARCH_PAGE_QUERY,
-    PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
+    with_tracked_status_nodes, RawPr, ReviewNode, RollupContexts, StateCount, PAGE_SIZE,
+    PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
     REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY,
     TRACKED_STATUS_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;
+pub use crate::github::states::{Mergeable, PrState, ReviewDecision, ReviewVerdict};
 use crate::github::{GhError, GithubTransport};
 use crate::pickup::pickup_since;
 use crate::search::RemoteFilter;
 use crate::size::ChangeSize;
+
+mod fetch;
+pub use fetch::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -152,7 +156,7 @@ impl ReviewState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewSummary {
     pub login: Option<String>,
-    pub state: String,
+    pub state: ReviewVerdict,
     pub submitted_at: Option<String>,
 }
 
@@ -353,7 +357,7 @@ pub struct BoardRow {
     /// The repository allows rebase merges and no other method, so a PR that
     /// cannot be rebased cannot be merged at all.
     pub rebase_only: bool,
-    pub review_decision: Option<String>,
+    pub review_decision: Option<ReviewDecision>,
     pub review_state: ReviewState,
     /// Requested reviewers: logins and team slugs.
     pub requested: Vec<String>,
@@ -362,7 +366,7 @@ pub struct BoardRow {
     pub reviews: Vec<ReviewSummary>,
     /// The viewer's standing review state (`APPROVED`, `COMMENTED`, …), or
     /// `NONE`; see [`standing_review`].
-    pub my_review: Option<String>,
+    pub my_review: Option<ReviewVerdict>,
     pub unresolved: usize,
     /// The PR has more review threads than the newest 100 that were read, so
     /// `unresolved` counts only those and may be low ("5+").
@@ -378,6 +382,9 @@ pub struct BoardRow {
     /// Change counts, `None` when GitHub did not report them; see
     /// [`crate::size`].
     pub size: Option<ChangeSize>,
+    /// The latest commit's checks counted by state; `None` when GitHub
+    /// reported no counts or the token may not read them.
+    pub checks: Option<CheckCounts>,
     pub note: String,
 }
 
@@ -450,6 +457,22 @@ impl BoardPagination {
         self.small_pages
     }
 
+    /// Cursors for a new search of the same view (All open's filter changed),
+    /// keeping [`Self::small_pages`]: the repository GitHub could not answer
+    /// in time is the same one.
+    pub fn restarted(&self) -> Self {
+        Self {
+            small_pages: self.small_pages,
+            ..Self::default()
+        }
+    }
+
+    /// GitHub gave up on this view even at [`SMALL_PAGE_SIZE`] rows; keep
+    /// asking for small pages rather than starting at full ones again.
+    pub fn mark_small_pages(&mut self) {
+        self.small_pages = true;
+    }
+
     fn page_size(&self) -> u8 {
         if self.small_pages {
             SMALL_PAGE_SIZE
@@ -513,6 +536,34 @@ pub enum TrackedPrStatus {
     Inaccessible,
 }
 
+/// The PRs a refresh follows besides its search results (watched and snoozed
+/// ones), in the same request.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Tracked<'a> {
+    /// Full rows, for PRs off the board whose changes are observed.
+    pub rows: &'a [String],
+    /// State only (open, closed, merged): PRs whose row the board already
+    /// holds, and watches known to be closed. A small fraction of the cost.
+    pub status: &'a [String],
+}
+
+impl<'a> Tracked<'a> {
+    /// Every id with its full row.
+    pub fn rows(ids: &'a [String]) -> Self {
+        Self {
+            rows: ids,
+            status: &[],
+        }
+    }
+}
+
+/// At most this many followed PRs ride a [`SMALL_PAGE_SIZE`] request with
+/// their full rows; the rest are asked for their state only, and the rotation
+/// brings their rows back on a later refresh. Without it, a view GitHub could
+/// not answer at 60 rows could carry 30 search results plus 50 full tracked
+/// PRs, more than the request that timed out.
+pub const SMALL_PAGE_TRACKED_ROWS: usize = 15;
+
 /// Tracked PRs on their own, without a board search.
 #[derive(Debug, Clone)]
 pub struct TrackedFetch {
@@ -521,744 +572,23 @@ pub struct TrackedFetch {
     pub access: AccessGaps,
 }
 
-/// One bounded `nodes(ids:)` request for specific PRs, in any repository: what
-/// became of PRs that left a view, or one PR followed on its own.
-pub fn fetch_tracked(
-    transport: &dyn GithubTransport,
-    ids: &[String],
-    me: &str,
-    cfg: &BoardConfig,
-) -> Result<TrackedFetch, GhError> {
-    if ids.is_empty() {
-        return Ok(TrackedFetch {
-            tracked: Vec::new(),
-            rate: None,
-            access: AccessGaps::default(),
-        });
-    }
-    let query = with_tracked_nodes(TRACKED_ONLY_QUERY)?;
-    let mut body = transport.graphql_with_ids(&query, &[("who", me)], ids)?;
-    let access = tolerate_access_errors(&mut body);
-    let rate = parse_tracked_response(&body)?;
-    Ok(TrackedFetch {
-        tracked: derive_tracked(&body, ids, "", me, cfg),
-        rate,
-        access,
-    })
-}
-
-/// What became of specific PRs, state only: whether each is open, closed,
-/// merged, or no longer visible. One request of about a point for up to 100
-/// ids, for callers that need no rows (the CLI's removed PRs).
-pub fn fetch_tracked_status(
-    transport: &dyn GithubTransport,
-    ids: &[String],
-) -> Result<TrackedFetch, GhError> {
-    if ids.is_empty() {
-        return Ok(TrackedFetch {
-            tracked: Vec::new(),
-            rate: None,
-            access: AccessGaps::default(),
-        });
-    }
-    let mut body = transport.graphql_with_ids(TRACKED_STATUS_QUERY, &[], ids)?;
-    let access = tolerate_access_errors(&mut body);
-    let rate = parse_tracked_response(&body)?;
-    let nodes = body
-        .pointer("/data/tracked")
-        .and_then(serde_json::Value::as_array);
-    let tracked = ids
-        .iter()
-        .enumerate()
-        .map(|(index, requested_id)| {
-            let node = nodes
-                .and_then(|nodes| nodes.get(index))
-                .filter(|node| node.get("state").is_some());
-            let status = match node {
-                None => TrackedPrStatus::Inaccessible,
-                Some(node)
-                    if node.get("merged").and_then(serde_json::Value::as_bool) == Some(true) =>
-                {
-                    TrackedPrStatus::Merged
-                }
-                Some(node)
-                    if node.get("state").and_then(serde_json::Value::as_str) == Some("CLOSED") =>
-                {
-                    TrackedPrStatus::Closed
-                }
-                Some(_) => TrackedPrStatus::Open,
-            };
-            TrackedPr {
-                pr_id: requested_id.clone(),
-                status,
-                row: None,
-            }
-        })
-        .collect();
-    Ok(TrackedFetch {
-        tracked,
-        rate,
-        access,
-    })
-}
-
-/// The node id of `owner/name#number`, for [`fetch_tracked`].
-pub fn resolve_pull_request_id(
-    transport: &dyn GithubTransport,
-    repo: &str,
-    number: u64,
-) -> Result<String, GhError> {
-    let Some((owner, name)) = repo.split_once('/') else {
-        return Err(GhError::RepositoryNotFound(repo.to_owned()));
-    };
-    let body = transport.graphql(
-        &pull_request_id_query(number),
-        &[("owner", owner), ("name", name)],
-    )?;
-    parse_pull_request_id(&body, repo, number)
-}
-
-/// Fetch a complete board flow. Authored mode preserves the legacy single
-/// search; review mode combines requested and unrequested candidates in one
-/// GraphQL request, with requested rows first and deduplicated.
-pub fn fetch_board(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-) -> Result<BoardFetch, GhError> {
-    fetch_board_scoped(
-        transport,
-        mode,
-        &BoardScope::Repository(repo.to_owned()),
-        me,
-        cfg,
-    )
-}
-
-/// Fetch a queue for either one repository or every repository involving the
-/// authenticated user. Both variants retain the same one-operation contract.
-pub fn fetch_board_scoped(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-) -> Result<BoardFetch, GhError> {
-    fetch_board_scoped_with_tracked(transport, mode, scope, me, cfg, &[], false)
-}
-
-/// [`fetch_board_scoped`] plus tracked PRs. `small_pages` is the previous
-/// fetch's [`BoardPagination::small_pages`] for the same view (false for the
-/// first): once GitHub has given up on a full page, the view keeps asking for
-/// [`SMALL_PAGE_SIZE`] rows.
-pub fn fetch_board_scoped_with_tracked(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-    tracked_ids: &[String],
-    small_pages: bool,
-) -> Result<BoardFetch, GhError> {
-    fetch_scoped(
-        transport,
-        mode,
-        scope,
-        me,
-        cfg,
-        tracked_ids,
-        &RemoteFilter::default(),
-        small_pages,
-    )
-}
-
-/// All open for one repository, with `filter`'s labels and authors matched by
-/// GitHub rather than among the loaded rows, so the count, the first page, and
-/// Load more all cover the whole repository. Same one-operation contract and
-/// bounds as the other views: [`PAGE_SIZE`] rows a page (or
-/// [`SMALL_PAGE_SIZE`], see [`fetch_board_scoped_with_tracked`]), user-invoked
-/// Load more, at most [`MAX_PAGES_PER_ALIAS`] pages.
-pub fn fetch_all_open(
-    transport: &dyn GithubTransport,
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-    filter: &RemoteFilter,
-    tracked_ids: &[String],
-    small_pages: bool,
-) -> Result<BoardFetch, GhError> {
-    fetch_scoped(
-        transport,
-        Mode::AllOpen,
-        &BoardScope::Repository(repo.to_owned()),
-        me,
-        cfg,
-        tracked_ids,
-        filter,
-        small_pages,
-    )
-}
-
-/// One page-one operation, and when GitHub gives up on a full page (see
-/// [`GhError::is_query_timeout`]) the same operation once more with
-/// [`SMALL_PAGE_SIZE`] rows. Still one request per refresh when GitHub
-/// answers; two when it did not, and then the view remembers.
-#[allow(clippy::too_many_arguments)]
-fn fetch_scoped(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-    tracked_ids: &[String],
-    filter: &RemoteFilter,
-    small_pages: bool,
-) -> Result<BoardFetch, GhError> {
-    if !small_pages {
-        match fetch_scoped_sized(
-            transport,
-            mode,
-            scope,
-            me,
-            cfg,
-            tracked_ids,
-            filter,
-            PAGE_SIZE,
-        ) {
-            Err(error) if error.is_query_timeout() => {}
-            fetched => return fetched,
-        }
-    }
-    let mut fetched = fetch_scoped_sized(
-        transport,
-        mode,
-        scope,
-        me,
-        cfg,
-        tracked_ids,
-        filter,
-        SMALL_PAGE_SIZE,
-    )?;
-    fetched.pagination.small_pages = true;
-    Ok(fetched)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn fetch_scoped_sized(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-    tracked_ids: &[String],
-    filter: &RemoteFilter,
-    first: u8,
-) -> Result<BoardFetch, GhError> {
-    if mode == Mode::AllOpen && scope.is_all() {
-        return Err(GhError::NeedsRepository);
-    }
-    let repo = scope.fallback_repo();
-    let scope_repository = scope.repository().and_then(|repo| repo.split_once('/'));
-    let initial_operation = |base: &str| -> Result<String, GhError> {
-        let mut query = with_page_size(base, first);
-        if scope_repository.is_some() {
-            query = with_scope_repository(&query)?;
-        }
-        if !tracked_ids.is_empty() {
-            query = with_tracked_nodes(&query)?;
-        }
-        Ok(query)
-    };
-    let with_scope_variables = |mut variables: Vec<(&'static str, String)>| {
-        if let Some((owner, name)) = scope_repository {
-            variables.push(("scopeOwner", owner.to_owned()));
-            variables.push(("scopeName", name.to_owned()));
-        }
-        variables
-    };
-    let request = |query: &str, variables: &[(&'static str, String)]| {
-        let variables: Vec<(&str, &str)> = variables
-            .iter()
-            .map(|(key, value)| (*key, value.as_str()))
-            .collect();
-        let mut body = transport.graphql_with_ids(query, &variables, tracked_ids)?;
-        if let Some(error) = scope_repository_error(&body, repo) {
-            return Err(error);
-        }
-        let access = tolerate_access_errors(&mut body);
-        Ok((body, access))
-    };
-    match mode {
-        Mode::Authored => {
-            let search = scope_search_string(scope, mode, me, cfg);
-            let (body, access) = request(
-                &initial_operation(PR_SEARCH_QUERY)?,
-                &with_scope_variables(vec![("q", search), ("who", me.to_owned())]),
-            )?;
-            let truncated = body
-                .pointer("/data/search/pageInfo/hasNextPage")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let (prs, rate) = parse_search_response(&body)?;
-            let pagination = BoardPagination {
-                authored: AliasCursor::from_page(page_info(&body, "search")),
-                ..Default::default()
-            };
-            Ok(BoardFetch {
-                rows: if scope.is_all() {
-                    derive_involving_rows(&prs, repo, me, cfg)
-                } else {
-                    derive_rows(&prs, mode, repo, me, cfg)
-                },
-                rate,
-                truncated,
-                pagination,
-                tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
-                access,
-                total: issue_count(&body, "search"),
-            })
-        }
-        Mode::AllOpen => {
-            let search = all_open_search_string(repo, &filter.qualifiers());
-            let (body, access) = request(
-                &initial_operation(&with_requested_ids(PR_SEARCH_QUERY)?)?,
-                &with_scope_variables(vec![
-                    ("q", search.clone()),
-                    // The review queue's own search, unfiltered: a review
-                    // asked of you stays one whatever the chips say.
-                    ("requested", search_string(Mode::Review, repo, me)),
-                    ("who", me.to_owned()),
-                ]),
-            )?;
-            let (prs, rate) = parse_search_response(&body)?;
-            let page = page_info(&body, "search");
-            let requested = requested_ids(&body);
-            Ok(BoardFetch {
-                rows: derive_all_open_rows(&prs, repo, me, cfg, &requested),
-                rate,
-                truncated: page.has_next_page,
-                pagination: BoardPagination {
-                    authored: AliasCursor::from_page(page),
-                    search: Some(search),
-                    requested_ids: requested,
-                    ..Default::default()
-                },
-                tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
-                access,
-                total: issue_count(&body, "search"),
-            })
-        }
-        Mode::Review => {
-            let requested_search = scope_search_string(scope, mode, me, cfg);
-            let available_search = scope_available_search_string(scope, me);
-            let (body, access) = request(
-                &initial_operation(REVIEW_SEARCH_QUERY)?,
-                &with_scope_variables(vec![
-                    ("requested", requested_search),
-                    ("available", available_search),
-                    ("who", me.to_owned()),
-                ]),
-            )?;
-            let parsed = parse_review_response(&body)?;
-            let mut seen = HashSet::new();
-            let mut rows = Vec::new();
-
-            for pr in parsed.requested.iter().filter(|pr| !is_own_pr(pr, me)) {
-                if seen.insert(pr_identity(pr, repo)) {
-                    rows.push(derive_review_row(
-                        pr,
-                        repo,
-                        me,
-                        cfg,
-                        QueueProvenance::Requested,
-                    ));
-                }
-            }
-            for pr in parsed
-                .available
-                .iter()
-                .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
-            {
-                if seen.insert(pr_identity(pr, repo)) {
-                    rows.push(derive_review_row(
-                        pr,
-                        repo,
-                        me,
-                        cfg,
-                        QueueProvenance::Available,
-                    ));
-                }
-            }
-            let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
-            rows.truncate(MAX_EXPANDED_BOARD_ROWS);
-            rows.sort_by_key(|r| (r.category.rank(), r.number));
-            Ok(BoardFetch {
-                rows,
-                rate: parsed.rate,
-                truncated: parsed.truncated || overflow,
-                pagination: BoardPagination {
-                    requested: AliasCursor::from_page(parsed.requested_page),
-                    available: AliasCursor::from_page(parsed.available_page),
-                    ..Default::default()
-                },
-                tracked: derive_tracked(&body, tracked_ids, repo, me, cfg),
-                access,
-                total: None,
-            })
-        }
-    }
-}
-
-fn derive_tracked(
-    body: &serde_json::Value,
-    requested_ids: &[String],
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-) -> Vec<TrackedPr> {
-    let nodes = body
-        .pointer("/data/tracked")
-        .and_then(serde_json::Value::as_array);
-    requested_ids
-        .iter()
-        .enumerate()
-        .map(|(index, requested_id)| {
-            let raw = nodes
-                .and_then(|nodes| nodes.get(index))
-                .filter(|value| !value.is_null())
-                .and_then(|value| serde_json::from_value::<RawPr>(value.clone()).ok());
-            match raw {
-                None => TrackedPr {
-                    pr_id: requested_id.clone(),
-                    status: TrackedPrStatus::Inaccessible,
-                    row: None,
-                },
-                Some(raw) => {
-                    let status = if raw.merged {
-                        TrackedPrStatus::Merged
-                    } else if raw.state.as_deref() == Some("CLOSED") {
-                        TrackedPrStatus::Closed
-                    } else {
-                        TrackedPrStatus::Open
-                    };
-                    TrackedPr {
-                        pr_id: pr_identity(&raw, repo),
-                        status,
-                        // Someone else's PR reads as it does in Involving me.
-                        row: Some(derive_involving_row(&raw, repo, me, cfg)),
-                    }
-                }
-            }
-        })
-        .collect()
-}
-
-/// Fetch one user-requested page for each alias that still has a usable cursor.
-/// Exhausted aliases are omitted from the GraphQL operation. The returned value
-/// is independent, so callers can retain all prior rows/cursors on any error.
-pub fn fetch_more_board(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-    current: &BoardFetch,
-) -> Result<BoardFetch, GhError> {
-    fetch_more_board_scoped(
-        transport,
-        mode,
-        &BoardScope::Repository(repo.to_owned()),
-        me,
-        cfg,
-        current,
-    )
-}
-
-pub fn fetch_more_board_scoped(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-    current: &BoardFetch,
-) -> Result<BoardFetch, GhError> {
-    let first = current.pagination.page_size();
-    match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
-        // Same fallback as page one: the cursor stays valid at any page size.
-        Err(error) if error.is_query_timeout() && !current.pagination.small_pages => {
-            let mut fetched =
-                fetch_more_sized(transport, mode, scope, me, cfg, current, SMALL_PAGE_SIZE)?;
-            fetched.pagination.small_pages = true;
-            Ok(fetched)
-        }
-        fetched => fetched,
-    }
-}
-
-fn fetch_more_sized(
-    transport: &dyn GithubTransport,
-    mode: Mode,
-    scope: &BoardScope,
-    me: &str,
-    cfg: &BoardConfig,
-    current: &BoardFetch,
-    first: u8,
-) -> Result<BoardFetch, GhError> {
-    let repo = scope.fallback_repo();
-    let mut next = current.clone();
-    match mode {
-        Mode::Authored => {
-            if !next.pagination.authored.can_load() {
-                return Ok(next);
-            }
-            let search = scope_search_string(scope, mode, me, cfg);
-            let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let mut body = transport.graphql(
-                &with_page_size(PR_SEARCH_PAGE_QUERY, first),
-                &[("q", &search), ("after", &cursor), ("who", me)],
-            )?;
-            next.access = next.access.plus(tolerate_access_errors(&mut body));
-            let (prs, rate) = parse_search_response(&body)?;
-            next.pagination.authored.update(page_info(&body, "search"));
-            next.total = issue_count(&body, "search").or(next.total);
-            if scope.is_all() {
-                merge_involving(&mut next.rows, &prs, repo, me, cfg);
-            } else {
-                merge_authored(&mut next.rows, &prs, repo, me, cfg);
-            }
-            next.rate = rate;
-        }
-        Mode::AllOpen => {
-            let Some(search) = next.pagination.search.clone() else {
-                return Ok(next);
-            };
-            if !next.pagination.authored.can_load() {
-                return Ok(next);
-            }
-            let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let mut body = transport.graphql(
-                &with_page_size(PR_SEARCH_PAGE_QUERY, first),
-                &[("q", &search), ("after", &cursor), ("who", me)],
-            )?;
-            next.access = next.access.plus(tolerate_access_errors(&mut body));
-            let (prs, rate) = parse_search_response(&body)?;
-            next.pagination.authored.update(page_info(&body, "search"));
-            next.total = issue_count(&body, "search").or(next.total);
-            let requested = std::mem::take(&mut next.pagination.requested_ids);
-            merge_all_open(&mut next.rows, &prs, repo, me, cfg, &requested);
-            next.pagination.requested_ids = requested;
-            next.rate = rate;
-        }
-        Mode::Review => {
-            let requested = next.pagination.requested.can_load();
-            let available = next.pagination.available.can_load();
-            if !requested && !available {
-                return Ok(next);
-            }
-            let requested_search = scope_search_string(scope, mode, me, cfg);
-            let available_search = scope_available_search_string(scope, me);
-            let mut requested_prs = Vec::new();
-            let mut available_prs = Vec::new();
-            if requested && available {
-                let rc = next.pagination.requested.end_cursor.clone().unwrap();
-                let ac = next.pagination.available.end_cursor.clone().unwrap();
-                let mut body = transport.graphql(
-                    &with_page_size(REVIEW_BOTH_PAGE_QUERY, first),
-                    &[
-                        ("requested", &requested_search),
-                        ("requestedAfter", &rc),
-                        ("available", &available_search),
-                        ("availableAfter", &ac),
-                        ("who", me),
-                    ],
-                )?;
-                next.access = next.access.plus(tolerate_access_errors(&mut body));
-                let parsed = parse_review_response(&body)?;
-                requested_prs = parsed.requested;
-                available_prs = parsed.available;
-                next.pagination.requested.update(parsed.requested_page);
-                next.pagination.available.update(parsed.available_page);
-                next.rate = parsed.rate;
-            } else {
-                let (query, alias, search, cursor) = if requested {
-                    (
-                        REVIEW_REQUESTED_PAGE_QUERY,
-                        "requested",
-                        &requested_search,
-                        next.pagination.requested.end_cursor.clone().unwrap(),
-                    )
-                } else {
-                    (
-                        REVIEW_AVAILABLE_PAGE_QUERY,
-                        "available",
-                        &available_search,
-                        next.pagination.available.end_cursor.clone().unwrap(),
-                    )
-                };
-                let mut body = transport.graphql(
-                    &with_page_size(query, first),
-                    &[(alias, search), ("after", &cursor), ("who", me)],
-                )?;
-                next.access = next.access.plus(tolerate_access_errors(&mut body));
-                let (prs, page, rate) = parse_alias_response(&body, alias)?;
-                if requested {
-                    requested_prs = prs;
-                    next.pagination.requested.update(page);
-                } else {
-                    available_prs = prs;
-                    next.pagination.available.update(page);
-                }
-                next.rate = rate;
-            }
-            merge_review(
-                &mut next.rows,
-                &requested_prs,
-                &available_prs,
-                repo,
-                me,
-                cfg,
-            );
-        }
-    }
-    next.truncated = next.pagination.truncated(mode);
-    Ok(next)
-}
-
-fn scope_search_string(scope: &BoardScope, mode: Mode, me: &str, cfg: &BoardConfig) -> String {
-    match scope {
-        BoardScope::AllRepositories if mode == Mode::Authored && cfg.authored_only => {
-            global_authored_search_string(me)
-        }
-        BoardScope::AllRepositories => global_search_string(mode, me),
-        BoardScope::Repository(repo) => crate::github::query::search_string(mode, repo, me),
-    }
-}
-
-fn scope_available_search_string(scope: &BoardScope, me: &str) -> String {
-    match scope {
-        BoardScope::AllRepositories => global_available_search_string(me),
-        BoardScope::Repository(repo) => available_search_string(repo, me),
-    }
-}
-
-fn merge_authored(
-    rows: &mut Vec<BoardRow>,
-    prs: &[RawPr],
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-) {
-    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
-    for pr in prs {
-        by_id.insert(
-            pr_identity(pr, repo),
-            derive_row(pr, Mode::Authored, repo, me, cfg),
-        );
-    }
-    *rows = by_id.into_values().collect();
-    rows.sort_by(|a, b| {
-        (a.category.rank(), std::cmp::Reverse(a.number), &a.id).cmp(&(
-            b.category.rank(),
-            std::cmp::Reverse(b.number),
-            &b.id,
-        ))
-    });
-    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
-}
-
-fn merge_involving(
-    rows: &mut Vec<BoardRow>,
-    prs: &[RawPr],
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-) {
-    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
-    for pr in prs {
-        by_id.insert(
-            pr_identity(pr, repo),
-            derive_involving_row(pr, repo, me, cfg),
-        );
-    }
-    *rows = by_id.into_values().collect();
-    rows.sort_by(|a, b| {
-        (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
-            b.category.rank(),
-            std::cmp::Reverse(&b.updated_at),
-            &b.id,
-        ))
-    });
-    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
-}
-
-fn merge_all_open(
-    rows: &mut Vec<BoardRow>,
-    prs: &[RawPr],
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-    requested: &[String],
-) {
-    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
-    for pr in prs {
-        by_id.insert(
-            pr_identity(pr, repo),
-            derive_all_open_row(pr, repo, me, cfg, requested),
-        );
-    }
-    *rows = by_id.into_values().collect();
-    sort_most_recently_updated(rows);
-    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize);
-}
-
 /// All open's order: the search's own, most recently updated first, so a Load
 /// more page lands below what is already on screen.
 fn sort_most_recently_updated(rows: &mut [BoardRow]) {
-    rows.sort_by(|a, b| {
-        (
-            std::cmp::Reverse(&a.updated_at),
-            std::cmp::Reverse(a.number),
-            &a.id,
-        )
-            .cmp(&(
-                std::cmp::Reverse(&b.updated_at),
-                std::cmp::Reverse(b.number),
-                &b.id,
-            ))
-    });
+    rows.sort_by(most_recently_updated_first);
 }
 
-fn merge_review(
-    rows: &mut Vec<BoardRow>,
-    requested: &[RawPr],
-    available: &[RawPr],
-    repo: &str,
-    me: &str,
-    cfg: &BoardConfig,
-) {
-    let mut by_id: HashMap<String, BoardRow> = rows.drain(..).map(|r| (r.id.clone(), r)).collect();
-    for pr in available
-        .iter()
-        .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
-    {
-        by_id
-            .entry(pr_identity(pr, repo))
-            .or_insert_with(|| derive_review_row(pr, repo, me, cfg, QueueProvenance::Available));
-    }
-    // Requested provenance wins even when the broad alias produced it earlier.
-    for pr in requested.iter().filter(|pr| !is_own_pr(pr, me)) {
-        by_id.insert(
-            pr_identity(pr, repo),
-            derive_review_row(pr, repo, me, cfg, QueueProvenance::Requested),
-        );
-    }
-    *rows = by_id.into_values().collect();
-    rows.sort_by(|a, b| {
-        (a.category.rank(), a.number, &a.id).cmp(&(b.category.rank(), b.number, &b.id))
-    });
-    rows.truncate(MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize * 2);
+fn most_recently_updated_first(a: &BoardRow, b: &BoardRow) -> std::cmp::Ordering {
+    (
+        std::cmp::Reverse(&a.updated_at),
+        std::cmp::Reverse(a.number),
+        &a.id,
+    )
+        .cmp(&(
+            std::cmp::Reverse(&b.updated_at),
+            std::cmp::Reverse(b.number),
+            &b.id,
+        ))
 }
 
 fn is_own_pr(pr: &RawPr, me: &str) -> bool {
@@ -1409,7 +739,7 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     if row.ci == Ci::Fail {
         facts.push("CI failing".to_owned());
     }
-    if row.review_decision.as_deref() == Some("CHANGES_REQUESTED") {
+    if row.review_decision == Some(ReviewDecision::ChangesRequested) {
         facts.push("changes requested".to_owned());
     }
     if row.unresolved > 0 {
@@ -1447,7 +777,7 @@ fn classify_authored(row: &mut BoardRow, cfg: &BoardConfig) {
     } else if row.ci == Ci::Fail
         || row.conflict
         || row.blocks_on_rebase()
-        || row.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+        || row.review_decision == Some(ReviewDecision::ChangesRequested)
         || row.unresolved > 0
         || row.review_state == ReviewState::None
     {
@@ -1505,8 +835,11 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         .count();
     let unresolved_capped = pr.review_threads.total_count > pr.review_threads.nodes.len();
     let ci = derive_ci(pr);
-    let conflict = pr.mergeable.as_deref() == Some("CONFLICTING");
-    let mergeable_unknown = !matches!(pr.mergeable.as_deref(), Some("MERGEABLE" | "CONFLICTING"));
+    let conflict = pr.mergeable == Some(Mergeable::Conflicting);
+    let mergeable_unknown = !matches!(
+        pr.mergeable,
+        Some(Mergeable::Mergeable | Mergeable::Conflicting)
+    );
     let merge_state = pr
         .merge_state_status
         .as_deref()
@@ -1517,7 +850,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     // already the blocker, and GitHub may not have worked either out yet.
     let cannot_rebase = rebase_allowed
         && pr.can_be_rebased == Some(false)
-        && pr.mergeable.as_deref() == Some("MERGEABLE");
+        && pr.mergeable == Some(Mergeable::Mergeable);
     let rebase_only = rebase_allowed
         && methods.and_then(|r| r.merge_commit_allowed) == Some(false)
         && methods.and_then(|r| r.squash_merge_allowed) == Some(false);
@@ -1568,6 +901,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         created_at: pr.created_at.clone(),
         waiting_since: None,
         size: ChangeSize::from_counts(pr.additions, pr.deletions, pr.changed_files),
+        checks: derive_checks(pr),
         note: String::new(),
     };
 
@@ -1575,9 +909,19 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         // All open rows come from `derive_all_open_row`, which asks for one of
         // the other two; asked directly, a row reads as its author's.
         Mode::Authored | Mode::AllOpen => {
-            let appr = row.reviews.iter().filter(|r| r.state == "APPROVED").count();
-            let cmt = row.reviews.iter().any(|r| r.state == "COMMENTED");
-            let chg = row.reviews.iter().any(|r| r.state == "CHANGES_REQUESTED");
+            let appr = row
+                .reviews
+                .iter()
+                .filter(|r| r.state == ReviewVerdict::Approved)
+                .count();
+            let cmt = row
+                .reviews
+                .iter()
+                .any(|r| r.state == ReviewVerdict::Commented);
+            let chg = row
+                .reviews
+                .iter()
+                .any(|r| r.state == ReviewVerdict::ChangesRequested);
             row.review_state = if chg {
                 ReviewState::Changes
             } else if appr > 0 {
@@ -1594,10 +938,11 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         Mode::Review => {
             row.category = if pr.is_draft {
                 Category::Draft
-            } else if matches!(
-                row.my_review.as_deref(),
-                Some("APPROVED" | "COMMENTED" | "CHANGES_REQUESTED")
-            ) {
+            } else if row
+                .my_review
+                .as_ref()
+                .is_some_and(ReviewVerdict::is_standing)
+            {
                 Category::Done
             } else {
                 Category::Todo
@@ -1629,19 +974,14 @@ fn derive_review_row(
 }
 
 fn derive_ci(pr: &RawPr) -> Ci {
-    let rollup = pr
-        .commits
-        .nodes
-        .first()
-        .and_then(|c| c.commit.status_check_rollup.as_ref());
+    let rollup = latest_rollup(pr);
     if rollup.is_some_and(|r| r.hidden) {
         return Ci::Hidden;
     }
     let state = rollup.and_then(|r| r.state.as_deref()).unwrap_or("NONE");
     match state {
         "SUCCESS" => Ci::Pass,
-        "FAILURE" | "ERROR" => rollup
-            .and_then(|r| r.contexts.as_ref())
+        "FAILURE" | "ERROR" => derive_checks(pr)
             .and_then(ci_without_cancelled)
             .unwrap_or(Ci::Fail),
         "NONE" => Ci::None,
@@ -1649,55 +989,101 @@ fn derive_ci(pr: &RawPr) -> Ci {
     }
 }
 
-/// Check-run states that settled without failing. GitHub's rollup reads
-/// FAILURE for a cancelled check too, even one no rule requires; here a
-/// cancelled, skipped, neutral or stale check is not a failure (Oliver,
-/// 2026-09-30). FAILURE, TIMED_OUT, STARTUP_FAILURE and ACTION_REQUIRED still
-/// are, and so is any state this build does not know.
-const SETTLED_CHECK_RUNS: [&str; 6] = [
-    "SUCCESS",
-    "NEUTRAL",
-    "SKIPPED",
-    "CANCELLED",
-    "STALE",
-    "COMPLETED",
-];
-const RUNNING_CHECK_RUNS: [&str; 4] = ["PENDING", "QUEUED", "IN_PROGRESS", "WAITING"];
+fn latest_rollup(pr: &RawPr) -> Option<&crate::github::query::StatusCheckRollup> {
+    pr.commits
+        .nodes
+        .first()
+        .and_then(|c| c.commit.status_check_rollup.as_ref())
+}
+
+/// The latest commit's checks counted by state, or `None` when the token may
+/// not read them or GitHub reported no counts.
+fn derive_checks(pr: &RawPr) -> Option<CheckCounts> {
+    latest_rollup(pr)
+        .filter(|rollup| !rollup.hidden)
+        .and_then(|rollup| rollup.contexts.as_ref())
+        .and_then(CheckCounts::from_contexts)
+}
+
+/// How the latest commit's checks stand, counted from GitHub's per-state
+/// counts of check runs and commit statuses together. The CI column says one
+/// word; the Details panel says these numbers.
+///
+/// A state this build does not know counts as failed, the same rule the CI
+/// column follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CheckCounts {
+    /// FAILURE, TIMED_OUT, STARTUP_FAILURE, ACTION_REQUIRED, a failing or
+    /// erroring status, or a state this build does not know.
+    pub failed: u64,
+    /// Pending, queued, in progress or waiting; a pending or expected status.
+    pub running: u64,
+    pub passed: u64,
+    pub cancelled: u64,
+    pub skipped: u64,
+    /// NEUTRAL, or COMPLETED without a conclusion.
+    pub neutral: u64,
+    pub stale: u64,
+}
+
+impl CheckCounts {
+    /// `None` when every count is zero or there were none.
+    pub fn from_contexts(contexts: &RollupContexts) -> Option<Self> {
+        fn counted(counts: &Option<Vec<StateCount>>) -> impl Iterator<Item = (&str, u64)> {
+            counts
+                .iter()
+                .flatten()
+                .map(|count| (count.state.as_str(), count.count))
+        }
+        let mut checks = Self::default();
+        for (state, count) in counted(&contexts.check_run_counts_by_state) {
+            *match state {
+                "SUCCESS" => &mut checks.passed,
+                "PENDING" | "QUEUED" | "IN_PROGRESS" | "WAITING" => &mut checks.running,
+                "CANCELLED" => &mut checks.cancelled,
+                "SKIPPED" => &mut checks.skipped,
+                "NEUTRAL" | "COMPLETED" => &mut checks.neutral,
+                "STALE" => &mut checks.stale,
+                _ => &mut checks.failed,
+            } += count;
+        }
+        for (state, count) in counted(&contexts.status_context_counts_by_state) {
+            *match state {
+                "SUCCESS" => &mut checks.passed,
+                "PENDING" | "EXPECTED" => &mut checks.running,
+                _ => &mut checks.failed, // ERROR, FAILURE, or unknown
+            } += count;
+        }
+        (checks.total() > 0).then_some(checks)
+    }
+
+    pub fn total(&self) -> u64 {
+        self.failed
+            + self.running
+            + self.passed
+            + self.cancelled
+            + self.skipped
+            + self.neutral
+            + self.stale
+    }
+}
 
 /// The CI a failing rollup stands for once cancelled checks are set aside:
 /// running while any check or status still is, otherwise passing. `None` —
-/// keep GitHub's failure — when a check or status failed, when a state is one
-/// this build does not know, or when there are no counts to go on.
-fn ci_without_cancelled(contexts: &RollupContexts) -> Option<Ci> {
-    fn present(counts: &Option<Vec<StateCount>>) -> Vec<&str> {
-        counts
-            .iter()
-            .flatten()
-            .filter(|count| count.count > 0)
-            .map(|count| count.state.as_str())
-            .collect()
+/// keep GitHub's failure — when a check or status failed or a state is one
+/// this build does not know.
+///
+/// GitHub's rollup reads FAILURE for a cancelled check too, even one no rule
+/// requires; a cancelled, skipped, neutral or stale check is not a failure
+/// here (Oliver, 2026-09-30).
+fn ci_without_cancelled(checks: CheckCounts) -> Option<Ci> {
+    if checks.failed > 0 {
+        None
+    } else if checks.running > 0 {
+        Some(Ci::Running)
+    } else {
+        Some(Ci::Pass)
     }
-    let runs = present(&contexts.check_run_counts_by_state);
-    let statuses = present(&contexts.status_context_counts_by_state);
-    if runs.is_empty() && statuses.is_empty() {
-        return None;
-    }
-    let mut running = false;
-    for state in runs {
-        if RUNNING_CHECK_RUNS.contains(&state) {
-            running = true;
-        } else if !SETTLED_CHECK_RUNS.contains(&state) {
-            return None;
-        }
-    }
-    for state in statuses {
-        match state {
-            "PENDING" | "EXPECTED" => running = true,
-            "SUCCESS" => {}
-            _ => return None, // ERROR, FAILURE, or unknown
-        }
-    }
-    Some(if running { Ci::Running } else { Ci::Pass })
 }
 
 fn requested_teams(pr: &RawPr) -> Vec<String> {
@@ -1741,9 +1127,12 @@ fn standing_review<'a>(reviews: &[&'a ReviewNode]) -> Option<&'a ReviewNode> {
             .max_by(|a, b| a.submitted_at.cmp(&b.submitted_at))
     };
     let last = latest(|_| true)?;
-    if last.state == "COMMENTED" {
-        if let Some(held) = latest(|review| review.state != "COMMENTED") {
-            if matches!(held.state.as_str(), "APPROVED" | "CHANGES_REQUESTED") {
+    if last.state == ReviewVerdict::Commented {
+        if let Some(held) = latest(|review| review.state != ReviewVerdict::Commented) {
+            if matches!(
+                held.state,
+                ReviewVerdict::Approved | ReviewVerdict::ChangesRequested
+            ) {
                 return Some(held);
             }
         }
@@ -1786,11 +1175,11 @@ fn latest_review_evidence(pr: &RawPr) -> Option<&crate::github::query::LatestRev
     pr.latest_review
         .nodes
         .first()
-        .filter(|review| review.state != "DISMISSED")
+        .filter(|review| review.state != ReviewVerdict::Dismissed)
 }
 
 /// The user's own standing review state, or "NONE" — the prototype's `$mine`.
-fn my_latest_review(pr: &RawPr, me: &str) -> String {
+fn my_latest_review(pr: &RawPr, me: &str) -> ReviewVerdict {
     let mine: Vec<&ReviewNode> = pr
         .reviews
         .nodes
@@ -1799,7 +1188,7 @@ fn my_latest_review(pr: &RawPr, me: &str) -> String {
         .collect();
     standing_review(&mine)
         .map(|r| r.state.clone())
-        .unwrap_or_else(|| "NONE".to_string())
+        .unwrap_or(ReviewVerdict::NoReview)
 }
 
 /// `text` as one URL path or query component: the characters a URL never
@@ -1864,7 +1253,7 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
     if row.ci == Ci::Fail {
         blockers.push(Blocker::CiFailing);
     }
-    if row.review_decision.as_deref() == Some("CHANGES_REQUESTED") {
+    if row.review_decision == Some(ReviewDecision::ChangesRequested) {
         blockers.push(Blocker::ChangesRequested);
     }
     if row.unresolved > 0 {
@@ -2030,10 +1419,12 @@ fn review_note(row: &BoardRow, me: &str) -> String {
                 "🔵 needs your review".to_string()
             }
         }
-        Category::Done => match row.my_review.as_deref() {
-            Some("APPROVED") => "✅ you approved".to_string(),
-            Some("CHANGES_REQUESTED") => "✋ you requested changes — on the author now".to_string(),
-            Some("COMMENTED") => "💬 you commented".to_string(),
+        Category::Done => match row.my_review {
+            Some(ReviewVerdict::Approved) => "✅ you approved".to_string(),
+            Some(ReviewVerdict::ChangesRequested) => {
+                "✋ you requested changes — on the author now".to_string()
+            }
+            Some(ReviewVerdict::Commented) => "💬 you commented".to_string(),
             _ => String::new(),
         },
         Category::Draft => "· draft (not ready)".to_string(),
@@ -2051,2081 +1442,4 @@ fn review_note(row: &BoardRow, me: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
-    struct FakeTransport(serde_json::Value);
-
-    impl GithubTransport for FakeTransport {
-        fn graphql(
-            &self,
-            query: &str,
-            variables: &[(&str, &str)],
-        ) -> Result<serde_json::Value, GhError> {
-            assert_eq!(query, with_scope_repository(REVIEW_SEARCH_QUERY).unwrap());
-            assert_eq!(variables.len(), 5);
-            assert!(variables.contains(&("who", "me")));
-            assert!(variables.iter().any(|(key, _)| *key == "scopeOwner"));
-            assert!(variables.iter().any(|(key, _)| *key == "scopeName"));
-            Ok(self.0.clone())
-        }
-    }
-
-    struct SequenceTransport(Mutex<VecDeque<Result<serde_json::Value, GhError>>>);
-
-    impl SequenceTransport {
-        fn new(values: Vec<Result<serde_json::Value, GhError>>) -> Self {
-            Self(Mutex::new(values.into()))
-        }
-    }
-
-    impl GithubTransport for SequenceTransport {
-        fn graphql(
-            &self,
-            _query: &str,
-            _variables: &[(&str, &str)],
-        ) -> Result<serde_json::Value, GhError> {
-            self.0.lock().unwrap().pop_front().unwrap()
-        }
-    }
-
-    struct GlobalReviewTransport;
-
-    impl GithubTransport for GlobalReviewTransport {
-        fn graphql(
-            &self,
-            query: &str,
-            variables: &[(&str, &str)],
-        ) -> Result<serde_json::Value, GhError> {
-            assert_eq!(query, REVIEW_SEARCH_QUERY);
-            assert!(variables.contains(&(
-                "requested",
-                "is:pr is:open review-requested:me -author:me sort:updated-desc"
-            )));
-            assert!(variables.contains(&(
-                "available",
-                "is:pr is:open involves:me -author:me sort:updated-desc"
-            )));
-            Ok(json!({"data": {
-                "requested": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
-                "available": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
-                "rateLimit": null
-            }}))
-        }
-    }
-
-    fn cfg() -> BoardConfig {
-        BoardConfig {
-            default_reviewers: vec!["alice".into(), "bob".into()],
-            issue_link: Some(
-                IssueLinkRule::new("PROJ-[0-9]+", "https://tracker.example.test/issues/{id}")
-                    .unwrap(),
-            ),
-            ..Default::default()
-        }
-    }
-
-    fn pr(v: serde_json::Value) -> RawPr {
-        serde_json::from_value(v).unwrap()
-    }
-
-    fn base(number: u64) -> serde_json::Value {
-        json!({
-            "number": number,
-            "title": "Some change",
-            "isDraft": false,
-            "reviewDecision": null,
-            "mergeable": "MERGEABLE",
-            "createdAt": "2026-07-20T10:00:00Z",
-            "author": {"login": "me"},
-            "labels": {"nodes": []},
-            "reviewRequests": {"nodes": []},
-            "reviews": {"nodes": []},
-            "reviewThreads": {"nodes": []},
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}
-        })
-    }
-
-    fn derive_one(v: serde_json::Value, mode: Mode) -> BoardRow {
-        derive_rows(&[pr(v)], mode, "acme/widgets", "me", &cfg())
-            .into_iter()
-            .next()
-            .unwrap()
-    }
-
-    #[test]
-    fn a_token_refused_checks_and_teams_still_gets_its_board() {
-        let refused = |path: serde_json::Value| {
-            json!({"type": "FORBIDDEN", "path": path,
-                   "message": "Resource not accessible by personal access token"})
-        };
-        // The shape GitHub returned to a fine-grained token on 2026-09-18: the
-        // head commit node refused and null, once per pull request.
-        let mut first = base(1);
-        first["commits"] = json!({"nodes": [null]});
-        first["reviewRequests"] = json!({"totalCount": 1, "nodes": [{"requestedReviewer": null}]});
-        let mut second = base(2);
-        second["commits"] = json!({"nodes": [null]});
-        let rollup = |i: u64| json!(["search", "nodes", i, "commits", "nodes", 0]);
-        let body = json!({
-            "data": {
-                "search": {"pageInfo": {"hasNextPage": false}, "nodes": [first, second]},
-                "rateLimit": null
-            },
-            "errors": [
-                refused(rollup(0)),
-                refused(rollup(1)),
-                refused(json!(["search", "nodes", 0, "reviewRequests", "nodes", 0, "requestedReviewer"])),
-            ]
-        });
-
-        let fetch = fetch_board_scoped(
-            &SequenceTransport::new(vec![Ok(body)]),
-            Mode::Authored,
-            &BoardScope::AllRepositories,
-            "me",
-            &cfg(),
-        )
-        .expect("refused fields are not a failed refresh");
-
-        assert_eq!(fetch.rows.len(), 2);
-        assert!(fetch.rows.iter().all(|row| row.ci == Ci::Hidden));
-        let asked_a_team = fetch.rows.iter().find(|row| row.number == 1).unwrap();
-        assert_eq!(
-            asked_a_team.requested,
-            vec![crate::github::access::HIDDEN_TEAM]
-        );
-        assert!(
-            !asked_a_team.note.contains("No reviewers"),
-            "a team the token cannot see was still asked: {}",
-            asked_a_team.note
-        );
-        assert_eq!(
-            fetch.access,
-            AccessGaps {
-                ci: 2,
-                teams: 1,
-                other: 0,
-                pull_requests: 0
-            }
-        );
-        let notice = crate::status::access_notice(&fetch.access).unwrap();
-        assert!(notice.starts_with("This token can't read CI on 2 pull requests"));
-        assert!(!notice.contains('\n'));
-    }
-
-    #[test]
-    fn a_refused_search_still_fails_and_says_so_once() {
-        let refused = json!({"type": "FORBIDDEN", "path": ["search"],
-                             "message": "Resource not accessible by personal access token"});
-        let body = json!({"data": null, "errors": [refused.clone(), refused]});
-        let error = fetch_board_scoped(
-            &SequenceTransport::new(vec![Ok(body)]),
-            Mode::Authored,
-            &BoardScope::AllRepositories,
-            "me",
-            &cfg(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "GraphQL errors: Resource not accessible by personal access token"
-        );
-    }
-
-    #[test]
-    fn stripping_note_glyphs_keeps_separators_but_drops_the_neutral_lead() {
-        assert_eq!(strip_note_glyphs("· draft"), "draft");
-        assert_eq!(
-            strip_note_glyphs("· draft (not ready)"),
-            "draft (not ready)"
-        );
-        assert_eq!(
-            strip_note_glyphs("🔴 draft · merge conflict"),
-            "draft · merge conflict"
-        );
-        assert_eq!(
-            strip_note_glyphs("new commits since your review · · draft (not ready)"),
-            "new commits since your review · draft (not ready)"
-        );
-        assert_eq!(
-            strip_note_glyphs("🔴 merge conflict — rebase · 🔴 CI failing"),
-            "merge conflict — rebase · CI failing"
-        );
-    }
-
-    #[test]
-    fn no_reviewers_is_action_with_assign_note() {
-        let row = derive_one(base(1), Mode::Authored);
-        assert_eq!(row.category, Category::Action);
-        assert_eq!(row.review_state, ReviewState::None);
-        assert_eq!(row.note, "⚠️ no reviewers — assign alice + bob");
-    }
-
-    #[test]
-    fn defaults_are_organization_and_tracker_agnostic() {
-        let mut v = base(14);
-        v["title"] = json!("[PROJ-1234] Fix the crash");
-        let row = derive_rows(
-            &[pr(v)],
-            Mode::Authored,
-            "acme/widgets",
-            "me",
-            &BoardConfig::default(),
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-
-        assert!(row.issue.is_none());
-        assert!(row.issue_url.is_none());
-        assert_eq!(row.title, "[PROJ-1234] Fix the crash");
-        assert_eq!(row.note, "⚠️ no reviewers");
-    }
-
-    #[test]
-    fn labels_carry_through_and_bug_is_derived() {
-        let mut v = base(9);
-        v["labels"]["nodes"] = json!([
-            {"name": "bug"}, {"name": "backend"}, {"name": "P1"}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.labels, vec!["bug", "backend", "P1"]);
-        assert!(row.bug);
-        let no_labels = derive_one(base(10), Mode::Authored);
-        assert!(no_labels.labels.is_empty());
-        assert!(!no_labels.bug);
-    }
-
-    #[test]
-    fn approved_is_await_mergeable() {
-        let mut v = base(2);
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.category, Category::Await);
-        assert_eq!(row.review_state, ReviewState::Approved);
-        assert_eq!(row.note, "🟢 approved — mergeable");
-    }
-
-    fn approved(number: u64) -> serde_json::Value {
-        let mut v = base(number);
-        v["reviewDecision"] = json!("APPROVED");
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        v
-    }
-
-    #[test]
-    fn an_approved_pr_is_mergeable_only_when_github_says_so() {
-        let note = |status: &str, ci: &str| {
-            let mut v = approved(2);
-            v["mergeStateStatus"] = json!(status);
-            v["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = json!(ci);
-            let row = derive_one(v, Mode::Authored);
-            assert_eq!(row.category, Category::Await, "{status} {ci}");
-            row.note
-        };
-        assert_eq!(note("CLEAN", "SUCCESS"), "🟢 approved — mergeable");
-        assert_eq!(note("HAS_HOOKS", "SUCCESS"), "🟢 approved — mergeable");
-        // An approved PR with four checks still running is not mergeable yet.
-        assert_eq!(note("UNSTABLE", "PENDING"), "🟢 approved — waiting for CI");
-        assert_eq!(note("BLOCKED", "PENDING"), "🟢 approved — waiting for CI");
-        assert_eq!(
-            note("UNSTABLE", "SUCCESS"),
-            "🟢 approved — checks not passing"
-        );
-        assert_eq!(
-            note("BLOCKED", "SUCCESS"),
-            "🟢 approved — blocked by branch rules"
-        );
-        assert_eq!(
-            note("BEHIND", "SUCCESS"),
-            "🟢 approved — branch out of date"
-        );
-        // Still computing: no claim either way.
-        assert_eq!(note("UNKNOWN", "SUCCESS"), "🟢 approved");
-        assert_eq!(note("DRAFT", "SUCCESS"), "🟢 approved");
-        // Not reported (prototype fixtures): the prototype's wording.
-        let row = derive_one(approved(2), Mode::Authored);
-        assert!(row.merge_state.is_none());
-        assert_eq!(row.note, "🟢 approved — mergeable");
-    }
-
-    fn with_methods(
-        mut v: serde_json::Value,
-        merge: bool,
-        squash: bool,
-        rebase: bool,
-    ) -> serde_json::Value {
-        v["repository"] = json!({
-            "nameWithOwner": "acme/widgets",
-            "mergeCommitAllowed": merge,
-            "squashMergeAllowed": squash,
-            "rebaseMergeAllowed": rebase,
-        });
-        v
-    }
-
-    #[test]
-    fn a_branch_github_cannot_rebase_is_named_and_blocks_only_where_rebase_is_the_only_way() {
-        let mut v = with_methods(approved(2), true, true, true);
-        v["mergeStateStatus"] = json!("CLEAN");
-        v["canBeRebased"] = json!(false);
-        // A branch whose newest commit merges main, which rebase can't
-        // replay; a merge commit or a squash still goes through.
-        let row = derive_one(v.clone(), Mode::Authored);
-        assert_eq!(row.category, Category::Await);
-        assert!(row.cannot_rebase && !row.rebase_only);
-        assert!(row.blockers.is_empty());
-        assert_eq!(row.note, "🟢 approved — mergeable · can't rebase");
-
-        let only_rebase = derive_one(with_methods(v.clone(), false, false, true), Mode::Authored);
-        assert_eq!(only_rebase.category, Category::Action);
-        assert_eq!(only_rebase.blockers, vec![Blocker::CannotRebase]);
-        assert_eq!(only_rebase.note, "🔴 can't rebase — rebase locally");
-
-        // Rebase merges not allowed: rebasing is not a way to merge here.
-        let no_rebase = derive_one(with_methods(v.clone(), true, true, false), Mode::Authored);
-        assert!(!no_rebase.cannot_rebase);
-        assert_eq!(no_rebase.note, "🟢 approved — mergeable");
-
-        // A conflict is the blocker; "can't rebase" would only repeat it.
-        let mut conflicted = with_methods(v, false, false, true);
-        conflicted["mergeable"] = json!("CONFLICTING");
-        let conflicted = derive_one(conflicted, Mode::Authored);
-        assert_eq!(conflicted.blockers, vec![Blocker::MergeConflict]);
-
-        // Someone else's PR in a rebase-only repository says it as a fact.
-        let mut theirs = with_methods(approved(3), false, false, true);
-        theirs["author"] = json!({"login": "alice"});
-        theirs["canBeRebased"] = json!(false);
-        let theirs = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg())
-            .pop()
-            .unwrap();
-        assert_eq!(theirs.category, Category::Action);
-        assert_eq!(theirs.note, "alice's PR · can't rebase");
-    }
-
-    #[test]
-    fn action_note_combines_in_blocking_order() {
-        let mut v = base(3);
-        v["mergeable"] = json!("CONFLICTING");
-        v["reviewDecision"] = json!("CHANGES_REQUESTED");
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
-        v["reviewThreads"]["nodes"] = json!([
-            {"isResolved": false}, {"isResolved": false}, {"isResolved": true}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.category, Category::Action);
-        assert_eq!(
-            row.note,
-            "⚠️ no reviewers — assign alice + bob · 🔴 merge conflict — rebase · \
-             ❌ CI failing · ✋ changes requested · 🟡 2 unresolved comments"
-        );
-    }
-
-    #[test]
-    fn no_reviewer_blocker_carries_configured_reviewers() {
-        let row = derive_one(base(1), Mode::Authored);
-        assert_eq!(
-            row.blockers,
-            vec![Blocker::NoReviewers {
-                suggested: vec!["alice".into(), "bob".into()]
-            }]
-        );
-    }
-
-    #[test]
-    fn reviewer_suggestions_prefer_the_repository_then_its_owner() {
-        let mut cfg = cfg();
-        cfg.repo_reviewers
-            .insert("acme".into(), vec!["olga".into(), "oscar".into()]);
-        cfg.repo_reviewers
-            .insert("acme/widgets".into(), vec!["rita".into()]);
-        cfg.repo_reviewers.insert("quiet/repo".into(), Vec::new());
-
-        assert_eq!(cfg.suggested_reviewers("Acme/Widgets"), ["rita"]);
-        assert_eq!(cfg.suggested_reviewers("acme/api"), ["olga", "oscar"]);
-        assert_eq!(cfg.suggested_reviewers("other/repo"), ["alice", "bob"]);
-        assert!(cfg.suggested_reviewers("quiet/repo").is_empty());
-
-        let row = derive_rows(&[pr(base(1))], Mode::Authored, "acme/widgets", "me", &cfg)
-            .into_iter()
-            .next()
-            .unwrap();
-        assert!(row.note.contains("assign rita"), "{}", row.note);
-    }
-
-    #[test]
-    fn no_reviewer_blocker_is_empty_without_config() {
-        let row = derive_rows(
-            &[pr(base(1))],
-            Mode::Authored,
-            "acme/widgets",
-            "me",
-            &BoardConfig::default(),
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-        assert_eq!(
-            row.blockers,
-            vec![Blocker::NoReviewers { suggested: vec![] }]
-        );
-    }
-
-    #[test]
-    fn kitchen_sink_row_lists_every_blocker_in_prototype_order() {
-        let mut v = base(3);
-        v["mergeable"] = json!("CONFLICTING");
-        v["reviewDecision"] = json!("CHANGES_REQUESTED");
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
-        v["reviewThreads"]["nodes"] = json!([
-            {"isResolved": false}, {"isResolved": false}, {"isResolved": true}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(
-            row.blockers,
-            vec![
-                Blocker::NoReviewers {
-                    suggested: vec!["alice".into(), "bob".into()]
-                },
-                Blocker::MergeConflict,
-                Blocker::CiFailing,
-                Blocker::ChangesRequested,
-                Blocker::UnresolvedComments(2),
-            ]
-        );
-        // And the generated note is byte-identical to the legacy wording.
-        assert_eq!(
-            row.note,
-            "⚠️ no reviewers — assign alice + bob · 🔴 merge conflict — rebase · \
-             ❌ CI failing · ✋ changes requested · 🟡 2 unresolved comments"
-        );
-    }
-
-    #[test]
-    fn await_rows_have_no_blockers() {
-        let mut v = base(2);
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.category, Category::Await);
-        assert!(row.blockers.is_empty());
-    }
-
-    #[test]
-    fn approved_with_unresolved_is_still_action() {
-        let mut v = base(4);
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "grace"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        v["reviewThreads"]["nodes"] = json!([{"isResolved": false}, {"isResolved": false}]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.category, Category::Action);
-        assert_eq!(row.review_state, ReviewState::Approved);
-        assert_eq!(row.note, "🟡 2 unresolved comments");
-
-        let mut one = base(5);
-        one["reviews"]["nodes"] = json!([
-            {"author": {"login": "grace"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        one["reviewThreads"]["nodes"] = json!([{"isResolved": false}]);
-        assert_eq!(
-            derive_one(one, Mode::Authored).note,
-            "🟡 1 unresolved comment"
-        );
-    }
-
-    #[test]
-    fn bot_and_own_reviews_are_excluded() {
-        let mut v = base(5);
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "github-actions"}, "state": "COMMENTED", "submittedAt": "2026-07-21T09:00:00Z"},
-            {"author": {"login": "chatgpt-codex-connector"}, "state": "COMMENTED", "submittedAt": "2026-07-21T09:05:00Z"},
-            {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": "2026-07-21T09:10:00Z"}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert!(row.reviews.is_empty());
-        assert_eq!(row.review_state, ReviewState::None);
-        assert_eq!(row.category, Category::Action);
-    }
-
-    #[test]
-    fn latest_review_per_author_wins() {
-        let mut v = base(6);
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "eve"}, "state": "COMMENTED", "submittedAt": "2026-07-21T09:00:00Z"},
-            {"author": {"login": "eve"}, "state": "APPROVED", "submittedAt": "2026-07-22T09:00:00Z"}
-        ]);
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(
-            row.reviews,
-            vec![ReviewSummary {
-                login: Some("eve".into()),
-                state: "APPROVED".into(),
-                submitted_at: Some("2026-07-22T09:00:00Z".into()),
-            }]
-        );
-        assert_eq!(row.review_state, ReviewState::Approved);
-    }
-
-    #[test]
-    fn a_comment_does_not_erase_an_approval_or_a_change_request() {
-        let mut v = base(60);
-        let (t1, t2) = ("2026-07-21T09:00:00Z", "2026-07-22T09:00:00Z");
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "eve"}, "state": "APPROVED", "submittedAt": t1},
-            {"author": {"login": "eve"}, "state": "COMMENTED", "submittedAt": t2},
-            {"author": {"login": "fay"}, "state": "APPROVED", "submittedAt": t1},
-            {"author": {"login": "fay"}, "state": "DISMISSED", "submittedAt": t2},
-            {"author": {"login": "gus"}, "state": "DISMISSED", "submittedAt": t1},
-            {"author": {"login": "gus"}, "state": "COMMENTED", "submittedAt": t2},
-            {"author": {"login": "hal"}, "state": "CHANGES_REQUESTED", "submittedAt": t1},
-            {"author": {"login": "hal"}, "state": "COMMENTED", "submittedAt": t2},
-            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": t1},
-            {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": t2}
-        ]);
-        let row = derive_one(v.clone(), Mode::Authored);
-        let standing: Vec<_> = row
-            .reviews
-            .iter()
-            .map(|r| {
-                (
-                    r.login.as_deref().unwrap(),
-                    r.state.as_str(),
-                    r.submitted_at.as_deref().unwrap(),
-                )
-            })
-            .collect();
-        // The standing review keeps its own time, so a later comment is not
-        // reported as a new approval.
-        assert_eq!(
-            standing,
-            vec![
-                ("eve", "APPROVED", t1),
-                ("fay", "DISMISSED", t2),
-                ("gus", "COMMENTED", t2),
-                ("hal", "CHANGES_REQUESTED", t1),
-            ]
-        );
-        assert_eq!(row.review_state, ReviewState::Changes);
-        // The viewer's own standing review is known in every mode.
-        assert_eq!(row.my_review.as_deref(), Some("APPROVED"));
-        let review = derive_one(v, Mode::Review);
-        assert_eq!(review.my_review.as_deref(), Some("APPROVED"));
-        assert_eq!(review.category, Category::Done);
-        assert_eq!(review.note, "✅ you approved");
-    }
-
-    #[test]
-    fn team_slug_counts_as_requested_reviewer() {
-        let mut v = base(7);
-        v["reviewRequests"]["nodes"] = json!([
-            {"requestedReviewer": {"__typename": "Team", "slug": "platform"}},
-            {"requestedReviewer": null}
-        ]);
-        let row = derive_one(v.clone(), Mode::Authored);
-        assert_eq!(row.requested, vec!["platform"]);
-        assert_eq!(row.requested_teams, vec!["platform"]);
-        assert_eq!(row.review_state, ReviewState::Waiting);
-        assert_eq!(row.category, Category::Await);
-        assert_eq!(
-            row.note,
-            "✅ awaiting review — team requested, nobody responded"
-        );
-
-        // A person asked by name is on the hook.
-        let mut named = v.clone();
-        named["reviewRequests"]["nodes"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"requestedReviewer": {"__typename": "User", "login": "alice"}}));
-        let row = derive_one(named, Mode::Authored);
-        assert_eq!(row.requested_teams, vec!["platform"]);
-        assert_eq!(row.note, "✅ awaiting review");
-
-        // Someone else's PR in the involving view says the same.
-        let mut theirs = v.clone();
-        theirs["author"] = json!({"login": "alice"});
-        let rows = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg());
-        assert_eq!(
-            rows[0].note,
-            "alice's PR · team requested, nobody responded"
-        );
-
-        // The review queue: asked only through the team, and nobody reviewed.
-        v["author"] = json!({"login": "alice"});
-        let row = derive_one(v.clone(), Mode::Review);
-        assert_eq!(row.category, Category::Todo);
-        assert_eq!(row.note, "🔵 team requested, nobody responded");
-        let mut by_name = v.clone();
-        by_name["reviewRequests"]["nodes"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"requestedReviewer": {"__typename": "User", "login": "Me"}}));
-        assert_eq!(
-            derive_one(by_name, Mode::Review).note,
-            "🔵 needs your review"
-        );
-        let mut reviewed = v.clone();
-        reviewed["reviews"]["nodes"] = json!([
-            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        assert_eq!(
-            derive_one(reviewed, Mode::Review).note,
-            "🔵 needs your review"
-        );
-    }
-
-    #[test]
-    fn pickup_age_follows_the_row_not_the_prototype_view() {
-        let mut v = base(12);
-        v["author"] = json!({"login": "alice"});
-        v["timelineItems"] = json!({"nodes": [
-            {"__typename": "ReadyForReviewEvent", "createdAt": "2026-07-21T09:00:00Z"}
-        ]});
-        // Available to review: since opened, moved up to ready for review.
-        let available = derive_review_row(
-            &pr(v.clone()),
-            "acme/widgets",
-            "me",
-            &cfg(),
-            QueueProvenance::Available,
-        );
-        assert_eq!(available.category, Category::Available);
-        assert_eq!(
-            available.waiting_since.as_deref(),
-            Some("2026-07-21T09:00:00Z")
-        );
-        // Once you reviewed it, it is not waiting on you.
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": "2026-07-22T10:00:00Z"}
-        ]);
-        let done = derive_review_row(
-            &pr(v.clone()),
-            "acme/widgets",
-            "me",
-            &cfg(),
-            QueueProvenance::Available,
-        );
-        assert_eq!(done.category, Category::Done);
-        assert_eq!(done.waiting_since, None);
-        // Someone else's PR you reviewed has been picked up, although your
-        // review does not count toward its review state.
-        let rows = derive_involving_rows(&[pr(v.clone())], "acme/widgets", "me", &cfg());
-        assert_eq!(rows[0].review_state, ReviewState::None);
-        assert_eq!(rows[0].waiting_since, None);
-        // Your own comment on your PR is not a pickup.
-        v["author"] = json!({"login": "me"});
-        let mine = derive_one(v, Mode::Authored);
-        assert_eq!(mine.waiting_since.as_deref(), Some("2026-07-21T09:00:00Z"));
-
-        let now = chrono::DateTime::parse_from_rfc3339("2026-07-24T08:59:59Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        assert_eq!(
-            crate::pickup::waiting_secs(&mine, now),
-            Some(3 * 86_400 - 1)
-        );
-        assert!(!crate::pickup::is_stale(&mine, now, 3));
-        assert!(crate::pickup::is_stale(
-            &mine,
-            now + chrono::Duration::seconds(1),
-            3
-        ));
-        assert!(crate::pickup::is_stale(&mine, now, 2));
-        assert!(!crate::pickup::is_stale(&done, now, 0));
-        // A clock behind GitHub's reads as no wait yet.
-        let early = now - chrono::Duration::days(30);
-        assert_eq!(crate::pickup::waiting_secs(&mine, early), Some(0));
-    }
-
-    #[test]
-    fn title_issue_extraction_and_stripping() {
-        let mut v = base(8);
-        v["title"] = json!("WIP [PROJ-1234] Fix the crash");
-        let row = derive_one(v, Mode::Authored);
-        assert_eq!(row.issue.as_deref(), Some("PROJ-1234"));
-        assert_eq!(
-            row.issue_url.as_deref(),
-            Some("https://tracker.example.test/issues/PROJ-1234")
-        );
-        assert_eq!(row.title, "Fix the crash");
-    }
-
-    #[test]
-    fn a_matched_issue_id_is_percent_encoded_into_the_link() {
-        let rule = IssueLinkRule::new(
-            r"T-[a-z #?/]+[0-9]",
-            "https://tracker.test/browse/{id}?view=1",
-        )
-        .unwrap();
-        let cfg = BoardConfig {
-            issue_link: Some(rule),
-            ..cfg()
-        };
-        let mut v = base(9);
-        v["title"] = json!("[T-a b#c?d/1] Odd ticket ids");
-        let row = derive_rows(&[pr(v)], Mode::Authored, "acme/widgets", "me", &cfg)
-            .into_iter()
-            .next()
-            .unwrap();
-        // The ID reads as written; only the link escapes it.
-        assert_eq!(row.issue.as_deref(), Some("T-a b#c?d/1"));
-        assert_eq!(
-            row.issue_url.as_deref(),
-            Some("https://tracker.test/browse/T-a%20b%23c%3Fd%2F1?view=1")
-        );
-        assert_eq!(row.title, "Odd ticket ids");
-        // Unreserved characters and non-ASCII (as UTF-8 bytes).
-        assert_eq!(url_component("AZaz09-_.~"), "AZaz09-_.~");
-        assert_eq!(url_component("é"), "%C3%A9");
-    }
-
-    #[test]
-    fn draft_notes_first_match_wins() {
-        let mut v = base(9);
-        v["isDraft"] = json!(true);
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
-        assert_eq!(
-            derive_one(v.clone(), Mode::Authored).note,
-            "🔴 draft · CI failing"
-        );
-        v["mergeable"] = json!("CONFLICTING");
-        assert_eq!(
-            derive_one(v.clone(), Mode::Authored).note,
-            "🔴 draft · merge conflict"
-        );
-        v["mergeable"] = json!("MERGEABLE");
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]);
-        v["reviewThreads"]["nodes"] = json!([{"isResolved": false}]);
-        assert_eq!(
-            derive_one(v, Mode::Authored).note,
-            "🟡 draft · 1 unresolved comment"
-        );
-    }
-
-    #[test]
-    fn a_cancelled_check_is_not_a_failing_one() {
-        let with_counts = |runs: serde_json::Value, statuses: serde_json::Value| {
-            let mut v = base(11);
-            v["reviewRequests"] =
-                json!({"nodes": [{"requestedReviewer": {"__typename": "User", "login": "alice"}}]});
-            v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {
-                "state": "FAILURE",
-                "contexts": {"checkRunCountsByState": runs, "statusContextCountsByState": statuses}
-            }}}]);
-            derive_one(v, Mode::Authored)
-        };
-        let counts = |pairs: &[(&str, u64)]| {
-            json!(pairs
-                .iter()
-                .map(|(state, count)| json!({"state": state, "count": count}))
-                .collect::<Vec<_>>())
-        };
-
-        // GitHub's rollup said FAILURE because one optional check was
-        // cancelled; every check that ran passed.
-        let row = with_counts(
-            counts(&[("SUCCESS", 11), ("SKIPPED", 9), ("CANCELLED", 1)]),
-            json!([]),
-        );
-        assert_eq!(row.ci, Ci::Pass);
-        assert_eq!(row.category, Category::Await);
-        assert!(!row.note.contains("CI failing"), "{}", row.note);
-
-        // Something still running is running, not passing.
-        let row = with_counts(counts(&[("CANCELLED", 1), ("IN_PROGRESS", 2)]), json!([]));
-        assert_eq!(row.ci, Ci::Running);
-        let row = with_counts(counts(&[("CANCELLED", 1)]), counts(&[("PENDING", 1)]));
-        assert_eq!(row.ci, Ci::Running);
-
-        // A real failure, a failing status, an unknown state, or nothing to go
-        // on keeps GitHub's failure.
-        for (runs, statuses) in [
-            (counts(&[("CANCELLED", 1), ("FAILURE", 1)]), json!([])),
-            (counts(&[("CANCELLED", 1), ("TIMED_OUT", 1)]), json!([])),
-            (counts(&[("ACTION_REQUIRED", 1)]), json!([])),
-            (counts(&[("CANCELLED", 1)]), counts(&[("ERROR", 1)])),
-            (counts(&[("CANCELLED", 1), ("SOMETHING_NEW", 1)]), json!([])),
-            (counts(&[("CANCELLED", 0), ("FAILURE", 0)]), json!([])),
-            (json!(null), json!(null)),
-        ] {
-            let row = with_counts(runs.clone(), statuses.clone());
-            assert_eq!(row.ci, Ci::Fail, "{runs} {statuses}");
-            assert_eq!(row.category, Category::Action, "{runs} {statuses}");
-        }
-
-        // Without counts (the prototype's query) the rollup alone decides.
-        let mut v = base(12);
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
-        assert_eq!(derive_one(v, Mode::Authored).ci, Ci::Fail);
-    }
-
-    #[test]
-    fn review_mode_categories_and_notes() {
-        // Not yet reviewed, green.
-        let mut v = base(20);
-        v["author"] = json!({"login": "alice"});
-        let row = derive_one(v.clone(), Mode::Review);
-        assert_eq!(row.category, Category::Todo);
-        assert_eq!(row.my_review.as_deref(), Some("NONE"));
-        assert_eq!(row.note, "🔵 needs your review");
-
-        // CI red beats conflicts.
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "ERROR"}}}]);
-        v["mergeable"] = json!("CONFLICTING");
-        assert_eq!(
-            derive_one(v.clone(), Mode::Review).note,
-            "⚠️ CI red — maybe wait for green"
-        );
-
-        // I approved → done.
-        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]);
-        v["mergeable"] = json!("MERGEABLE");
-        v["reviews"]["nodes"] = json!([
-            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        let row = derive_one(v.clone(), Mode::Review);
-        assert_eq!(row.category, Category::Done);
-        assert_eq!(row.note, "✅ you approved");
-
-        // Draft trumps everything.
-        v["isDraft"] = json!(true);
-        assert_eq!(derive_one(v, Mode::Review).note, "· draft (not ready)");
-    }
-
-    #[test]
-    fn sort_orders_differ_by_mode() {
-        let mk = |n: u64, draft: bool, reviewed: bool| {
-            let mut v = base(n);
-            v["isDraft"] = json!(draft);
-            if reviewed {
-                v["reviews"]["nodes"] = json!([
-                    {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-                ]);
-            }
-            pr(v)
-        };
-        // 10=action (no reviewers), 11=await (approved), 12=draft, 13=action
-        let prs = vec![
-            mk(10, false, false),
-            mk(11, false, true),
-            mk(12, true, false),
-            mk(13, false, false),
-        ];
-        let authored = derive_rows(&prs, Mode::Authored, "acme/widgets", "me", &cfg());
-        let order: Vec<u64> = authored.iter().map(|r| r.number).collect();
-        assert_eq!(order, vec![13, 10, 11, 12]); // action desc, then await, then draft
-
-        // Review mode: todo rows sort ascending, followed by rows I reviewed.
-        // — for review-mode sorting use my own reviews instead:
-        let mk_r = |n: u64, mine: bool| {
-            let mut v = base(n);
-            v["author"] = json!({"login": "alice"});
-            if mine {
-                v["reviews"]["nodes"] = json!([
-                    {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-07-21T10:00:00Z"}
-                ]);
-            }
-            pr(v)
-        };
-        let prs = vec![mk_r(31, true), mk_r(30, false), mk_r(28, false)];
-        let review = derive_rows(&prs, Mode::Review, "acme/widgets", "me", &cfg());
-        let order: Vec<u64> = review.iter().map(|r| r.number).collect();
-        assert_eq!(order, vec![28, 30, 31]); // todo asc, then done
-    }
-
-    #[test]
-    fn rows_are_bounded() {
-        let prs: Vec<RawPr> = (0..100).map(|n| pr(base(n))).collect();
-        let rows = derive_rows(&prs, Mode::Authored, "acme/widgets", "me", &cfg());
-        assert_eq!(rows.len(), MAX_BOARD_ROWS);
-    }
-
-    #[test]
-    fn expanded_review_queue_filters_deduplicates_and_preserves_states() {
-        let mut requested = base(10);
-        requested["author"] = json!({"login": "alice"});
-        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": [
-            {"requestedReviewer": {"__typename": "User", "login": "me"}}
-        ]});
-        requested["reviews"]["nodes"] = json!([
-            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"}
-        ]);
-        requested["labels"] = json!({"nodes": [{"name": "bug"}, {"name": "backend"}]});
-        requested["stack"] = json!({"number": 70, "size": 3, "baseRefName": "main"});
-        requested["stackEntry"] = json!({"position": 2});
-
-        let mut duplicate = requested.clone();
-        duplicate["title"] = json!("broad duplicate must lose");
-
-        let mut available = base(11);
-        available["author"] = json!({"login": "bob"});
-        available["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-        available["labels"] = json!({"nodes": [{"name": "frontend"}]});
-        available["stack"] = json!({"number": 70, "size": 3, "baseRefName": "main"});
-        available["stackEntry"] = json!({"position": 3});
-
-        let mut completed = base(12);
-        completed["author"] = json!({"login": "carol"});
-        completed["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-        completed["reviews"]["nodes"] = json!([{
-            "author": {"login": "me"}, "state": "APPROVED",
-            "submittedAt": "2026-07-21T10:00:00Z"
-        }]);
-
-        let mut draft = base(13);
-        draft["author"] = json!({"login": "dave"});
-        draft["isDraft"] = json!(true);
-        draft["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-
-        let mut own = base(14);
-        own["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-
-        let mut assigned_other = base(15);
-        assigned_other["author"] = json!({"login": "eve"});
-        assigned_other["reviewRequests"] = json!({
-            "totalCount": 1,
-            "nodes": [{"requestedReviewer": {"__typename": "User", "login": "other"}}]
-        });
-
-        let mut team_requested = base(16);
-        team_requested["author"] = json!({"login": "frank"});
-        team_requested["reviewRequests"] = json!({
-            "totalCount": 1,
-            "nodes": [{"requestedReviewer": {"__typename": "Team", "slug": "platform"}}]
-        });
-
-        let body = json!({
-            "data": {
-                "requested": {"pageInfo": {"hasNextPage": false}, "nodes": [requested]},
-                "available": {"pageInfo": {"hasNextPage": false}, "nodes": [
-                    duplicate, available, completed, draft, own, assigned_other, team_requested
-                ]},
-                "rateLimit": null
-            }
-        });
-        let fetched = fetch_board(
-            &FakeTransport(body),
-            Mode::Review,
-            "acme/widgets",
-            "me",
-            &cfg(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            fetched.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
-            vec![10, 11, 12, 13]
-        );
-        assert_eq!(fetched.rows[0].category, Category::Todo);
-        assert_eq!(
-            fetched.rows[0].queue_provenance,
-            Some(QueueProvenance::Requested)
-        );
-        assert_eq!(fetched.rows[0].requested, vec!["me"]);
-        assert_eq!(fetched.rows[0].reviews.len(), 1);
-        assert_eq!(fetched.rows[0].reviews[0].login.as_deref(), Some("bob"));
-        assert_eq!(fetched.rows[0].reviews[0].state, "COMMENTED");
-        assert_eq!(fetched.rows[0].labels, vec!["bug", "backend"]);
-        assert!(fetched.rows[0].bug);
-        assert_eq!(fetched.rows[0].stack.as_ref().unwrap().position, Some(2));
-        assert_eq!(fetched.rows[1].category, Category::Available);
-        assert_eq!(fetched.rows[1].labels, vec!["frontend"]);
-        assert!(!fetched.rows[1].bug);
-        assert_eq!(fetched.rows[1].stack.as_ref().unwrap().number, 70);
-        assert_eq!(fetched.rows[1].stack.as_ref().unwrap().position, Some(3));
-        assert_eq!(fetched.rows[2].category, Category::Done);
-        assert_eq!(fetched.rows[3].category, Category::Draft);
-        assert!(!fetched.truncated);
-    }
-
-    #[test]
-    fn expanded_review_queue_surfaces_alias_truncation() {
-        let body = json!({"data": {
-            "requested": {"pageInfo": {"hasNextPage": true}, "nodes": []},
-            "available": {"pageInfo": {"hasNextPage": false}, "nodes": []},
-            "rateLimit": null
-        }});
-        let fetched = fetch_board(
-            &FakeTransport(body),
-            Mode::Review,
-            "acme/widgets",
-            "me",
-            &cfg(),
-        )
-        .unwrap();
-        assert!(fetched.truncated);
-    }
-
-    #[test]
-    fn global_review_keeps_available_candidates_involvement_scoped() {
-        let fetched = fetch_board_scoped(
-            &GlobalReviewTransport,
-            Mode::Review,
-            &BoardScope::AllRepositories,
-            "me",
-            &cfg(),
-        )
-        .unwrap();
-        assert!(fetched.rows.is_empty());
-        assert!(!fetched.truncated);
-    }
-
-    #[test]
-    fn paginated_review_deduplicates_with_requested_priority_and_skips_exhausted_alias() {
-        let mut available_duplicate = base(20);
-        available_duplicate["author"] = json!({"login": "alice"});
-        available_duplicate["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-        let first = json!({"data": {
-            "requested": {"pageInfo": {"hasNextPage": false, "endCursor": "r1"}, "nodes": []},
-            "available": {"pageInfo": {"hasNextPage": true, "endCursor": "a1"}, "nodes": [available_duplicate]},
-            "rateLimit": null
-        }});
-        let mut requested_duplicate = base(20);
-        requested_duplicate["author"] = json!({"login": "alice"});
-        requested_duplicate["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
-        // The only live alias is available; a requested-looking result there is
-        // filtered, proving an exhausted requested alias was not refetched.
-        let second = json!({"data": {
-            "available": {"pageInfo": {"hasNextPage": false, "endCursor": "a2"}, "nodes": [requested_duplicate]},
-            "rateLimit": null
-        }});
-        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
-        let initial = fetch_board(&transport, Mode::Review, "acme/widgets", "me", &cfg()).unwrap();
-        let fetched = fetch_more_board(
-            &transport,
-            Mode::Review,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &initial,
-        )
-        .unwrap();
-        assert_eq!(fetched.rows.len(), 1);
-        assert_eq!(
-            fetched.rows[0].queue_provenance,
-            Some(QueueProvenance::Available)
-        );
-        assert!(!fetched.pagination.can_load_more(Mode::Review));
-    }
-
-    #[test]
-    fn requested_page_replaces_an_available_duplicate() {
-        let mut broad = base(30);
-        broad["author"] = json!({"login": "alice"});
-        broad["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
-        let first = json!({"data": {
-            "requested": {"pageInfo": {"hasNextPage": true, "endCursor": "r1"}, "nodes": []},
-            "available": {"pageInfo": {"hasNextPage": false, "endCursor": "a1"}, "nodes": [broad]},
-            "rateLimit": null
-        }});
-        let mut requested = base(30);
-        requested["author"] = json!({"login": "alice"});
-        requested["reviewRequests"] = json!({"totalCount": 1, "nodes": []});
-        let second = json!({"data": {
-            "requested": {"pageInfo": {"hasNextPage": false, "endCursor": "r2"}, "nodes": [requested]},
-            "rateLimit": null
-        }});
-        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
-        let initial = fetch_board(&transport, Mode::Review, "acme/widgets", "me", &cfg()).unwrap();
-        let fetched = fetch_more_board(
-            &transport,
-            Mode::Review,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &initial,
-        )
-        .unwrap();
-        assert_eq!(fetched.rows.len(), 1);
-        assert_eq!(
-            fetched.rows[0].queue_provenance,
-            Some(QueueProvenance::Requested)
-        );
-    }
-
-    #[test]
-    fn authored_pagination_advances_and_missing_cursor_is_terminal() {
-        let first = json!({"data": {
-            "search": {"pageInfo": {"hasNextPage": true, "endCursor": "p1"}, "nodes": [base(2)]},
-            "rateLimit": null
-        }});
-        let second = json!({"data": {
-            "search": {"pageInfo": {"hasNextPage": true, "endCursor": null}, "nodes": [base(1)]},
-            "rateLimit": null
-        }});
-        let transport = SequenceTransport::new(vec![Ok(first), Ok(second)]);
-        let initial =
-            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
-        let fetched = fetch_more_board(
-            &transport,
-            Mode::Authored,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &initial,
-        )
-        .unwrap();
-        assert_eq!(
-            fetched.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
-            vec![2, 1]
-        );
-        assert!(!fetched.pagination.can_load_more(Mode::Authored));
-    }
-
-    #[test]
-    fn pagination_stops_at_five_pages_and_errors_do_not_mutate_input() {
-        let page = |cursor: &str| {
-            json!({"data": {
-                "search": {"pageInfo": {"hasNextPage": true, "endCursor": cursor}, "nodes": []},
-                "rateLimit": null
-            }})
-        };
-        let transport = SequenceTransport::new(vec![
-            Ok(page("p1")),
-            Ok(page("p2")),
-            Ok(page("p3")),
-            Ok(page("p4")),
-            Ok(page("p5")),
-        ]);
-        let mut fetched =
-            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
-        for _ in 0..4 {
-            fetched = fetch_more_board(
-                &transport,
-                Mode::Authored,
-                "acme/widgets",
-                "me",
-                &cfg(),
-                &fetched,
-            )
-            .unwrap();
-        }
-        assert!(!fetched.pagination.can_load_more(Mode::Authored));
-        assert!(fetched.pagination.page_limit_reached(Mode::Authored));
-
-        let error_seed = SequenceTransport::new(vec![Ok(page("e1"))]);
-        let before_error =
-            fetch_board(&error_seed, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
-        let error_transport = SequenceTransport::new(vec![Err(GhError::Network("offline".into()))]);
-        let before = before_error.rows.len();
-        assert!(fetch_more_board(
-            &error_transport,
-            Mode::Authored,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &before_error
-        )
-        .is_err());
-        assert_eq!(before_error.rows.len(), before);
-    }
-
-    #[test]
-    fn stack_metadata_is_native_and_labels_do_not_infer_it() {
-        let mut stacked = base(40);
-        stacked["stack"] = json!({"number": 7, "size": 3, "baseRefName": "main"});
-        stacked["stackEntry"] = json!({"position": 2});
-        let row = derive_one(stacked, Mode::Authored);
-        assert_eq!(
-            row.stack,
-            Some(StackInfo {
-                number: 7,
-                size: 3,
-                base_ref_name: "main".into(),
-                position: Some(2),
-            })
-        );
-
-        let mut no_position = base(42);
-        no_position["stack"] = json!({"number": 8, "size": 2, "baseRefName": "develop"});
-        assert_eq!(
-            derive_one(no_position, Mode::Authored)
-                .stack
-                .unwrap()
-                .position,
-            None
-        );
-
-        let mut label_only = base(41);
-        label_only["labels"]["nodes"] = json!([{"name": "stack"}]);
-        assert!(derive_one(label_only, Mode::Authored).stack.is_none());
-    }
-
-    #[test]
-    fn available_review_keeps_health_warning() {
-        let mut pr: RawPr = serde_json::from_value(base(99)).unwrap();
-        pr.mergeable = Some("CONFLICTING".into());
-        let row = derive_review_row(
-            &pr,
-            "acme/widgets",
-            "reviewer",
-            &cfg(),
-            QueueProvenance::Available,
-        );
-        assert_eq!(row.category, Category::Available);
-        assert_eq!(row.note, "⚠️ has conflicts");
-    }
-
-    #[test]
-    fn semantic_observation_is_stable_across_scope_and_queue_derivations() {
-        let mut value = base(120);
-        value["id"] = json!("PR_shared");
-        value["url"] = json!("https://github.com/acme/widgets/pull/120");
-        value["repository"] = json!({"nameWithOwner": "acme/widgets"});
-        value["author"] = json!({"login": "alice"});
-        value["updatedAt"] = json!("2026-09-11T10:00:00Z");
-        value["headRefOid"] = json!("head-2");
-        value["reviewRequests"] = json!({
-            "totalCount": 1,
-            "nodes": [{"requestedReviewer": {"__typename": "User", "login": "me"}}]
-        });
-        value["reviews"]["nodes"] = json!([
-            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z"},
-            {"author": {"login": "bob"}, "state": "COMMENTED", "submittedAt": "2026-09-09T10:00:00Z"}
-        ]);
-        value["latestReview"] = json!({"nodes": [{
-            "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z", "commit": {"oid": "head-1"}
-        }]});
-        let raw: RawPr = serde_json::from_value(value).unwrap();
-        let involving = derive_involving_row(&raw, "", "me", &cfg());
-        let review = derive_review_row(
-            &raw,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            QueueProvenance::Requested,
-        );
-        assert_ne!(involving.category, review.category);
-        assert_eq!(
-            crate::attention::Observation::from_row(&involving),
-            crate::attention::Observation::from_row(&review)
-        );
-    }
-
-    #[test]
-    fn review_note_reports_new_head_without_fabricating_commit_count() {
-        let mut value = base(121);
-        value["author"] = json!({"login": "alice"});
-        value["headRefOid"] = json!("current-head");
-        value["latestReview"] = json!({"nodes": [{
-            "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z", "commit": {"oid": "reviewed-head"}
-        }]});
-        value["reviews"]["nodes"] = json!([
-            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z"}
-        ]);
-        let row = derive_one(value, Mode::Review);
-        assert_eq!(row.note, "new commits since your review · ✅ you approved");
-        assert!(!row.note.chars().any(|character| character.is_ascii_digit()));
-    }
-
-    #[test]
-    fn a_missing_repository_is_an_error_and_a_missing_tracked_pr_is_inaccessible() {
-        struct Scoped;
-        impl GithubTransport for Scoped {
-            fn graphql(
-                &self,
-                _query: &str,
-                _variables: &[(&str, &str)],
-            ) -> Result<serde_json::Value, GhError> {
-                unreachable!("tracked ids are always requested here")
-            }
-            fn graphql_with_ids(
-                &self,
-                query: &str,
-                variables: &[(&str, &str)],
-                ids: &[String],
-            ) -> Result<serde_json::Value, GhError> {
-                assert!(query.contains("scopeRepository: repository("));
-                assert_eq!(ids, ["PR_gone"]);
-                let found = variables.contains(&("scopeName", "widgets"));
-                assert!(variables.contains(&("scopeOwner", "acme")));
-                let mut errors = vec![json!({"type": "NOT_FOUND", "path": ["tracked", 0],
-                    "message": "Could not resolve to a node with the global id of 'PR_gone'."})];
-                if !found {
-                    errors.push(json!({"type": "NOT_FOUND", "path": ["scopeRepository"],
-                        "message": "Could not resolve to a Repository with the name 'acme/nope'."}));
-                }
-                Ok(json!({
-                    "data": {
-                        "scopeRepository": if found { json!({"nameWithOwner": "acme/widgets"}) } else { json!(null) },
-                        "search": {"pageInfo": {"hasNextPage": false}, "nodes": []},
-                        "tracked": [null],
-                        "rateLimit": null
-                    },
-                    "errors": errors
-                }))
-            }
-        }
-        let tracked = ["PR_gone".to_owned()];
-        let scope = BoardScope::Repository("acme/widgets".into());
-        let fetched = fetch_board_scoped_with_tracked(
-            &Scoped,
-            Mode::Authored,
-            &scope,
-            "me",
-            &cfg(),
-            &tracked,
-            false,
-        )
-        .unwrap();
-        assert_eq!(fetched.tracked.len(), 1);
-        assert_eq!(fetched.tracked[0].status, TrackedPrStatus::Inaccessible);
-
-        let scope = BoardScope::Repository("acme/nope".into());
-        let error = fetch_board_scoped_with_tracked(
-            &Scoped,
-            Mode::Review,
-            &scope,
-            "me",
-            &cfg(),
-            &tracked,
-            false,
-        )
-        .unwrap_err();
-        assert_eq!(error, GhError::RepositoryNotFound("acme/nope".into()));
-        assert_eq!(
-            error.to_string(),
-            "repository acme/nope not found, or the gh account can't access it"
-        );
-    }
-
-    #[test]
-    fn repository_identity_survives_alias_dedup_and_page_merges() {
-        let make = |repo: &str, id: &str| {
-            let mut v = base(42);
-            v["id"] = json!(id);
-            v["repository"] = json!({"nameWithOwner": repo});
-            v["url"] = json!(format!("https://github.com/{repo}/pull/42"));
-            v["author"] = json!({"login": "alice"});
-            v["reviewRequests"] = json!({"totalCount":0,"nodes":[]});
-            v
-        };
-        let a = make("acme/one", "PR_a");
-        let b = make("acme/two", "PR_b");
-        let body = json!({"data": {
-            "requested": {"nodes": [a.clone()]},
-            "available": {"nodes": [a.clone(), b.clone()]}
-        }});
-        let fetched = fetch_board(
-            &FakeTransport(body),
-            Mode::Review,
-            "ignored/repo",
-            "me",
-            &cfg(),
-        )
-        .unwrap();
-        assert_eq!(fetched.rows.len(), 2);
-        assert_eq!(fetched.rows[0].repo, "acme/one");
-        assert_eq!(fetched.rows[1].url, "https://github.com/acme/two/pull/42");
-        let a: RawPr = serde_json::from_value(a).unwrap();
-        let mut b: RawPr = serde_json::from_value(b).unwrap();
-        let mut authored = derive_rows(
-            std::slice::from_ref(&a),
-            Mode::Authored,
-            "ignored/repo",
-            "me",
-            &cfg(),
-        );
-        merge_authored(&mut authored, &[b.clone()], "ignored/repo", "me", &cfg());
-        assert_eq!(authored.len(), 2);
-        b.title = "changed title".into();
-        merge_authored(&mut authored, &[b.clone()], "ignored/repo", "me", &cfg());
-        assert_eq!(authored.len(), 2);
-        assert_eq!(
-            authored.iter().find(|r| r.id == "PR_b").unwrap().title,
-            "changed title"
-        );
-        let mut review = fetched.rows;
-        merge_review(&mut review, &[b], &[a], "ignored/repo", "me", &cfg());
-        assert_eq!(review.len(), 2);
-        assert!(review
-            .iter()
-            .all(|r| r.queue_provenance == Some(QueueProvenance::Requested)));
-    }
-
-    #[test]
-    fn observation_fields_use_canonical_data_and_latest_review_alias() {
-        let mut v = base(42);
-        v["id"] = json!("PR_42");
-        v["repository"] = json!({"nameWithOwner": "acme/actual"});
-        v["updatedAt"] = json!("2026-09-11T10:00:00Z");
-        v["headRefOid"] = json!("new-head");
-        v["latestReview"] = json!({"nodes": [{"state":"APPROVED", "submittedAt":"2026-09-10T10:00:00Z", "commit":{"oid":"reviewed-head"}}]});
-        let row = derive_one(v.clone(), Mode::Review);
-        assert_eq!(row.repo, "acme/actual");
-        assert_eq!(row.url, "https://github.com/acme/actual/pull/42");
-        assert_eq!(row.updated_at.as_deref(), Some("2026-09-11T10:00:00Z"));
-        assert_eq!(row.head_oid.as_deref(), Some("new-head"));
-        assert_eq!(row.reviewed_oid.as_deref(), Some("reviewed-head"));
-        assert_eq!(row.reviewed_at.as_deref(), Some("2026-09-10T10:00:00Z"));
-        v["latestReview"]["nodes"][0]["commit"] = json!(null);
-        assert_eq!(derive_one(v.clone(), Mode::Review).reviewed_oid, None);
-        v["latestReview"]["nodes"][0]["commit"] = json!({"oid":"dismissed-head"});
-        v["latestReview"]["nodes"][0]["state"] = json!("DISMISSED");
-        assert_eq!(derive_one(v, Mode::Review).reviewed_oid, None);
-    }
-
-    #[test]
-    fn authored_only_narrows_the_all_repositories_search_to_your_prs() {
-        struct Searches(Mutex<Vec<String>>);
-        impl GithubTransport for Searches {
-            fn graphql(
-                &self,
-                _query: &str,
-                variables: &[(&str, &str)],
-            ) -> Result<serde_json::Value, GhError> {
-                let q = variables.iter().find(|(key, _)| *key == "q").unwrap().1;
-                self.0.lock().unwrap().push(q.to_owned());
-                Ok(json!({"data": {
-                    "search": {"pageInfo": {"hasNextPage": false}, "nodes": []},
-                    "rateLimit": null
-                }}))
-            }
-        }
-        let searches = Searches(Mutex::new(Vec::new()));
-        let all = BoardScope::AllRepositories;
-        let mut config = cfg();
-        fetch_board_scoped(&searches, Mode::Authored, &all, "me", &config).unwrap();
-        config.authored_only = true;
-        fetch_board_scoped(&searches, Mode::Authored, &all, "me", &config).unwrap();
-        let repo = BoardScope::Repository("acme/widgets".into());
-        fetch_board_scoped(&searches, Mode::Authored, &repo, "me", &config).unwrap();
-        assert_eq!(
-            *searches.0.lock().unwrap(),
-            [
-                "is:pr is:open involves:me sort:updated-desc",
-                "is:pr is:open author:me sort:updated-desc",
-                "repo:acme/widgets is:pr is:open author:me",
-            ]
-        );
-    }
-
-    /// Records every search string and answers with `pages` in turn.
-    struct AllOpenSearches {
-        seen: Mutex<Vec<(String, Option<String>)>>,
-        requested: Mutex<Vec<String>>,
-        pages: Mutex<VecDeque<serde_json::Value>>,
-    }
-
-    impl AllOpenSearches {
-        fn new(pages: Vec<serde_json::Value>) -> Self {
-            Self {
-                seen: Mutex::new(Vec::new()),
-                requested: Mutex::new(Vec::new()),
-                pages: Mutex::new(pages.into()),
-            }
-        }
-
-        fn answer(&self, variables: &[(&str, &str)]) -> serde_json::Value {
-            let get = |name: &str| {
-                variables
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            };
-            if let Some(requested) = get("requested") {
-                self.requested.lock().unwrap().push(requested);
-            }
-            self.seen
-                .lock()
-                .unwrap()
-                .push((get("q").unwrap(), get("after")));
-            self.pages.lock().unwrap().pop_front().unwrap()
-        }
-    }
-
-    impl GithubTransport for AllOpenSearches {
-        fn graphql(
-            &self,
-            query: &str,
-            variables: &[(&str, &str)],
-        ) -> Result<serde_json::Value, GhError> {
-            assert!(
-                query.contains("issueCount"),
-                "the count comes with the page"
-            );
-            Ok(self.answer(variables))
-        }
-    }
-
-    fn all_open_page(
-        nodes: Vec<serde_json::Value>,
-        count: u64,
-        next: Option<&str>,
-    ) -> serde_json::Value {
-        json!({"data": {
-            "scopeRepository": {"nameWithOwner": "acme/widgets"},
-            "search": {
-                "issueCount": count,
-                "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next},
-                "nodes": nodes
-            },
-            "rateLimit": null
-        }})
-    }
-
-    fn someone_elses(number: u64, author: &str, updated: &str) -> serde_json::Value {
-        let mut v = base(number);
-        v["id"] = json!(format!("PR_{number}"));
-        v["author"] = json!({"login": author});
-        v["updatedAt"] = json!(updated);
-        v
-    }
-
-    #[test]
-    fn all_open_searches_one_repository_by_last_update_and_counts_what_is_not_loaded() {
-        let transport = AllOpenSearches::new(vec![
-            all_open_page(
-                vec![someone_elses(7, "alice", "2026-09-20T10:00:00Z")],
-                412,
-                Some("c1"),
-            ),
-            all_open_page(
-                vec![someone_elses(5, "bob", "2026-09-19T10:00:00Z")],
-                412,
-                None,
-            ),
-        ]);
-        let first = fetch_all_open(
-            &transport,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &RemoteFilter::default(),
-            &[],
-            false,
-        )
-        .unwrap();
-        assert_eq!(first.total, Some(412));
-        assert!(first.truncated);
-        assert!(first.pagination.can_load_more(Mode::AllOpen));
-
-        let more = fetch_more_board(
-            &transport,
-            Mode::AllOpen,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &first,
-        )
-        .unwrap();
-        assert_eq!(
-            more.rows.iter().map(|row| row.number).collect::<Vec<_>>(),
-            [7, 5],
-            "a later page lands below the rows already shown"
-        );
-        assert!(!more.truncated);
-        assert!(!more.pagination.can_load_more(Mode::AllOpen));
-        let search = "repo:acme/widgets is:pr is:open sort:updated-desc";
-        assert_eq!(
-            *transport.seen.lock().unwrap(),
-            [
-                (search.to_owned(), None),
-                (search.to_owned(), Some("c1".to_owned())),
-            ]
-        );
-    }
-
-    #[test]
-    fn all_open_sends_label_and_author_chips_to_github_and_pages_the_same_search() {
-        use crate::search::{FilterChip, Qualifier};
-        let filter = RemoteFilter::from_chips(&[
-            FilterChip::new(Qualifier::Label, "Needs Review"),
-            FilterChip::new(Qualifier::Author, "Alice"),
-        ]);
-        let transport = AllOpenSearches::new(vec![
-            all_open_page(Vec::new(), 90, Some("c1")),
-            all_open_page(Vec::new(), 90, None),
-        ]);
-        let first = fetch_all_open(
-            &transport,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &filter,
-            &[],
-            false,
-        )
-        .unwrap();
-        // A filter change is a new search; the cursor it hands out belongs to
-        // this one, so Load more repeats it word for word.
-        fetch_more_board(
-            &transport,
-            Mode::AllOpen,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &first,
-        )
-        .unwrap();
-        let search = "repo:acme/widgets is:pr is:open sort:updated-desc \
-                      label:\"needs review\" author:alice author:app/alice";
-        let seen = transport.seen.lock().unwrap();
-        assert_eq!(seen[0].0, search);
-        assert_eq!(seen[1], (search.to_owned(), Some("c1".to_owned())));
-        assert_eq!(
-            *transport.requested.lock().unwrap(),
-            [search_string(Mode::Review, "acme/widgets", "me")],
-            "page one asks the review queue's own question, unfiltered; Load more does not"
-        );
-    }
-
-    #[test]
-    fn a_later_page_reads_review_requests_from_page_one() {
-        let mut first = all_open_page(
-            vec![someone_elses(7, "alice", "2026-09-20T10:00:00Z")],
-            2,
-            Some("c1"),
-        );
-        first["data"]["requested"] = json!({"nodes": [{"id": "PR_5"}]});
-        let transport = AllOpenSearches::new(vec![
-            first,
-            all_open_page(
-                vec![someone_elses(5, "bob", "2026-09-19T10:00:00Z")],
-                2,
-                None,
-            ),
-        ]);
-        let page = fetch_all_open(
-            &transport,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &RemoteFilter::default(),
-            &[],
-            false,
-        )
-        .unwrap();
-        let more = fetch_more_board(
-            &transport,
-            Mode::AllOpen,
-            "acme/widgets",
-            "me",
-            &cfg(),
-            &page,
-        )
-        .unwrap();
-        let bobs = more.rows.iter().find(|row| row.number == 5).unwrap();
-        assert_eq!(bobs.category, Category::Todo);
-    }
-
-    #[test]
-    fn all_open_asks_for_a_repository_rather_than_searching_everything() {
-        let error = fetch_board_scoped(
-            &SequenceTransport::new(Vec::new()),
-            Mode::AllOpen,
-            &BoardScope::AllRepositories,
-            "me",
-            &cfg(),
-        )
-        .unwrap_err();
-        assert_eq!(error, GhError::NeedsRepository);
-        assert_eq!(
-            error.to_string(),
-            "Pick a repository to see all of its open PRs."
-        );
-    }
-
-    #[test]
-    fn all_open_rows_read_as_yours_as_asked_of_you_or_in_the_authors_name() {
-        let mut mine = base(1);
-        mine["id"] = json!("mine");
-        mine["updatedAt"] = json!("2026-09-18T10:00:00Z");
-        let mut asks_me = someone_elses(2, "alice", "2026-09-19T10:00:00Z");
-        asks_me["reviewRequests"] = json!({"totalCount": 1, "nodes": [
-            {"requestedReviewer": {"__typename": "User", "login": "Me"}}
-        ]});
-        let mut asks_a_team = someone_elses(3, "bob", "2026-09-20T10:00:00Z");
-        asks_a_team["reviewRequests"] = json!({"totalCount": 1, "nodes": [
-            {"requestedReviewer": {"__typename": "Team", "slug": "platform"}}
-        ]});
-        asks_a_team["mergeable"] = json!("CONFLICTING");
-        let mut draft = someone_elses(4, "carol", "2026-09-21T10:00:00Z");
-        draft["isDraft"] = json!(true);
-        draft["reviewRequests"] = asks_me["reviewRequests"].clone();
-
-        let prs = [pr(mine), pr(asks_me), pr(asks_a_team), pr(draft)];
-        let rows = derive_rows(&prs, Mode::AllOpen, "acme/widgets", "me", &cfg());
-        assert_eq!(
-            rows.iter().map(|row| row.number).collect::<Vec<_>>(),
-            [4, 3, 2, 1],
-            "most recently updated first, as GitHub sorted them"
-        );
-        let by_number = |n: u64| rows.iter().find(|row| row.number == n).unwrap();
-        assert_eq!(by_number(1).note, "⚠️ no reviewers — assign alice + bob");
-        assert_eq!(by_number(2).category, Category::Todo);
-        assert_eq!(by_number(2).note, "🔵 needs your review");
-        let team = by_number(3);
-        assert_ne!(
-            team.category,
-            Category::Todo,
-            "unless the review queue's search says a team of yours was asked"
-        );
-        assert_eq!(
-            team.note, "merge conflict",
-            "the Author column already says whose it is"
-        );
-        assert!(
-            team.blockers.is_empty(),
-            "someone else's conflict is not your blocker"
-        );
-        assert_eq!(by_number(4).category, Category::Draft);
-        let need_you = |rows: &[BoardRow]| {
-            rows.iter()
-                .filter(|row| crate::status::row_needs_you(Mode::AllOpen, row))
-                .count()
-        };
-        assert_eq!(
-            need_you(&rows),
-            2,
-            "your own PR with no reviewers and the review asked of you; bob's conflict is his"
-        );
-
-        // The review queue's `review-requested:` search counts your teams;
-        // what it returns is "Requested from you" in All open too.
-        let rows = derive_all_open_rows(&prs, "acme/widgets", "me", &cfg(), &["PR_3".into()]);
-        let team = rows.iter().find(|row| row.number == 3).unwrap();
-        assert_eq!(team.category, Category::Todo);
-        assert_eq!(team.queue_provenance, Some(QueueProvenance::Requested));
-        assert_eq!(
-            need_you(&rows),
-            3,
-            "your own PR, the review asked of you by name, and your team's"
-        );
-    }
-
-    /// Your own review is not in `review_state`, and GitHub drops your
-    /// request once you review, so a teammate's PR that only you reviewed
-    /// reads as nobody asked and nobody reviewed. It stays under Awaiting
-    /// review rather than Available to review ("no review yet").
-    #[test]
-    fn a_teammates_pr_you_reviewed_is_not_available_to_review() {
-        let unasked = someone_elses(1, "alice", "2026-09-19T10:00:00Z");
-        let mut reviewed = someone_elses(2, "alice", "2026-09-20T10:00:00Z");
-        reviewed["reviews"]["nodes"] = json!([
-            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-20T09:00:00Z"}
-        ]);
-        let prs = [pr(unasked), pr(reviewed)];
-        for (mode, rows) in [
-            (
-                Mode::AllOpen,
-                derive_all_open_rows(&prs, "acme/widgets", "me", &cfg(), &[]),
-            ),
-            (
-                Mode::Authored,
-                derive_involving_rows(&prs, "acme/widgets", "me", &cfg()),
-            ),
-        ] {
-            let by_number = |n: u64| rows.iter().find(|row| row.number == n).unwrap();
-            let reviewed = by_number(2);
-            assert_eq!(
-                (reviewed.review_state, reviewed.my_review.as_deref()),
-                (ReviewState::None, Some("APPROVED")),
-                "{mode:?}"
-            );
-            assert!(
-                !crate::layout::is_available_section(mode, reviewed),
-                "{mode:?}"
-            );
-            assert!(
-                crate::layout::is_available_section(mode, by_number(1)),
-                "{mode:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn global_involving_rows_keep_own_notes_and_describe_other_authors() {
-        let mut mine = base(1);
-        mine["id"] = json!("mine");
-        mine["repository"] = json!({"nameWithOwner":"acme/one"});
-        let mut theirs = base(2);
-        theirs["id"] = json!("theirs");
-        theirs["repository"] = json!({"nameWithOwner":"acme/two"});
-        theirs["author"] = json!({"login":"alice"});
-        theirs["mergeable"] = json!("CONFLICTING");
-        theirs["commits"]["nodes"] = json!([{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]);
-
-        let rows =
-            derive_involving_rows(&[pr(mine), pr(theirs)], "", "me", &BoardConfig::default());
-        let mine = rows.iter().find(|row| row.id == "mine").unwrap();
-        assert_eq!(mine.note, "⚠️ no reviewers");
-        let theirs = rows.iter().find(|row| row.id == "theirs").unwrap();
-        assert_eq!(theirs.repo, "acme/two");
-        assert_eq!(theirs.note, "alice's PR · merge conflict · CI failing");
-        assert!(!theirs.note.contains("rebase"));
-        assert!(theirs.blockers.is_empty());
-    }
-
-    #[test]
-    fn unknown_mergeability_keeps_the_last_known_conflict_and_rederives() {
-        let mut known = base(1);
-        known["id"] = json!("mine");
-        known["mergeable"] = json!("CONFLICTING");
-        let conflicted = derive_one(known.clone(), Mode::Authored);
-        assert!(conflicted.conflict && !conflicted.mergeable_unknown);
-
-        let mut recomputing = known.clone();
-        recomputing["mergeable"] = json!("UNKNOWN");
-        let derive = |v: &serde_json::Value| {
-            derive_rows(
-                &[pr(v.clone())],
-                Mode::Authored,
-                "acme/widgets",
-                "me",
-                &cfg(),
-            )
-        };
-        let mut rows = derive(&recomputing);
-        assert!(rows[0].mergeable_unknown && !rows[0].conflict);
-        let last = |id: &str| (id == "mine").then_some(true);
-        assert_eq!(
-            carry_forward_conflicts(&mut rows, last, Mode::Authored, "me", &cfg()),
-            1
-        );
-        assert!(rows[0].conflict);
-        assert_eq!(rows[0].category, conflicted.category);
-        assert_eq!(rows[0].blockers, conflicted.blockers);
-        assert_eq!(rows[0].note, conflicted.note);
-
-        // Last known mergeable, no memory, or a value GitHub did report: untouched.
-        let mut rows = derive(&recomputing);
-        assert_eq!(
-            carry_forward_conflicts(&mut rows, |_| Some(false), Mode::Authored, "me", &cfg()),
-            0
-        );
-        assert_eq!(
-            carry_forward_conflicts(&mut rows, |_| None, Mode::Authored, "me", &cfg()),
-            0
-        );
-        let mut clean = known.clone();
-        clean["mergeable"] = json!("MERGEABLE");
-        let mut rows = derive(&clean);
-        assert_eq!(
-            carry_forward_conflicts(&mut rows, last, Mode::Authored, "me", &cfg()),
-            0
-        );
-        assert!(!rows[0].conflict);
-        let mut absent = known.clone();
-        absent["mergeable"] = serde_json::Value::Null;
-        assert!(derive(&absent)[0].mergeable_unknown);
-
-        // Someone else's PR in the involving view keeps its status Note.
-        let mut theirs = known.clone();
-        theirs["author"] = json!({"login": "alice"});
-        let expected = derive_involving_rows(&[pr(theirs.clone())], "acme/widgets", "me", &cfg());
-        theirs["mergeable"] = json!("UNKNOWN");
-        let mut rows = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg());
-        carry_forward_conflicts(&mut rows, last, Mode::Authored, "me", &cfg());
-        assert_eq!(rows[0].note, expected[0].note);
-        assert_eq!(rows[0].category, expected[0].category);
-        assert!(rows[0].blockers.is_empty());
-
-        // Review queue Notes mention the conflict again.
-        let mut review = known.clone();
-        review["author"] = json!({"login": "alice"});
-        let expected = derive_one(review.clone(), Mode::Review);
-        review["mergeable"] = json!("UNKNOWN");
-        let mut rows = derive_rows(&[pr(review)], Mode::Review, "acme/widgets", "me", &cfg());
-        carry_forward_conflicts(&mut rows, last, Mode::Review, "me", &cfg());
-        assert_eq!(rows[0].note, expected.note);
-    }
-
-    #[test]
-    fn settings_comparison_tracks_reviewers_and_issue_rule_content() {
-        let mut first = BoardConfig::default();
-        let mut second = first.clone();
-        assert_eq!(first, second);
-        second.default_reviewers.push("alex".into());
-        assert_ne!(first, second);
-        first = second.clone();
-        first.issue_link =
-            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://example.com/{id}").unwrap());
-        second.issue_link =
-            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://example.com/{id}").unwrap());
-        assert_eq!(first, second);
-        second.issue_link =
-            Some(IssueLinkRule::new("TASK-[0-9]+", "https://example.com/{id}").unwrap());
-        assert_ne!(first, second);
-        second.issue_link =
-            Some(IssueLinkRule::new("DEMO-[0-9]+", "https://other.example/{id}").unwrap());
-        assert_ne!(first, second);
-    }
-
-    /// Answers only searches of [`SMALL_PAGE_SIZE`] rows, the way GitHub
-    /// answered "Involving me" on 2026-09-29: a full page timed out.
-    struct GivesUpOnFullPages(Mutex<Vec<String>>);
-
-    impl GithubTransport for GivesUpOnFullPages {
-        fn graphql(
-            &self,
-            query: &str,
-            _variables: &[(&str, &str)],
-        ) -> Result<serde_json::Value, GhError> {
-            self.0.lock().unwrap().push(query.to_owned());
-            if query.contains(&format!("first:{PAGE_SIZE}")) {
-                return Err(GhError::Network("gh: HTTP 502".into()));
-            }
-            Ok(json!({"data": {
-                "search": {
-                    "issueCount": 101,
-                    "pageInfo": {"hasNextPage": true, "endCursor": "c1"},
-                    "nodes": [base(1)]
-                },
-                "rateLimit": null
-            }}))
-        }
-    }
-
-    #[test]
-    fn a_page_github_gives_up_on_is_asked_again_with_fewer_rows_and_the_view_remembers() {
-        let transport = GivesUpOnFullPages(Mutex::new(Vec::new()));
-        let all = BoardScope::AllRepositories;
-        let first = fetch_board_scoped_with_tracked(
-            &transport,
-            Mode::Authored,
-            &all,
-            "me",
-            &cfg(),
-            &[],
-            false,
-        )
-        .unwrap();
-        assert!(first.pagination.small_pages());
-        assert_eq!(first.rows.len(), 1);
-        let asked = std::mem::take(&mut *transport.0.lock().unwrap());
-        assert_eq!(asked.len(), 2, "one full page, then one small page");
-        assert!(asked[0].contains("first:60") && asked[1].contains("first:30"));
-
-        // The next refresh of the same view asks for the small page at once,
-        // and so does Load more.
-        let again = fetch_board_scoped_with_tracked(
-            &transport,
-            Mode::Authored,
-            &all,
-            "me",
-            &cfg(),
-            &[],
-            true,
-        )
-        .unwrap();
-        assert!(again.pagination.small_pages());
-        let more = fetch_more_board_scoped(&transport, Mode::Authored, &all, "me", &cfg(), &again)
-            .unwrap();
-        assert!(more.pagination.small_pages());
-        let asked = std::mem::take(&mut *transport.0.lock().unwrap());
-        assert_eq!(asked.len(), 2);
-        assert!(asked.iter().all(|query| query.contains("first:30")));
-    }
-
-    #[test]
-    fn only_github_giving_up_asks_again() {
-        // Refused, signed out, or a network failure: one request, same error.
-        for error in [
-            GhError::NotAuthenticated,
-            GhError::Network("could not resolve host".into()),
-            GhError::Network("gh timed out after 60s — killed".into()),
-        ] {
-            let transport = SequenceTransport::new(vec![Err(error.clone())]);
-            let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg());
-            assert!(fetched.is_err(), "{error:?}");
-            assert!(transport.0.lock().unwrap().is_empty());
-        }
-        // A small page that also fails reports that failure; no third try.
-        let transport = SequenceTransport::new(vec![
-            Err(GhError::Network("gh: HTTP 502".into())),
-            Err(GhError::GraphqlErrors(vec![
-                "Something went wrong while executing your query. This may be the result of a timeout".into(),
-            ])),
-        ]);
-        let error =
-            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap_err();
-        assert!(error.is_query_timeout());
-        assert!(transport.0.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn more_threads_than_the_window_make_the_count_a_lower_bound() {
-        let mut v = base(4);
-        v["reviewThreads"] = json!({
-            "totalCount": 130,
-            "nodes": [{"isResolved": false}, {"isResolved": true}, {"isResolved": false}]
-        });
-        let row = derive_one(v.clone(), Mode::Authored);
-        assert_eq!(row.unresolved, 2);
-        assert!(row.unresolved_capped);
-        assert!(row.note.contains("2+ unresolved comments"), "{}", row.note);
-        // Every thread read: the plain count, singular where it is one.
-        v["reviewThreads"] = json!({"totalCount": 1, "nodes": [{"isResolved": false}]});
-        let row = derive_one(v, Mode::Authored);
-        assert!(!row.unresolved_capped);
-        assert!(row.note.contains("1 unresolved comment"), "{}", row.note);
-        assert!(!row.note.contains("comments"), "{}", row.note);
-    }
-
-    #[test]
-    fn what_became_of_tracked_prs_is_one_request_without_rows() {
-        struct Status;
-        impl GithubTransport for Status {
-            fn graphql(
-                &self,
-                _query: &str,
-                _variables: &[(&str, &str)],
-            ) -> Result<serde_json::Value, GhError> {
-                unreachable!("ids go through graphql_with_ids")
-            }
-            fn graphql_with_ids(
-                &self,
-                query: &str,
-                variables: &[(&str, &str)],
-                ids: &[String],
-            ) -> Result<serde_json::Value, GhError> {
-                assert_eq!(query, TRACKED_STATUS_QUERY);
-                assert!(variables.is_empty());
-                assert_eq!(ids.len(), 4);
-                Ok(json!({"data": {
-                    "tracked": [
-                        {"id": "A", "state": "MERGED", "merged": true},
-                        {"id": "B", "state": "CLOSED", "merged": false},
-                        {"id": "C", "state": "OPEN", "merged": false},
-                        null
-                    ],
-                    "rateLimit": {"limit": 5000, "cost": 1, "remaining": 4999, "resetAt": "2026-09-29T12:00:00Z"}
-                }}))
-            }
-        }
-        let ids: Vec<String> = ["A", "B", "C", "D"].map(String::from).to_vec();
-        let fetched = fetch_tracked_status(&Status, &ids).unwrap();
-        let statuses: Vec<_> = fetched
-            .tracked
-            .iter()
-            .map(|tracked| (tracked.pr_id.as_str(), tracked.status))
-            .collect();
-        assert_eq!(
-            statuses,
-            [
-                ("A", TrackedPrStatus::Merged),
-                ("B", TrackedPrStatus::Closed),
-                ("C", TrackedPrStatus::Open),
-                ("D", TrackedPrStatus::Inaccessible),
-            ]
-        );
-        assert!(fetched.tracked.iter().all(|tracked| tracked.row.is_none()));
-        assert_eq!(fetched.rate.map(|rate| rate.cost), Some(1));
-        assert!(fetch_tracked_status(&Status, &[])
-            .unwrap()
-            .tracked
-            .is_empty());
-    }
-}
+mod tests;

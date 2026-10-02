@@ -187,7 +187,17 @@ fn run_view(args: ViewArgs) -> ExitCode {
         stale_after_days: setup.board.stale_after_days,
         query: args.filter.clone(),
     };
-    let mut fetch = match view::fetch(
+    // A view GitHub could not answer at full pages in the last hour starts at
+    // small ones, as it would in the app, instead of paying the timeout again.
+    let small_pages_key = view::small_pages_key(
+        &setup.auth.host,
+        &login,
+        &setup.scope,
+        args.mode,
+        args.authored,
+    );
+    let now = Utc::now().timestamp();
+    let fetched = view::fetch(
         session.transport(),
         args.mode,
         &setup.scope,
@@ -195,8 +205,16 @@ fn run_view(args: ViewArgs) -> ExitCode {
         &setup.board,
         &filters.remote(args.mode),
         args.pages,
-        false,
-    ) {
+        prmarmot_local::small_pages::remembered(&small_pages_key, now),
+    );
+    let gave_up = match &fetched {
+        Ok(fetch) => fetch.pagination.small_pages(),
+        Err(error) => error.is_query_timeout(),
+    };
+    if gave_up {
+        prmarmot_local::small_pages::remember(&small_pages_key, now);
+    }
+    let mut fetch = match fetched {
         Ok(fetch) => fetch,
         Err(error) => return fail(&error),
     };

@@ -14,6 +14,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::attention::Marks;
 use crate::board::BoardRow;
 use crate::pickup::is_stale;
 
@@ -370,65 +371,164 @@ pub fn local_only_terms(text: &str, chips: &[FilterChip], remote: &RemoteFilter)
 /// match. Filtering is local; it must not trigger GitHub requests on each
 /// keystroke.
 pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
-    let terms = filter_terms(query);
-    let terms: Vec<(Option<Qualifier>, &str)> = terms
-        .iter()
-        .map(|term| (term.qualifier, term.value.as_str()))
-        .collect();
-    matches_terms(row, &terms, stale)
+    Search::query(query).matches(row, stale)
 }
 
 /// [`matches_filter`] over the search box as a whole: its chips and the words
 /// still typed, read as one search.
 pub fn matches_search(row: &BoardRow, text: &str, chips: &[FilterChip], stale: StaleRule) -> bool {
-    let typed = filter_terms(text);
-    let terms: Vec<(Option<Qualifier>, &str)> = chips
-        .iter()
-        .map(|chip| (Some(chip.qualifier), chip.value.as_str()))
-        .chain(
-            typed
+    Search::new(text, chips).matches(row, stale)
+}
+
+/// A search read once and matched against many rows, so filtering a long
+/// board parses the box once per keystroke rather than once per row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Search {
+    /// Every term with a value (`label:` alone is still being typed and
+    /// filters nothing yet); free words lowercased.
+    terms: Vec<(Option<Qualifier>, String)>,
+}
+
+impl Search {
+    /// The search box: its chips and the words still typed.
+    pub fn new(text: &str, chips: &[FilterChip]) -> Self {
+        let typed = filter_terms(text);
+        Self::from_terms(
+            chips
+                .iter()
+                .map(|chip| (Some(chip.qualifier), chip.value.as_str()))
+                .chain(
+                    typed
+                        .iter()
+                        .map(|term| (term.qualifier, term.value.as_str())),
+                ),
+        )
+    }
+
+    /// A query as typed, chips and words together.
+    pub fn query(query: &str) -> Self {
+        let terms = filter_terms(query);
+        Self::from_terms(
+            terms
                 .iter()
                 .map(|term| (term.qualifier, term.value.as_str())),
         )
-        .collect();
-    matches_terms(row, &terms, stale)
+    }
+
+    fn from_terms<'a>(terms: impl Iterator<Item = (Option<Qualifier>, &'a str)>) -> Self {
+        Self {
+            terms: terms
+                .filter(|(_, value)| !value.is_empty())
+                .map(|(qualifier, value)| match qualifier {
+                    None => (None, value.to_lowercase()),
+                    Some(_) => (qualifier, value.to_owned()),
+                })
+                .collect(),
+        }
+    }
+
+    /// True when it filters nothing.
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// Case-insensitive search across the fields users scan in the board:
+    /// every free word must appear somewhere, every `label:` and `is:stale`
+    /// must match its field exactly, and of several `author:` (or `repo:`)
+    /// terms one must match.
+    pub fn matches(&self, row: &BoardRow, stale: StaleRule) -> bool {
+        if self.terms.is_empty() {
+            return true;
+        }
+        let any_of = |qualifier: Qualifier| {
+            let mut values = self
+                .terms
+                .iter()
+                .filter(|(q, _)| *q == Some(qualifier))
+                .peekable();
+            values.peek().is_none() || values.any(|(_, value)| qualifier.matches(row, value, stale))
+        };
+        if !any_of(Qualifier::Author) || !any_of(Qualifier::Repo) {
+            return false;
+        }
+        // Built only when a free word needs it.
+        let mut text: Option<String> = None;
+        self.terms.iter().all(|(qualifier, value)| match qualifier {
+            None => text
+                .get_or_insert_with(|| {
+                    format!(
+                        "#{} {} {} {} {} {} {}",
+                        row.number,
+                        row.repo,
+                        row.title,
+                        row.author.as_deref().unwrap_or_default(),
+                        row.labels.join(" "),
+                        row.issue.as_deref().unwrap_or_default(),
+                        row.note
+                    )
+                    .to_lowercase()
+                })
+                .contains(value.as_str()),
+            Some(Qualifier::Author | Qualifier::Repo) => true,
+            Some(qualifier) => qualifier.matches(row, value, stale),
+        })
+    }
 }
 
-fn matches_terms(row: &BoardRow, terms: &[(Option<Qualifier>, &str)], stale: StaleRule) -> bool {
-    // `label:` alone is still being typed; it filters nothing yet.
-    let terms: Vec<_> = terms
-        .iter()
-        .filter(|(_, value)| !value.is_empty())
-        .collect();
-    if terms.is_empty() {
-        return true;
-    }
-    let any_of = |qualifier: Qualifier| {
-        let mut values = terms
-            .iter()
-            .filter(|(q, _)| *q == Some(qualifier))
-            .peekable();
-        values.peek().is_none() || values.any(|(_, value)| qualifier.matches(row, value, stale))
+/// What the person narrowed the board to: the search box and the quick
+/// filters.
+#[derive(Debug, Clone, Copy)]
+pub struct BoardQuery<'a> {
+    pub search: &'a Search,
+    pub stale: StaleRule,
+    /// Changed since you looked, only.
+    pub changed_only: bool,
+    /// The rows the header counts as "need you", only.
+    pub needs_you_only: bool,
+}
+
+/// The quick filters' numbers, each over every loaded row whatever the
+/// search: a pill's number is what its filter would show on its own, and
+/// Needs you's is the header's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuickCounts {
+    pub changed: usize,
+    pub snoozed: usize,
+    pub stale: usize,
+    /// Watched or snoozed.
+    pub followed: usize,
+    /// The header's "need you": [`crate::status::need_you_count`].
+    pub needs_you: usize,
+}
+
+/// The rows the board shows, in their loaded order, and the quick filters'
+/// counts. Pure, so the rules a front end draws its table and pills from are
+/// tested here rather than through a window.
+pub fn query_board<'r>(
+    rows: &'r [BoardRow],
+    query: &BoardQuery<'_>,
+    marks: &Marks<'_>,
+) -> (Vec<&'r BoardRow>, QuickCounts) {
+    let mut counts = QuickCounts {
+        needs_you: crate::status::need_you_count(rows, |row| marks.is_snoozed(&row.id)),
+        ..QuickCounts::default()
     };
-    if !any_of(Qualifier::Author) || !any_of(Qualifier::Repo) {
-        return false;
+    for row in rows {
+        counts.changed += usize::from(marks.is_changed(&row.id));
+        counts.snoozed += usize::from(marks.is_snoozed(&row.id));
+        counts.stale += usize::from(query.stale.is_stale(row));
+        counts.followed += usize::from(marks.is_followed(&row.id));
     }
-    let text = format!(
-        "#{} {} {} {} {} {} {}",
-        row.number,
-        row.repo,
-        row.title,
-        row.author.as_deref().unwrap_or_default(),
-        row.labels.join(" "),
-        row.issue.as_deref().unwrap_or_default(),
-        row.note
-    )
-    .to_lowercase();
-    terms.iter().all(|(qualifier, value)| match qualifier {
-        None => text.contains(&value.to_lowercase()),
-        Some(Qualifier::Author | Qualifier::Repo) => true,
-        Some(qualifier) => qualifier.matches(row, value, stale),
-    })
+    let shown = rows
+        .iter()
+        .filter(|row| query.search.matches(row, query.stale))
+        .filter(|row| !query.changed_only || marks.is_changed(&row.id))
+        .filter(|row| {
+            !query.needs_you_only
+                || (crate::status::row_needs_you(row) && !marks.is_snoozed(&row.id))
+        })
+        .collect();
+    (shown, counts)
 }
 
 #[cfg(test)]
@@ -475,6 +575,7 @@ mod tests {
             created_at: "2026-09-01T10:00:00Z".into(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: "waiting on bob".into(),
         }
     }
@@ -763,5 +864,68 @@ mod tests {
             local_only_terms("", &chips, &remote),
             [r#"label:area-08"#, r#"label:area-09"#]
         );
+    }
+
+    /// The board shows what the search and the quick filters let through;
+    /// each pill counts every loaded row whatever the search, and Needs you's
+    /// number leaves out snoozed rows, as the header's does.
+    #[test]
+    fn query_board_filters_and_counts_every_loaded_row() {
+        let mut mine = row(1, Category::Action);
+        mine.blockers = vec![crate::board::Blocker::CiFailing];
+        mine.title = "Fix login".into();
+        let asked = row(2, Category::Todo);
+        let mut snoozed = row(3, Category::Todo);
+        snoozed.title = "Fix logout".into();
+        let waiting = row(4, Category::Await);
+        let rows = [mine, asked, snoozed, waiting];
+        let marks = Marks {
+            changed: ["PR_1", "PR_4"].into_iter().collect(),
+            watched: ["PR_2"].into_iter().collect(),
+            snoozed: ["PR_3"].into_iter().collect(),
+        };
+        let numbers = |shown: Vec<&BoardRow>| shown.iter().map(|r| r.number).collect::<Vec<_>>();
+        let everything = Search::default();
+        let all = BoardQuery {
+            search: &everything,
+            stale: rule(),
+            changed_only: false,
+            needs_you_only: false,
+        };
+        let (shown, counts) = query_board(&rows, &all, &marks);
+        assert_eq!(numbers(shown), [1, 2, 3, 4]);
+        assert_eq!(
+            counts,
+            QuickCounts {
+                changed: 2,
+                snoozed: 1,
+                stale: 0,
+                followed: 2,
+                needs_you: 2,
+            }
+        );
+
+        let fix = Search::query("fix");
+        let (shown, searched) = query_board(
+            &rows,
+            &BoardQuery {
+                search: &fix,
+                ..all
+            },
+            &marks,
+        );
+        assert_eq!(numbers(shown), [1, 3]);
+        assert_eq!(searched, counts, "the pills count every loaded row");
+
+        let changed = BoardQuery {
+            changed_only: true,
+            ..all
+        };
+        assert_eq!(numbers(query_board(&rows, &changed, &marks).0), [1, 4]);
+        let needs_you = BoardQuery {
+            needs_you_only: true,
+            ..all
+        };
+        assert_eq!(numbers(query_board(&rows, &needs_you, &marks).0), [1, 2]);
     }
 }
