@@ -161,6 +161,10 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         "blockers": row.blockers.iter().map(blocker_json).collect::<Vec<_>>(),
         "note": strip_note_glyphs(&row.note),
         "head_oid": row.head_oid,
+        "commits_since_review": row.commits_since_review.map(|since| json!({
+            "count": since.count,
+            "lower_bound": since.lower_bound,
+        })),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "waiting_since": row.waiting_since,

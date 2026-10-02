@@ -424,6 +424,8 @@ Every feature, with its limits and the version it shipped in, is listed in
   review** list the longest wait first. When only a team was asked and nobody
   has reviewed, the Note says "team requested, nobody responded"; with nobody
   asked at all, your PR's Note says "no reviewers".
+  and `unresolved_paths`. "New commits since your review" counts them ("3 new
+  commits since your review", "20+" past the newest 20 read).
 - **Sections:** a section has one name in every view. In **Involving me**
   and **All open**, someone else's PR that nobody was asked to review and
   nobody has reviewed is under **Available to review**, as in the Review

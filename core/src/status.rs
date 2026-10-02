@@ -854,6 +854,7 @@ mod tests {
             head_oid: None,
             reviewed_oid: None,
             reviewed_at: None,
+            commits_since_review: None,
             number: 1,
             url: "https://github.com/acme/widgets/pull/1".into(),
             title: "Change".into(),

@@ -252,6 +252,16 @@
         },
         "note": { "type": "string", "description": "The app's one-line summary; wording may change." },
         "head_oid": { "type": ["string", "null"] },
+        "commits_since_review": {
+          "type": ["object", "null"],
+          "description": "Commits the PR gained since your latest review, when its head moved on from the commit you reviewed; null otherwise (your own PR, no review, head unchanged, or the list not read).",
+          "required": ["count", "lower_bound"],
+          "additionalProperties": false,
+          "properties": {
+            "count": { "type": "integer", "minimum": 1 },
+            "lower_bound": { "type": "boolean", "description": "The reviewed commit is older than the newest 20 read, so `count` is at least this (the Note says \"20+\")." }
+          }
+        },
         "created_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": ["string", "null"], "format": "date-time" },
         "waiting_since": {

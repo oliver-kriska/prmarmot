@@ -482,6 +482,12 @@ pub fn agent_toggle_text(on: bool, count: u32) -> String {
     core_status::agent_toggle_tooltip(on, count as usize)
 }
 
+/// "3 new commits since your review", "20+ new commits since your review";
+/// `nil` when the row does not know the count.
+#[uniffi::export]
+pub fn commits_since_review_text(pr: PullRequest) -> Option<String> {
+    prmarmot_core::board::commits_since_review_text(&pr.into_row())
+}
 /// The Note's state for an agent-authored PR nobody has reviewed and nothing
 /// blocks, for a front end that wants to draw it apart.
 #[uniffi::export]

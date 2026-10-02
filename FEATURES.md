@@ -193,6 +193,11 @@ values in the code. New features get the next free number in their area.
   rebase" and the PR stays in Approved. If rebase is the only merge method the repository allows, your PR whose
   branch can't be rebased is in Needs action with "can't rebase — rebase locally", and someone else's gets "can't
   rebase" in its Note. `watch --until mergeable` also waits for a clean merge state. _since v0.14.0_
+- **F-note-19** "New commits since your review" counts them: "3 new commits since your review", "1 new commit",
+  or "20+" when the commit you reviewed is older than the newest 20 read (a rebase that rewrote them counts them
+  all). The count ends Details' "Your review" line and the "Review again" notification, and the CLI's JSON carries
+  `commits_since_review` (count and whether it is a lower bound). One more point per 30 rows, measured.
+  _unreleased_
 - **F-note-17** An agent's PR that nobody has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
   me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review, a conflict,

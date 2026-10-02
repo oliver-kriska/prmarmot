@@ -782,7 +782,10 @@ pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option
         return notice(
             NoticeKind::ReviewAgain,
             "Review again — new commits",
-            format!("{} #{} changed since your review", row.repo, row.number),
+            match crate::board::commits_since_review_text(row) {
+                Some(since) => format!("{} #{} · {since}", row.repo, row.number),
+                None => format!("{} #{} changed since your review", row.repo, row.number),
+            },
         );
     }
     if old.ci != ObservedCi::Pass && row.ci == Ci::Pass {
@@ -1292,6 +1295,7 @@ mod tests {
             head_oid: Some("head-1".into()),
             reviewed_oid: None,
             reviewed_at: None,
+            commits_since_review: None,
             number: 7,
             url: "https://github.com/acme/widgets/pull/7".into(),
             title: "Tidy things".into(),

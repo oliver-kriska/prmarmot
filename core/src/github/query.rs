@@ -102,6 +102,7 @@ macro_rules! pr_fields {
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
   reviews(last:60){ nodes{ author{login} state submittedAt } }
+  history: commits(last:20){ totalCount nodes{ commit{ oid } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
     };
 }
@@ -508,6 +509,11 @@ pub struct ReviewCommit {
     pub oid: String,
 }
 
+/// One of the PR's newest commits (`history`), oldest first.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryNode {
+    pub commit: ReviewCommit,
+}
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadNode {
@@ -659,6 +665,10 @@ pub struct RawPr {
     pub latest_review: Nodes<LatestReview>,
     #[serde(default)]
     pub review_threads: Nodes<ThreadNode>,
+    /// The newest 20 commits, oldest first, and how many there are. Absent
+    /// in prototype fixtures.
+    #[serde(default)]
+    pub history: Nodes<HistoryNode>,
     #[serde(default)]
     pub commits: Nodes<CommitNode>,
     /// The latest review requests and "ready for review" events, oldest

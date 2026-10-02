@@ -72,6 +72,9 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
   `my_review` the user's own (`NONE` if none). A standing review is the latest,
   except that a later comment does not cancel an approval or change request.
 - **`note`:** a one-line human summary. "CI failing" names the failing
+- **`commits_since_review`:** `{count, lower_bound}` when the PR's head moved
+  on from the commit the user reviewed (`lower_bound` true means at least
+  `count`, past the newest 20 commits read); null otherwise.
 - **Pickup age:** `waiting_since` is when the PR started waiting for a
   reviewer (its review request, or when it opened or became ready for
   review), null when it isn't waiting (drafts, already reviewed). `stale` is

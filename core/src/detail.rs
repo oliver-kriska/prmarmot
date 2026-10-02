@@ -233,7 +233,10 @@ pub fn detail_fields(
         fields.push(field(
             DetailKind::YourReview,
             Some("Your review"),
-            review.to_owned(),
+            match crate::board::commits_since_review_text(row) {
+                Some(since) => format!("{review} — {since}"),
+                None => review.to_owned(),
+            },
         ));
     }
     // Like the Note's "· 4d", with the start in the reader's time zone.
@@ -342,6 +345,7 @@ mod tests {
             head_oid: None,
             reviewed_oid: None,
             reviewed_at: None,
+            commits_since_review: None,
             number: 42,
             url: "https://github.com/acme/widgets/pull/42".into(),
             title: "Fix login".into(),

@@ -609,6 +609,7 @@ mod tests {
             head_oid: None,
             reviewed_oid: None,
             reviewed_at: None,
+            commits_since_review: None,
             number,
             url: format!("https://github.com/acme/widgets/pull/{number}"),
             title: format!("Change {number}"),

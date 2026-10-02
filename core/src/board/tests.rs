@@ -1477,6 +1477,68 @@ fn semantic_observation_is_stable_across_scope_and_queue_derivations() {
 }
 
 #[test]
+fn the_review_note_counts_the_commits_since_your_review_from_the_commit_list() {
+    let with_history = |oids: &[&str], total: usize, reviewed: &str| {
+        let mut value = base(122);
+        value["author"] = json!({"login": "alice"});
+        value["headRefOid"] = json!(oids[oids.len() - 1]);
+        value["history"] = json!({
+            "totalCount": total,
+            "nodes": oids.iter().map(|oid| json!({"commit": {"oid": oid}})).collect::<Vec<_>>()
+        });
+        value["latestReview"] = json!({"nodes": [{
+            "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z", "commit": {"oid": reviewed}
+        }]});
+        value["reviews"]["nodes"] = json!([
+            {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-09-10T10:00:00Z"}
+        ]);
+        derive_one(value, Mode::Review)
+    };
+    // Three commits after the one you reviewed.
+    let row = with_history(&["a", "b", "c", "d", "e"], 5, "b");
+    assert_eq!(
+        row.commits_since_review,
+        Some(CommitsSinceReview {
+            count: 3,
+            lower_bound: false
+        })
+    );
+    assert_eq!(
+        row.note,
+        "3 new commits since your review · ✅ you approved"
+    );
+    assert_eq!(
+        with_history(&["a", "b"], 2, "a").note,
+        "1 new commit since your review · ✅ you approved"
+    );
+    // The reviewed commit is older than the window: a lower bound.
+    let row = with_history(&["c", "d", "e"], 9, "a");
+    assert_eq!(
+        row.commits_since_review,
+        Some(CommitsSinceReview {
+            count: 3,
+            lower_bound: true
+        })
+    );
+    assert_eq!(
+        row.note,
+        "3+ new commits since your review · ✅ you approved"
+    );
+    // Rewritten by a rebase: every commit in the list is new, exactly.
+    assert_eq!(
+        with_history(&["x", "y"], 2, "a").commits_since_review,
+        Some(CommitsSinceReview {
+            count: 2,
+            lower_bound: false
+        })
+    );
+    // Reviewed at the head: nothing since, and no re-review wording.
+    let row = with_history(&["a", "b"], 2, "b");
+    assert_eq!(row.commits_since_review, None);
+    assert_eq!(row.note, "✅ you approved");
+}
+
+#[test]
 fn review_note_reports_new_head_without_fabricating_commit_count() {
     let mut value = base(121);
     value["author"] = json!({"login": "alice"});

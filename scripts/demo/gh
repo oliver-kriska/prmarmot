@@ -91,6 +91,7 @@ def pr(number, title, *, author="demo-user", author_type="User", draft=False,
         "repository": {"nameWithOwner": repo},
         "updatedAt": updated or f"2026-09-{number % 10 + 1:02d}T14:00:00Z",
         "headRefOid": head_oid,
+        "history": {"totalCount": 1, "nodes": [{"commit": {"oid": head_oid}}]},
         "state": "OPEN",
         "merged": False,
         "latestReview": {"nodes": latest_review},
@@ -229,6 +230,8 @@ def set_ci(node, state):
 def push_commit(node, tag="next"):
     """A new head commit: what "New commits" is computed from."""
     node["headRefOid"] = f"{node['headRefOid']}-{tag}"
+    node["history"]["nodes"].append({"commit": {"oid": node["headRefOid"]}})
+    node["history"]["totalCount"] += 1
     node["updatedAt"] = ago(0)
 
 

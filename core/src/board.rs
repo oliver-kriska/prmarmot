@@ -406,6 +406,8 @@ pub struct BoardRow {
     pub reviewed_oid: Option<String>,
     pub reviewed_at: Option<String>,
     /// Commits since your latest review, when the head moved on from the
+    /// commit you reviewed and GitHub's commit list was read.
+    pub commits_since_review: Option<CommitsSinceReview>,
     pub number: u64,
     pub url: String,
     pub title: String,
@@ -473,6 +475,16 @@ pub struct BoardRow {
 /// this keeps the bound explicit at the data boundary (bounded-everything
 /// guardrail from the PRFlow post-mortem).
 pub const MAX_BOARD_ROWS: usize = 60;
+
+/// How many commits the PR gained since your latest review, for a row whose
+/// head is no longer the commit you reviewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitsSinceReview {
+    pub count: u64,
+    /// The commit you reviewed is older than the newest 20 read, so `count`
+    /// is at least this ("20+").
+    pub lower_bound: bool,
+}
 pub const MAX_EXPANDED_BOARD_ROWS: usize = 120;
 pub const MAX_PAGES_PER_ALIAS: u8 = 5;
 
@@ -965,6 +977,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             .and_then(|review| review.commit.as_ref())
             .map(|commit| commit.oid.clone()),
         reviewed_at: latest_review_evidence(pr).and_then(|review| review.submitted_at.clone()),
+        commits_since_review: derive_commits_since_review(pr),
         number: pr.number,
         url,
         title,
@@ -1109,6 +1122,57 @@ fn derive_checks(pr: &RawPr) -> Option<CheckCounts> {
         .and_then(CheckCounts::from_contexts)
 }
 
+/// Commits since the one you reviewed: those after it in the newest 20. A
+/// head that is still the reviewed commit, no review, or no commit list
+/// (prototype fixtures) gives `None`. A reviewed commit no longer in the list
+/// — older than the window, or rewritten by a rebase — counts the whole
+/// window, as a lower bound when the PR has more commits than were read.
+fn derive_commits_since_review(pr: &RawPr) -> Option<CommitsSinceReview> {
+    let reviewed = latest_review_evidence(pr)?.commit.as_ref()?.oid.as_str();
+    if pr
+        .head_ref_oid
+        .as_deref()
+        .is_none_or(|head| head == reviewed)
+    {
+        return None;
+    }
+    let oids: Vec<&str> = pr
+        .history
+        .nodes
+        .iter()
+        .map(|node| node.commit.oid.as_str())
+        .collect();
+    if oids.is_empty() {
+        return None;
+    }
+    match oids.iter().rposition(|oid| *oid == reviewed) {
+        Some(index) => {
+            let count = (oids.len() - 1 - index) as u64;
+            (count > 0).then_some(CommitsSinceReview {
+                count,
+                lower_bound: false,
+            })
+        }
+        None => Some(CommitsSinceReview {
+            count: oids.len() as u64,
+            lower_bound: pr.history.total_count > oids.len(),
+        }),
+    }
+}
+
+/// "3 new commits since your review", "20+ new commits since your review";
+/// `None` when the row does not know the count.
+pub fn commits_since_review_text(row: &BoardRow) -> Option<String> {
+    row.commits_since_review.map(|since| {
+        let plus = if since.lower_bound { "+" } else { "" };
+        let noun = if since.count == 1 && !since.lower_bound {
+            "commit"
+        } else {
+            "commits"
+        };
+        format!("{}{plus} new {noun} since your review", since.count)
+    })
+}
 /// How the latest commit's checks stand, counted from GitHub's per-state
 /// counts of check runs and commit statuses together. The CI column says one
 /// word; the Details panel says these numbers.
@@ -1577,7 +1641,9 @@ fn review_note(row: &BoardRow, me: &str) -> String {
         && row.reviewed_oid != row.head_oid
         && !note.is_empty()
     {
-        format!("new commits since your review · {note}")
+        let since = commits_since_review_text(row)
+            .unwrap_or_else(|| "new commits since your review".to_owned());
+        format!("{since} · {note}")
     } else {
         note
     }

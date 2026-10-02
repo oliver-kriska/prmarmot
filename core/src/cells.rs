@@ -475,6 +475,7 @@ mod tests {
             head_oid: None,
             reviewed_oid: None,
             reviewed_at: None,
+            commits_since_review: None,
             number: 1,
             url: "https://github.com/demo-labs/atlas/pull/1".into(),
             title: "A change".into(),

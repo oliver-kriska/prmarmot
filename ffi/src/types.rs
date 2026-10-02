@@ -342,7 +342,35 @@ impl From<MergeQueue> for core_board::MergeQueue {
         }
     }
 }
+
 /// One completed review, latest per author.
+/// Commits since your latest review (`PullRequest.commitsSinceReview`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record,
+)]
+pub struct CommitsSinceReview {
+    pub count: u64,
+    /// The reviewed commit is older than the newest 20 read: "20+".
+    pub lower_bound: bool,
+}
+
+impl From<core_board::CommitsSinceReview> for CommitsSinceReview {
+    fn from(since: core_board::CommitsSinceReview) -> Self {
+        Self {
+            count: since.count,
+            lower_bound: since.lower_bound,
+        }
+    }
+}
+
+impl From<CommitsSinceReview> for core_board::CommitsSinceReview {
+    fn from(since: CommitsSinceReview) -> Self {
+        Self {
+            count: since.count,
+            lower_bound: since.lower_bound,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct Review {
     /// `None` when the reviewer's account is gone; the review still counts.
@@ -541,6 +569,11 @@ pub struct PullRequest {
     pub head_oid: Option<String>,
     pub reviewed_oid: Option<String>,
     pub reviewed_at: Option<String>,
+    /// Commits since your latest review, when the head moved on from the
+    /// commit you reviewed and GitHub's commit list was read.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub commits_since_review: Option<CommitsSinceReview>,
     pub issue: Option<IssueRef>,
     pub stack: Option<StackRef>,
     pub size: Option<ChangeSize>,
@@ -608,6 +641,7 @@ impl PullRequest {
             head_oid: row.head_oid.clone(),
             reviewed_oid: row.reviewed_oid.clone(),
             reviewed_at: row.reviewed_at.clone(),
+            commits_since_review: row.commits_since_review.map(Into::into),
             issue: row.issue.clone().map(|key| IssueRef {
                 key,
                 url: row.issue_url.clone(),
@@ -636,6 +670,7 @@ impl PullRequest {
             head_oid: self.head_oid,
             reviewed_oid: self.reviewed_oid,
             reviewed_at: self.reviewed_at,
+            commits_since_review: self.commits_since_review.map(Into::into),
             number: self.number,
             url: self.url,
             title: self.title,
