@@ -124,8 +124,12 @@ exist only on GitHub are invisible to the bump script's local check.
 3. signs, notarizes, staples, and passes `codesign`, `stapler validate`, and
    Gatekeeper `spctl` checks;
 4. creates and verifies the tarball checksum;
-5. publishes the immutable GitHub release and checksum asset;
-6. updates `oliver-kriska/homebrew-tap` using the verified checksum.
+5. takes the release notes from this version's `CHANGELOG.md` section
+   (`scripts/release-notes.sh X.Y.Z`) and stops if there is none — a direct
+   install's Update button opens the release page, so it never shows GitHub's
+   bare compare link;
+6. publishes the immutable GitHub release and checksum asset;
+7. updates `oliver-kriska/homebrew-tap` using the verified checksum.
 
 If the cask already has the version and checksum, the update script exits
 successfully without a commit. If tap publication fails after the GitHub release

@@ -121,6 +121,15 @@ jobs:
           echo "ASSET=$asset" >>"$GITHUB_ENV"
           echo "ASSET_SHA256=$(shasum -a 256 "dist/$asset" | awk '{print $1}')" >>"$GITHUB_ENV"
 
+      # The release page shows this version's CHANGELOG.md section: a direct
+      # install's Update button opens that page, and GitHub's generated notes
+      # are a bare compare link when nothing was merged by pull request.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > dist/notes.md
+          cat dist/notes.md
+
       # This is the first externally visible step. All tests and Apple checks
       # above must pass before the release can exist.
       - name: Publish immutable GitHub release
@@ -132,7 +141,7 @@ jobs:
             --verify-tag \
             --latest \
             --title "PR Marmot $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file dist/notes.md
 
       - name: Verify published release asset before updating cask
         env:
