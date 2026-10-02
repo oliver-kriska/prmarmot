@@ -12,12 +12,14 @@ use serde_json::Value;
 pub const BOARD: &str = include_str!("../../schema/board-v1.schema.json");
 pub const EVENT: &str = include_str!("../../schema/event-v1.schema.json");
 pub const PR: &str = include_str!("../../schema/pr-v1.schema.json");
+pub const REPORT: &str = include_str!("../../schema/report-v1.schema.json");
 
 #[derive(Debug, Clone, Copy)]
 pub enum Schema {
     Board,
     Event,
     Pr,
+    Report,
 }
 
 /// Every error in `instance`, one per line; empty when it conforms.
@@ -27,6 +29,7 @@ pub fn violations(schema: Schema, instance: &Value) -> Vec<String> {
         Schema::Board => board.clone(),
         Schema::Event => closed(EVENT),
         Schema::Pr => closed(PR),
+        Schema::Report => closed(REPORT),
     };
     let board_id = board["$id"]
         .as_str()

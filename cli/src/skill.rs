@@ -315,6 +315,7 @@ mod tests {
                     Command::View(_)
                     | Command::Watch(_)
                     | Command::Pr(_)
+                    | Command::Report(_)
                     | Command::Skill(_),
                 ) => checked += 1,
                 other => panic!("skill example does not parse: {line} -> {other:?}"),

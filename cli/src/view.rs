@@ -404,6 +404,61 @@ pub fn pr_detail(
         rate: fetched.rate,
     }
 }
+
+/// `prmarmot-cli report`: what merged and what you opened since a moment,
+/// and what still needs you now.
+pub struct ReportView {
+    pub since: DateTime<Utc>,
+    pub scope: BoardScope,
+    pub viewer: String,
+    pub generated_at: DateTime<Utc>,
+    pub merged: Vec<prmarmot_core::report::ReportPr>,
+    pub opened: Vec<prmarmot_core::report::ReportPr>,
+    /// Your open PRs in Needs action, as the board classifies them, with marks.
+    pub blocked: Vec<(BoardRow, Marks)>,
+    /// Every open PR the board fetch returned, for the opened list's status.
+    pub open_rows: Vec<BoardRow>,
+    pub truncated: bool,
+    pub rate: Option<RateLimitInfo>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn report_view(
+    report: prmarmot_core::report::ReportFetch,
+    board: BoardFetch,
+    since: DateTime<Utc>,
+    scope: BoardScope,
+    attention: &AttentionState,
+    viewer: String,
+    stale_after_days: u64,
+    now: DateTime<Utc>,
+) -> ReportView {
+    let mut snapshots = attention.snapshots.clone();
+    let blocked = board
+        .rows
+        .iter()
+        .filter(|row| row.category == prmarmot_core::board::Category::Action)
+        .map(|row| {
+            let mut marks = marks_for(row, attention, &mut snapshots, now);
+            marks.stale = is_stale(row, now, stale_after_days);
+            (row.clone(), marks)
+        })
+        .collect();
+    let truncated = report.truncated() || board.truncated;
+    ReportView {
+        since,
+        scope,
+        viewer,
+        generated_at: now,
+        merged: report.merged,
+        opened: report.opened,
+        blocked,
+        open_rows: board.rows,
+        truncated,
+        rate: report.rate.or(board.rate),
+    }
+}
+
 pub fn marks_for(
     row: &BoardRow,
     attention: &AttentionState,

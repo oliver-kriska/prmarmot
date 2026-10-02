@@ -547,7 +547,8 @@ pub struct StatusCheckRollup {
     pub hidden: bool,
 }
 
-/// `StatusCheckRollupContextConnection`'s counts; its nodes are not read.
+/// `StatusCheckRollupContextConnection`'s counts, and its newest 30 nodes
+/// for the failing checks' names.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RollupContexts {
@@ -811,7 +812,7 @@ pub fn parse_alias_response(
 /// Fail on GraphQL errors, except a tracked PR GitHub can no longer resolve:
 /// that node comes back `null` and is reported as inaccessible, not as a
 /// failed refresh.
-fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
+pub(crate) fn check_graphql_errors(body: &Value) -> Result<(), GhError> {
     if let Some(errors) = body.get("errors").and_then(Value::as_array) {
         let errors: Vec<&Value> = errors
             .iter()
@@ -869,7 +870,7 @@ fn parse_pr_nodes(body: &Value, pointer: &str) -> Result<Vec<RawPr>, GhError> {
     Ok(prs)
 }
 
-fn parse_rate(body: &Value) -> Option<RateLimitInfo> {
+pub(crate) fn parse_rate(body: &Value) -> Option<RateLimitInfo> {
     body.pointer("/data/rateLimit")
         .filter(|v| !v.is_null())
         .and_then(|v| serde_json::from_value::<RateLimitInfo>(v.clone()).ok())

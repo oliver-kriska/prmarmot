@@ -30,6 +30,7 @@ use prmarmot_local::config;
 use prmarmot_local::session::Session;
 
 use args::PrArgs;
+use args::ReportArgs;
 use args::{Command, EventFormat, Format, SkillAction, ViewArgs, WatchArgs};
 use term::Paint;
 use view::Filters;
@@ -54,6 +55,7 @@ fn main() -> ExitCode {
         Ok(Command::View(args)) => run_view(args),
         Ok(Command::Watch(args)) => run_watch(args),
         Ok(Command::Pr(args)) => run_pr(args),
+        Ok(Command::Report(args)) => run_report(args),
         Ok(Command::Auth(action, options)) => run_auth(action, options),
         Ok(Command::Skill(SkillAction::Show)) => print(skill::SKILL_MD),
         Ok(Command::Completions(shell)) => print(shell.script()),
@@ -381,6 +383,80 @@ fn run_pr(args: PrArgs) -> ExitCode {
     }
     printed
 }
+
+/// `prmarmot-cli report --since`: one report request (merged, opened) and
+/// one board fetch of your open PRs (still needs you), then one document.
+fn run_report(args: ReportArgs) -> ExitCode {
+    let (mut setup, session, login) =
+        match resolve(args.scope.clone(), args.host.as_deref(), args.auth) {
+            Ok(resolved) => resolved,
+            Err(error) => return fail(&error),
+        };
+    // Across every repository the board is your PRs, not everything
+    // involving you: "still needs you" is about your own work.
+    setup.board.authored_only = true;
+    let now = Utc::now();
+    let since = args.since.resolve(now);
+    let transport = session.transport();
+    let report = match prmarmot_core::report::fetch_report(transport, &setup.scope, &login, since) {
+        Ok(report) => report,
+        Err(error) => return fail(&error),
+    };
+    let small_pages_key =
+        view::small_pages_key(&setup.auth.host, &login, &setup.scope, Mode::Authored, true);
+    let fetched = view::fetch(
+        transport,
+        Mode::Authored,
+        &setup.scope,
+        &login,
+        &setup.board,
+        &prmarmot_core::search::RemoteFilter::default(),
+        1,
+        prmarmot_local::small_pages::remembered(&small_pages_key, now.timestamp()),
+    );
+    let gave_up = match &fetched {
+        Ok(fetch) => fetch.pagination.small_pages(),
+        Err(error) => error.is_query_timeout(),
+    };
+    if gave_up {
+        prmarmot_local::small_pages::remember(&small_pages_key, now.timestamp());
+    }
+    let mut board = match fetched {
+        Ok(fetch) => fetch,
+        Err(error) => return fail(&error),
+    };
+    let attention = view::attention(&setup.auth.host, &login);
+    carry_forward_conflicts(
+        &mut board.rows,
+        |id| attention.snapshots.last_conflict(id),
+        Mode::Authored,
+        &login,
+        &setup.board,
+    );
+    let view = view::report_view(
+        report,
+        board,
+        since,
+        setup.scope.clone(),
+        &attention,
+        login,
+        setup.board.stale_after_days,
+        now,
+    );
+    let format = args.format.unwrap_or(if term::stdout_is_terminal() {
+        Format::Table
+    } else {
+        Format::Markdown
+    });
+    let text = match format {
+        Format::Json => serde_json::to_string_pretty(&render::report_json(&view))
+            .expect("report JSON is always serializable"),
+        Format::Markdown => render::report_markdown(&view),
+        Format::Table => render::report_text(&view, Paint::new(term::color_enabled(args.no_color))),
+    };
+    print(&text)
+}
+
 fn watch_exit_code(stop: &watch::Stop) -> u8 {
     match stop {
         watch::Stop::Done | watch::Stop::Met => 0,

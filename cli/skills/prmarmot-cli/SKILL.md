@@ -102,6 +102,7 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
 Fields are only added within `@1`, so ignore any you don't know. The full
 JSON Schemas are `cli/schema/board-v1.schema.json`,
 `cli/schema/event-v1.schema.json`, `cli/schema/pr-v1.schema.json` (`pr`),
+and `cli/schema/report-v1.schema.json` (`report`) in the PR Marmot repository.
 
 Useful filters:
 
@@ -158,6 +159,24 @@ for changes), CI, checks, reviewers, reviews, the wait, size, labels, issue —
 and an `In PR Marmot:` line with the app's marks (watched, snoozed, changed,
 stale) when any apply. Use it after a board call to drill into one PR; it
 costs one small request after the id lookup.
+
+## Report: what happened since a moment
+
+```bash
+prmarmot-cli report --since 1d --json        # also 12h, 3d, 1w, or 2026-10-01
+prmarmot-cli report --since 1w --repo owner/name
+```
+
+A standup in one call: `merged` (PRs involving the user merged since the
+moment, each with `yours` and `merged_at`), `opened` (PRs the user opened
+since it, with `state` open / merged / closed), and `blocked` (the user's
+open PRs in Needs action right now, as `board@1` PR objects with their
+Note). Without `--json` it prints Markdown ready to paste into a standup
+thread: three headed lists with linked references, the last cut at 10 PRs
+with the rest counted (JSON holds them all). `--since` defaults to one
+day; `--all-repos` or `--repo` scope it like the views. `truncated` is true
+when a search matched more than the 100 rows a list holds.
+
 ## Watch: wait for something to happen
 
 `watch` blocks. It prints one JSON line per event and exits after `--events N`

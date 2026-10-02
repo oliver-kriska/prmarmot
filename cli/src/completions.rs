@@ -66,6 +66,7 @@ mod tests {
                 "all",
                 "all-open",
                 "pr",
+                "report",
                 "watch",
                 "auth",
                 "login",
@@ -150,6 +151,15 @@ mod tests {
     fn bash_offers_what_each_position_accepts() {
         let cases: &[(&[&str], &str)] = &[
             (&["prmarmot-cli", "wa"], "watch"),
+            (&["prmarmot-cli", "rep"], "report"),
+            (
+                &["prmarmot-cli", "report", "--"],
+                "--since --repo --all-repos --format --json --no-color --help --host --auth",
+            ),
+            (
+                &["prmarmot-cli", "report", "--since", ""],
+                "12h 1d 3d 1w 2w",
+            ),
             (&["prmarmot-cli", "p"], "pr"),
             (
                 &["prmarmot-cli", "pr", "o/n#1", "--"],

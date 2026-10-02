@@ -576,6 +576,7 @@ prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in o
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli pr acme/api#42            # one PR in full: Note, evidence, reviews, checks, wait
+prmarmot-cli report --since 1d         # standup: merged, opened, still needs you
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
 prmarmot-cli watch --pr acme/api#42 --until ci-pass --timeout 30m   # wait for green CI
 prmarmot-cli auth login                # sign in without the GitHub CLI
@@ -650,10 +651,12 @@ than as an error.
 [`cli/schema/board-v1.schema.json`](cli/schema/board-v1.schema.json) for
 `--json` views, [`cli/schema/event-v1.schema.json`](cli/schema/event-v1.schema.json)
 for each `watch` line, [`cli/schema/pr-v1.schema.json`](cli/schema/pr-v1.schema.json)
+for `pr`, and [`cli/schema/report-v1.schema.json`](cli/schema/report-v1.schema.json)
+for `report`. The event, pr and report schemas reuse the board schema's PR object.
 Because fields are only ever added within `@1`, the schemas accept fields they
 don't list. Validate against them or generate types from them, but ignore
-fields you don't know. The CLI's tests check its real output against both
-schemas and fail on any field the schemas don't describe.
+fields you don't know. The CLI's tests check its real output against every
+schema and fail on any field the schemas don't describe.
 
 **Watch.** `prmarmot-cli watch [mine|review]` polls at your `refresh_secs`
 (default five minutes). `--interval` can override it but never goes below 30

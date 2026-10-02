@@ -31,6 +31,9 @@ Usage:
                                          Wait for a condition instead of polling in a loop
   prmarmot-cli pr OWNER/NAME#N [options]  One pull request in full: its Note and the
                                          evidence behind it, reviews, checks, and wait
+  prmarmot-cli report [--since 1d] [options]
+                                         Standup Markdown: merged, opened, still needs you
+                                         (--since takes 12h, 3d, 1w, or YYYY-MM-DD; default 1d)
   prmarmot-cli auth login [--with-token] Sign in to GitHub without the `gh` CLI
   prmarmot-cli auth status               Show which account and token this machine uses
   prmarmot-cli auth logout               Forget the stored token
@@ -196,6 +199,73 @@ pub struct PrRef {
     pub number: u64,
 }
 
+/// `prmarmot-cli report --since`: how far back the report looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Since {
+    /// `12h`, `3d`, `1w`: this long before now.
+    Ago(Duration),
+    /// `YYYY-MM-DD`: from the start of that day, local time.
+    Date(chrono::NaiveDate),
+}
+
+impl Since {
+    pub const DEFAULT: Since = Since::Ago(Duration::from_secs(24 * 60 * 60));
+
+    pub fn parse(value: &str) -> Result<Since, String> {
+        let value = value.trim();
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+            return Ok(Since::Date(date));
+        }
+        let invalid =
+            || format!("--since needs 12h, 3d, 1w, or a date such as 2026-10-01, got: {value}");
+        let (digits, unit) = value.split_at(
+            value
+                .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+                .len(),
+        );
+        let count: u64 = digits.parse().map_err(|_| invalid())?;
+        if count == 0 {
+            return Err(invalid());
+        }
+        let hours = match unit {
+            "h" => count,
+            "d" => count * 24,
+            "w" => count * 24 * 7,
+            _ => return Err(invalid()),
+        };
+        Ok(Since::Ago(Duration::from_secs(hours * 60 * 60)))
+    }
+
+    /// The moment the report starts at.
+    pub fn resolve(self, now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        match self {
+            Since::Ago(duration) => now - chrono::Duration::from_std(duration).unwrap_or_default(),
+            Since::Date(date) => {
+                let midnight = date.and_hms_opt(0, 0, 0).expect("midnight exists");
+                chrono::Local
+                    .from_local_datetime(&midnight)
+                    .single()
+                    .map_or_else(
+                        || chrono::Utc.from_utc_datetime(&midnight),
+                        |local| local.with_timezone(&chrono::Utc),
+                    )
+            }
+        }
+    }
+}
+
+/// `prmarmot-cli report`: what merged, what you opened, what still needs you.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportArgs {
+    pub since: Since,
+    pub scope: Option<BoardScope>,
+    /// `None` picks by whether stdout is a terminal.
+    pub format: Option<Format>,
+    pub no_color: bool,
+    pub host: Option<String>,
+    pub auth: Option<AuthMode>,
+}
 
 /// `prmarmot-cli pr OWNER/NAME#N`: one pull request in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +293,7 @@ pub enum Command {
     View(ViewArgs),
     Watch(WatchArgs),
     Pr(PrArgs),
+    Report(ReportArgs),
     Auth(auth::Action, auth::Options),
     Skill(SkillAction),
     Completions(Shell),
@@ -258,6 +329,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         "skill" => return parse_skill(tokens),
         "completions" => return parse_completions(tokens),
         "pr" => return parse_pr_command(tokens),
+        "report" => return parse_report(tokens),
         "watch" => true,
         _ => false,
     };
@@ -490,6 +562,56 @@ fn parse_pr_command(mut tokens: impl Iterator<Item = String>) -> Result<Command,
         auth,
     }))
 }
+
+/// `report [--since 1d] [--repo OWNER/NAME | --all-repos]` with the output
+/// options of a view.
+fn parse_report(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut since = Since::DEFAULT;
+    let mut scope = None;
+    let mut format = None;
+    let mut no_color = false;
+    let mut host = None;
+    let mut auth = None;
+    while let Some(token) = tokens.next() {
+        match token.as_str() {
+            "--since" => {
+                let word = tokens.next().ok_or("--since needs a value")?;
+                since = Since::parse(&word)?;
+            }
+            "--repo" => {
+                let word = tokens.next().ok_or("--repo needs a value")?;
+                scope = Some(BoardScope::Repository(parse_repo(&word)?));
+            }
+            "--all-repos" => scope = Some(BoardScope::AllRepositories),
+            "-f" | "--format" => {
+                let word = tokens.next().ok_or("--format needs a value")?;
+                format = Some(parse_format(&word)?);
+            }
+            "--json" => format = Some(Format::Json),
+            "--no-color" => no_color = true,
+            "--host" => host = Some(tokens.next().ok_or("--host needs a value")?),
+            "--auth" => {
+                let word = tokens.next().ok_or("--auth needs a value")?;
+                auth = Some(AuthMode::parse(&word).ok_or_else(|| {
+                    format!("unknown auth mode: {word} (use auto, gh, device, or token)")
+                })?);
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option for `report`: {other}"))
+            }
+            other => return Err(format!("unexpected argument: {other}")),
+        }
+    }
+    Ok(Command::Report(ReportArgs {
+        since,
+        scope,
+        format,
+        no_color,
+        host,
+        auth,
+    }))
+}
+
 fn parse_auth(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
     let word = tokens
         .next()
@@ -876,6 +998,57 @@ mod tests {
             "unexpected argument: acme/api#2"
         );
     }
+
+    #[test]
+    fn the_report_command_reads_its_window_and_scope() {
+        use chrono::TimeZone;
+        let parsed = |line: &str| match parse_str(line) {
+            Ok(Command::Report(args)) => args,
+            other => panic!("{line}: {other:?}"),
+        };
+        let args = parsed("report");
+        assert_eq!(args.since, Since::DEFAULT);
+        assert_eq!(args.scope, None);
+        let args = parsed("report --since 3d --all-repos --json");
+        assert_eq!(args.since, Since::Ago(Duration::from_secs(3 * 24 * 3600)));
+        assert_eq!(args.scope, Some(BoardScope::AllRepositories));
+        assert_eq!(args.format, Some(Format::Json));
+        let args = parsed("report --since 2026-10-01 --repo acme/api -f markdown --no-color");
+        assert_eq!(
+            args.since,
+            Since::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
+        );
+        assert_eq!(args.scope, Some(BoardScope::Repository("acme/api".into())));
+        assert_eq!(
+            Since::parse("12h"),
+            Ok(Since::Ago(Duration::from_secs(12 * 3600)))
+        );
+        assert_eq!(
+            Since::parse("2w"),
+            Ok(Since::Ago(Duration::from_secs(14 * 24 * 3600)))
+        );
+        for bad in ["0d", "3", "3m", "soon", "2026-13-01"] {
+            assert!(Since::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_str("report --stale").unwrap_err(),
+            "unknown option for `report`: --stale"
+        );
+        let now = chrono::Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
+        assert_eq!(
+            Since::Ago(Duration::from_secs(36 * 3600)).resolve(now),
+            chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap()
+        );
+        // A date starts at local midnight: somewhere within a day of UTC midnight.
+        let from_date =
+            Since::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()).resolve(now);
+        let utc_midnight = chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        assert!(
+            (from_date - utc_midnight).num_hours().abs() <= 14,
+            "{from_date}"
+        );
+    }
+
     #[test]
     fn pr_accepts_a_reference_or_url_and_stands_alone() {
         let expected = Some(PrRef {

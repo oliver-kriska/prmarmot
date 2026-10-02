@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/report-v1.schema.json",
+  "title": "prmarmot-cli report@1",
+  "description": "What `prmarmot-cli report --since … --json` prints: the pull requests involving you that merged since the moment, the ones you opened since it, and your open pull requests that still need you, as the board classifies them. Within report@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
+  "type": "object",
+  "required": ["schema", "generated_at", "viewer", "since", "scope", "truncated", "merged", "opened", "blocked", "rate_limit"],
+  "properties": {
+    "schema": { "const": "prmarmot-cli/report@1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "viewer": { "type": "string", "description": "The signed-in login." },
+    "since": { "type": "string", "format": "date-time", "description": "The moment the report starts at: `--since` resolved against the clock." },
+    "scope": { "$ref": "board-v1.schema.json#/$defs/scope" },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when a search matched more than the 100 rows a list holds, or the board fetch was cut short."
+    },
+    "merged": {
+      "type": "array",
+      "description": "Pull requests involving you (authored, reviewed, commented on, assigned) merged since the moment, most recently updated first.",
+      "items": { "$ref": "#/$defs/report_pr" }
+    },
+    "opened": {
+      "type": "array",
+      "description": "Pull requests you opened since the moment, newest first, whatever became of them.",
+      "items": { "$ref": "#/$defs/report_pr" }
+    },
+    "blocked": {
+      "type": "array",
+      "description": "Your open pull requests in Needs action right now, as `board@1` prints them, with the app's attention marks.",
+      "items": { "$ref": "board-v1.schema.json#/$defs/pr" }
+    },
+    "rate_limit": { "$ref": "board-v1.schema.json#/$defs/rate_limit" }
+  },
+  "$defs": {
+    "report_pr": {
+      "type": "object",
+      "required": ["repo", "number", "title", "url", "author", "yours", "state", "created_at", "merged_at"],
+      "properties": {
+        "repo": { "$ref": "board-v1.schema.json#/$defs/repo" },
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "url": { "type": "string", "format": "uri" },
+        "author": { "type": ["string", "null"], "description": "Login; null when GitHub withheld it (a deleted account)." },
+        "yours": { "type": "boolean", "description": "The author is the viewer." },
+        "state": { "enum": ["open", "merged", "closed"] },
+        "created_at": { "type": ["string", "null"], "format": "date-time" },
+        "merged_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  }
+}

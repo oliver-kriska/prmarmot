@@ -70,6 +70,10 @@ _prmarmot_cli() {
             COMPREPLY=($(compgen -W "90s 5m 30m 1h 2h" -- "$cur"))
             return
             ;;
+        --since)
+            COMPREPLY=($(compgen -W "12h 1d 3d 1w 2w" -- "$cur"))
+            return
+            ;;
         --agent)
             COMPREPLY=($(compgen -W "claude agents all" -- "$cur"))
             return
@@ -102,10 +106,10 @@ _prmarmot_cli() {
             if [[ $cur == -* ]]; then
                 words="--help --version"
             else
+                words="mine review all pr report watch auth skill completions help"
             fi
             ;;
         mine | authored)
-            words="$view --authored --changed --stale --filter --pages"
             words="$view --authored --changed --stale --agent --no-agent --filter --pages"
             ;;
         review | reviews)
@@ -118,6 +122,8 @@ _prmarmot_cli() {
         pr)
             words="--format --json --no-color --help --host --auth"
             ;;
+        report)
+            words="--since --repo --all-repos --format --json --no-color --help --host --auth"
             ;;
         watch)
             # A view word only right after `watch`.

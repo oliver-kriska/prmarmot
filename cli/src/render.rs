@@ -11,9 +11,11 @@ use prmarmot_core::board::{
 use prmarmot_core::cells;
 use prmarmot_core::detail::detail_lines;
 use prmarmot_core::github::rate_limit::RateLimitInfo;
+use prmarmot_core::github::states::PrState;
 use prmarmot_core::layout::group_label;
 use prmarmot_core::layout::{section_explanation, LayoutItem, SectionKind, Sort};
 use prmarmot_core::pickup::{wait_label, waiting_secs};
+use prmarmot_core::report::ReportPr;
 use prmarmot_core::status::{
     all_open_count, all_open_local_filter_notice, all_open_no_match_text, queue_empty_text,
 };
@@ -21,6 +23,7 @@ use serde_json::{json, Value};
 
 use crate::term::{display_width, fit, truncate, Paint, Tone};
 use crate::view::PrDetail;
+use crate::view::ReportView;
 use crate::view::{BoardView, Marks};
 
 pub const BOARD_SCHEMA: &str = "prmarmot-cli/board@1";
@@ -331,6 +334,246 @@ pub fn pr_markdown(detail: &PrDetail) -> String {
     out.push_str(&format!("\n<{}>\n\n", detail.url));
     for line in pr_lines(detail) {
         out.push_str(&format!("- {}\n", md_cell(&line)));
+    }
+    out
+}
+
+// ---- The standup report (`prmarmot-cli report`) ------------------------------
+
+pub const REPORT_SCHEMA: &str = "prmarmot-cli/report@1";
+
+fn pr_state_key(state: &PrState) -> &'static str {
+    match state {
+        PrState::Open => "open",
+        PrState::Merged => "merged",
+        PrState::Closed => "closed",
+        // A state this version does not know reads as open: the only one the
+        // report would still have anything to say about.
+        PrState::Other(_) => "open",
+    }
+}
+
+fn report_pr_json(pr: &ReportPr, viewer: &str) -> Value {
+    json!({
+        "repo": pr.repo,
+        "number": pr.number,
+        "title": pr.title,
+        "url": pr.url,
+        "author": pr.author,
+        "yours": pr.author.as_deref() == Some(viewer),
+        "state": pr_state_key(&pr.state),
+        "created_at": pr.created_at,
+        "merged_at": pr.merged_at,
+    })
+}
+
+/// `prmarmot-cli report --json`. Stable keys; additive changes only within
+/// `report@1`. `blocked` holds `board@1` PR objects.
+pub fn report_json(view: &ReportView) -> Value {
+    json!({
+        "schema": REPORT_SCHEMA,
+        "generated_at": view.generated_at.to_rfc3339(),
+        "viewer": view.viewer,
+        "since": view.since.to_rfc3339(),
+        "scope": scope_json(&view.scope),
+        "truncated": view.truncated,
+        "merged": view.merged.iter().map(|pr| report_pr_json(pr, &view.viewer)).collect::<Vec<_>>(),
+        "opened": view.opened.iter().map(|pr| report_pr_json(pr, &view.viewer)).collect::<Vec<_>>(),
+        "blocked": view.blocked.iter().map(|(row, marks)| pr_json(row, marks)).collect::<Vec<_>>(),
+        "rate_limit": rate_info_json(view.rate.as_ref()),
+    })
+}
+
+fn day_of(timestamp: Option<&str>) -> &str {
+    timestamp.map_or("", |stamp| stamp.get(..10).unwrap_or(stamp))
+}
+
+/// What a merged PR's line says after the title.
+fn merged_detail(pr: &ReportPr, viewer: &str) -> String {
+    let who = match pr.author.as_deref() {
+        Some(author) if author == viewer => "yours".to_owned(),
+        Some(author) => format!("by {author}"),
+        None => "author unknown".to_owned(),
+    };
+    match pr.merged_at.as_deref() {
+        Some(stamp) => format!("{who}, merged {}", day_of(Some(stamp))),
+        None => who,
+    }
+}
+
+/// What an opened PR's line says: where it stands now.
+fn opened_detail(pr: &ReportPr, view: &ReportView) -> String {
+    match &pr.state {
+        PrState::Merged => format!("merged {}", day_of(pr.merged_at.as_deref()))
+            .trim_end()
+            .to_owned(),
+        PrState::Closed => "closed without merging".to_owned(),
+        PrState::Open | PrState::Other(_) => view
+            .open_rows
+            .iter()
+            .find(|row| row.repo == pr.repo && row.number == pr.number)
+            .map_or_else(
+                || "open".to_owned(),
+                |row| format!("open · {}", group_label(Mode::Authored, row.category, true)),
+            ),
+    }
+}
+
+fn blocked_detail(row: &BoardRow, marks: &Marks) -> String {
+    let mut detail = strip_note_glyphs(&row.note);
+    if detail.is_empty() {
+        detail = "needs action".to_owned();
+    }
+    if marks.changed {
+        detail.push_str(" · changed since you looked");
+    }
+    if marks.snoozed.is_some() {
+        detail.push_str(" · snoozed");
+    }
+    detail
+}
+
+/// One section's lines: (reference, title, detail, url).
+type ReportLine = (String, String, String, String);
+
+/// A standup names what needs you, it does not list a backlog: past this
+/// many, the Markdown and text say how many more there are (JSON has all).
+pub const MAX_REPORT_BLOCKED: usize = 10;
+
+/// A section: its heading, the lines shown, and how many were left out.
+struct ReportSection {
+    heading: String,
+    lines: Vec<ReportLine>,
+    more: usize,
+}
+
+fn report_sections(view: &ReportView) -> Vec<ReportSection> {
+    let merged: Vec<ReportLine> = view
+        .merged
+        .iter()
+        .map(|pr| {
+            (
+                format!("{}#{}", pr.repo, pr.number),
+                pr.title.clone(),
+                merged_detail(pr, &view.viewer),
+                pr.url.clone(),
+            )
+        })
+        .collect();
+    let opened: Vec<ReportLine> = view
+        .opened
+        .iter()
+        .map(|pr| {
+            (
+                format!("{}#{}", pr.repo, pr.number),
+                pr.title.clone(),
+                opened_detail(pr, view),
+                pr.url.clone(),
+            )
+        })
+        .collect();
+    let blocked: Vec<ReportLine> = view
+        .blocked
+        .iter()
+        .take(MAX_REPORT_BLOCKED)
+        .map(|(row, marks)| {
+            (
+                format!("{}#{}", row.repo, row.number),
+                row.title.clone(),
+                blocked_detail(row, marks),
+                row.url.clone(),
+            )
+        })
+        .collect();
+    let left_out = view.blocked.len() - blocked.len();
+    vec![
+        ReportSection {
+            heading: format!("Merged ({})", merged.len()),
+            lines: merged,
+            more: 0,
+        },
+        ReportSection {
+            heading: format!("Opened ({})", opened.len()),
+            lines: opened,
+            more: 0,
+        },
+        ReportSection {
+            heading: format!("Still need you ({})", view.blocked.len()),
+            lines: blocked,
+            more: left_out,
+        },
+    ]
+}
+
+fn more_line(more: usize) -> String {
+    format!("and {more} more in Needs action (`prmarmot-cli mine` lists them all)")
+}
+
+/// The moment in the reader's own time, as the app's dates are.
+pub fn report_title(view: &ReportView) -> String {
+    let scope = match &view.scope {
+        BoardScope::AllRepositories => "all repositories".to_owned(),
+        BoardScope::Repository(repo) => repo.clone(),
+    };
+    format!(
+        "PR report · since {} · {} · {}",
+        view.since
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M %:z"),
+        scope,
+        view.viewer
+    )
+}
+
+fn report_footer(view: &ReportView) -> Option<String> {
+    view.truncated.then(|| {
+        "More than a page matched; this report shows the first 100 of each list.".to_owned()
+    })
+}
+
+/// `prmarmot-cli report` piped, or `--format markdown`: ready to paste into
+/// a standup thread.
+pub fn report_markdown(view: &ReportView) -> String {
+    let mut out = format!("# {}\n", md_cell(&report_title(view)));
+    for section in report_sections(view) {
+        out.push_str(&format!("\n## {}\n\n", section.heading));
+        if section.lines.is_empty() {
+            out.push_str("- nothing\n");
+        }
+        for (reference, title, detail, url) in section.lines {
+            out.push_str(&format!(
+                "- [{reference}]({url}) {} — {}\n",
+                md_cell(&title),
+                md_cell(&detail)
+            ));
+        }
+        if section.more > 0 {
+            out.push_str(&format!("- …{}\n", more_line(section.more)));
+        }
+    }
+    if let Some(footer) = report_footer(view) {
+        out.push_str(&format!("\n_{footer}_\n"));
+    }
+    out
+}
+
+/// `prmarmot-cli report` on a terminal.
+pub fn report_text(view: &ReportView, paint: Paint) -> String {
+    let mut out = format!("{}\n", paint.bold(&report_title(view)));
+    for section in report_sections(view) {
+        out.push_str(&format!("\n{}\n", paint.bold(&section.heading)));
+        if section.lines.is_empty() {
+            out.push_str("  nothing\n");
+        }
+        for (reference, title, detail, url) in section.lines {
+            out.push_str(&format!("  {reference}  {title} — {detail}\n    {url}\n"));
+        }
+        if section.more > 0 {
+            out.push_str(&format!("  …{}\n", more_line(section.more)));
+        }
+    }
+    if let Some(footer) = report_footer(view) {
+        out.push_str(&format!("\n{footer}\n"));
     }
     out
 }
@@ -1332,6 +1575,151 @@ mod tests {
         assert_eq!(value["status"], "inaccessible");
         assert!(value["pr"].is_null());
         assert_eq!(value["url"], "https://github.com/acme/widgets/pull/10");
+    }
+
+    #[test]
+    fn the_report_conforms_to_its_schema_and_reads_as_a_standup() {
+        use crate::schema_check::{assert_conforms, Schema};
+        use prmarmot_core::board::BoardFetch;
+        use prmarmot_core::report::{ReportFetch, ReportPr};
+        let attention = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        let mut blocked = row(10, Category::Action);
+        blocked.ci = Ci::Fail;
+        blocked.blockers = vec![Blocker::CiFailing];
+        blocked.note = "🔴 CI failing".into();
+        let waiting = row(11, Category::Await);
+        let report = ReportFetch {
+            merged: vec![
+                ReportPr {
+                    repo: "acme/widgets".into(),
+                    number: 7,
+                    title: "Ship | it".into(),
+                    url: "https://github.com/acme/widgets/pull/7".into(),
+                    author: Some("me".into()),
+                    state: PrState::Merged,
+                    created_at: Some("2026-09-30T10:00:00Z".into()),
+                    merged_at: Some("2026-10-01T10:00:00Z".into()),
+                },
+                ReportPr {
+                    repo: "acme/widgets".into(),
+                    number: 8,
+                    title: "Theirs".into(),
+                    url: "https://github.com/acme/widgets/pull/8".into(),
+                    author: Some("bob".into()),
+                    state: PrState::Merged,
+                    created_at: None,
+                    merged_at: Some("2026-10-01T12:00:00Z".into()),
+                },
+            ],
+            opened: vec![ReportPr {
+                repo: "acme/widgets".into(),
+                number: 11,
+                title: waiting.title.clone(),
+                url: waiting.url.clone(),
+                author: Some("me".into()),
+                state: PrState::Open,
+                created_at: Some("2026-10-01T09:00:00Z".into()),
+                merged_at: None,
+            }],
+            merged_total: 150,
+            opened_total: 1,
+            rate: None,
+        };
+        let board = BoardFetch {
+            rows: vec![blocked, waiting],
+            ..fetch_of(Vec::new())
+        };
+        let now = Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
+        let view = crate::view::report_view(
+            report,
+            board,
+            Utc.with_ymd_and_hms(2026, 10, 1, 8, 0, 0).unwrap(),
+            BoardScope::AllRepositories,
+            &attention,
+            "me".into(),
+            prmarmot_core::pickup::DEFAULT_STALE_AFTER_DAYS,
+            now,
+        );
+        let value = report_json(&view);
+        assert_conforms(Schema::Report, &value);
+        assert_eq!(value["schema"], REPORT_SCHEMA);
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["merged"][0]["yours"], true);
+        assert_eq!(value["merged"][1]["yours"], false);
+        assert_eq!(value["opened"][0]["state"], "open");
+        assert_eq!(value["blocked"].as_array().unwrap().len(), 1);
+        assert_eq!(value["blocked"][0]["number"], 10);
+
+        let markdown = report_markdown(&view);
+        let title = report_title(&view);
+        assert!(title.starts_with("PR report · since 2026-"), "{title}");
+        assert!(title.ends_with(" · all repositories · me"), "{title}");
+        assert!(markdown.starts_with(&format!("# {title}\n")), "{markdown}");
+        assert!(
+            markdown.contains("- [acme/widgets#7](https://github.com/acme/widgets/pull/7) Ship \\| it — yours, merged 2026-10-01\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("Theirs — by bob, merged 2026-10-01\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("## Opened (1)\n\n- [acme/widgets#11]"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("— open · Awaiting review\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("## Still need you (1)\n\n- [acme/widgets#10]"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("— CI failing\n"), "{markdown}");
+        assert!(
+            markdown.ends_with(
+                "_More than a page matched; this report shows the first 100 of each list._\n"
+            ),
+            "{markdown}"
+        );
+
+        let text = report_text(&view, Paint::new(false));
+        assert!(text.contains("\nMerged (2)\n  acme/widgets#7  Ship | it — yours, merged 2026-10-01\n    https://github.com/acme/widgets/pull/7\n"), "{text}");
+    }
+
+    #[test]
+    fn a_long_needs_action_list_is_cut_and_counted_in_the_standup() {
+        use prmarmot_core::board::BoardFetch;
+        use prmarmot_core::report::ReportFetch;
+        let attention = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        let rows: Vec<BoardRow> = (1..=MAX_REPORT_BLOCKED as u64 + 3)
+            .map(|number| row(number, Category::Action))
+            .collect();
+        let board = BoardFetch {
+            rows,
+            ..fetch_of(Vec::new())
+        };
+        let now = Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
+        let view = crate::view::report_view(
+            ReportFetch::default(),
+            board,
+            now,
+            BoardScope::AllRepositories,
+            &attention,
+            "me".into(),
+            prmarmot_core::pickup::DEFAULT_STALE_AFTER_DAYS,
+            now,
+        );
+        let markdown = report_markdown(&view);
+        assert!(markdown.contains("## Still need you (13)\n"), "{markdown}");
+        assert!(markdown.contains("- [acme/widgets#10]"), "{markdown}");
+        assert!(!markdown.contains("- [acme/widgets#11]"), "{markdown}");
+        assert!(
+            markdown
+                .ends_with("- …and 3 more in Needs action (`prmarmot-cli mine` lists them all)\n"),
+            "{markdown}"
+        );
+        assert_eq!(report_json(&view)["blocked"].as_array().unwrap().len(), 13);
     }
 
     #[test]

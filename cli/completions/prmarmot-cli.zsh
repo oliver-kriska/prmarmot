@@ -38,6 +38,7 @@ _prmarmot-cli() {
         'review:PRs waiting for your review (Review queue)'
         'all:every open PR in one repository (All open); needs --repo'
         'pr:one pull request in full (OWNER/NAME#N or URL)'
+        'report:standup Markdown since a moment: merged, opened, still needs you'
         'watch:poll and print what changes, one event per line'
         'auth:sign in to GitHub without the gh CLI'
         'skill:print or install the coding-agent skill'
@@ -84,6 +85,15 @@ _prmarmot-cli() {
             '--host=[GitHub host (github.com or an Enterprise Server host)]:host: ' \
             '--auth=[how to get a token]:mode:(auto gh device token)' \
             '1:pull request (OWNER/NAME#N or URL): ' && ret=0
+          ;;
+        report)
+          _arguments -s $help $scope \
+            '--since=[how far back: 12h, 3d, 1w, or a date]:since:(12h 1d 3d 1w 2w)' \
+            '(-f --format --json)'{-f+,--format=}'[output format]:format:(table markdown json)' \
+            '(-f --format --json)--json[JSON, same as --format json]' \
+            '--no-color[plain text]' \
+            '--host=[GitHub host (github.com or an Enterprise Server host)]:host: ' \
+            '--auth=[how to get a token]:mode:(auto gh device token)' && ret=0
           ;;
         watch)
           watch=(

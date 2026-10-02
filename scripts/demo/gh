@@ -186,6 +186,34 @@ AVAILABLE = [
 ]
 
 
+def report_pr(number, title, *, author=VIEWER, repo="demo-labs/atlas", state="MERGED",
+              created="2026-09-29T09:00:00Z", merged="2026-09-30T15:00:00Z"):
+    """A PR as `prmarmot-cli report` lists it: plain fields, no windows."""
+    return {
+        "number": number, "title": title,
+        "url": f"https://github.com/{repo}/pull/{number}",
+        "state": state, "createdAt": created,
+        "mergedAt": merged if state == "MERGED" else None,
+        "repository": {"nameWithOwner": repo},
+        "author": {"__typename": "User", "login": author},
+    }
+
+
+# `prmarmot-cli report --since`: what merged involving the viewer, and what
+# the viewer opened. Dates are fixed; the fake does not read the `since`.
+REPORT_MERGED = [
+    report_pr(1830, "Cache invalidation on logout"),
+    report_pr(523, "Stabilise the flaky sync test", author="alex",
+              repo="demo-labs/mobile", created="2026-09-28T10:00:00Z", merged="2026-09-30T11:30:00Z"),
+]
+REPORT_OPENED = [
+    report_pr(1842, "Retry failed payment webhooks", repo="demo-labs/payments", state="OPEN",
+              created="2026-09-30T09:00:00Z"),
+    report_pr(1830, "Cache invalidation on logout"),
+    report_pr(1829, "Drop the legacy export", state="CLOSED", created="2026-09-29T16:00:00Z"),
+]
+
+
 def page(nodes, next_cursor=None):
     """One page of a search.
 
@@ -573,13 +601,25 @@ def graphql(args):
                for tracked_id in tracked_ids]
     if scale_rows() and "search" in query:
         return scale_graphql(query, fields)
-    search = fields.get("q", fields.get("requested", ""))
+    search = fields.get("q", fields.get("requested", fields.get("merged", "")))
     selected_repo = next((part[5:] for part in search.split() if part.startswith("repo:")), None)
     def scoped(nodes):
         return [node for node in nodes
                 if selected_repo is None or node["repository"]["nameWithOwner"] == selected_repo]
     # All open: every open PR in the repository, newest update first, plus the
     # ids of the ones asking for your review.
+    # `prmarmot-cli report --since`: two plain searches in one operation.
+    if "merged: search" in query and "opened: search" in query:
+        def scoped_report(nodes):
+            return [node for node in nodes
+                    if selected_repo is None or node["repository"]["nameWithOwner"] == selected_repo]
+        merged = scoped_report(REPORT_MERGED)
+        opened = scoped_report(REPORT_OPENED)
+        return {"data": {
+            "rateLimit": rate(2),
+            "merged": {"issueCount": len(merged), "nodes": merged},
+            "opened": {"issueCount": len(opened), "nodes": opened},
+        }}
     if "search(query:$q" in query and "$requested" in query:
         seen, everything = set(), []
         for node in scoped(all_nodes):
@@ -691,6 +731,24 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual({band(item) for item in REQUESTED + AVAILABLE},
                          {"small", "medium", "large"})
         self.assertTrue(all("changedFiles" in item for item in AUTHORED))
+
+    def test_a_report_answers_both_searches_and_follows_the_repository(self):
+        query = ("query=query($merged:String!, $opened:String!){ rateLimit { cost } "
+                 "merged: search(query:$merged, type:ISSUE, first:100) { issueCount nodes { number } } "
+                 "opened: search(query:$opened, type:ISSUE, first:100) { issueCount nodes { number } } }")
+        everywhere = graphql(["api", "graphql", "-f", query,
+                              "-f", "merged=is:pr is:merged merged:>=2026-09-29T00:00:00+00:00 involves:demo-user",
+                              "-f", "opened=is:pr created:>=2026-09-29T00:00:00+00:00 author:demo-user"])
+        self.assertEqual([node["number"] for node in everywhere["data"]["merged"]["nodes"]], [1830, 523])
+        self.assertEqual(everywhere["data"]["opened"]["issueCount"], 3)
+        one_repo = graphql(["api", "graphql", "-f", query,
+                            "-f", "merged=repo:demo-labs/atlas is:pr is:merged involves:demo-user",
+                            "-f", "opened=repo:demo-labs/atlas is:pr author:demo-user"])
+        self.assertEqual([node["number"] for node in one_repo["data"]["merged"]["nodes"]], [1830])
+        self.assertEqual({node["state"] for node in one_repo["data"]["opened"]["nodes"]},
+                         {"MERGED", "CLOSED"})
+        self.assertEqual({node["state"] for node in everywhere["data"]["opened"]["nodes"]},
+                         {"OPEN", "MERGED", "CLOSED"})
 
     def test_a_single_pull_request_can_be_followed(self):
         resolved = graphql(["api", "graphql", "-f",

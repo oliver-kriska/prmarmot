@@ -3,7 +3,7 @@
 # Install:
 #   prmarmot-cli completions fish > ~/.config/fish/completions/prmarmot-cli.fish
 
-set -l commands mine authored review reviews all all-open watch auth skill completions help
+set -l commands mine authored review reviews all all-open pr report watch auth skill completions help
 set -l boards mine authored review reviews all all-open
 set -l views $boards watch
 
@@ -39,6 +39,7 @@ complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a mine 
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a review -d 'PRs waiting for your review'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a all -d 'Every open PR in one repository (needs --repo)'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a pr -d 'One pull request in full (OWNER/NAME#N or URL)'
+complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a report -d 'Standup Markdown since a moment: merged, opened, still needs you'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Print what changes, one event per line'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a auth -d 'Sign in to GitHub without the gh CLI'
 complete -c prmarmot-cli -n "not __fish_seen_subcommand_from $commands" -a skill -d 'Print or install the coding-agent skill'
@@ -73,6 +74,16 @@ complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l json -d 'JSON output'
 complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l no-color -d 'Plain text'
 complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
 complete -c prmarmot-cli -n "__prmarmot_cli_command pr" -l auth -x -a 'auto gh device token' -d 'How to get a token'
+
+# report
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l since -x -a '12h 1d 3d 1w 2w' -d 'How far back: 12h, 3d, 1w, or a date'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l repo -x -d 'One repository (OWNER/NAME)'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l all-repos -d 'Every repository'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -s f -l format -x -a 'table markdown json' -d 'Output format'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l json -d 'JSON output'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l no-color -d 'Plain text'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l host -x -d 'GitHub host (github.com or an Enterprise Server host)'
+complete -c prmarmot-cli -n "__prmarmot_cli_command report" -l auth -x -a 'auto gh device token' -d 'How to get a token'
 
 # watch
 complete -c prmarmot-cli -n __prmarmot_cli_watch_view_expected -a 'mine review' -d 'View to watch'

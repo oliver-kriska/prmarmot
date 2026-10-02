@@ -255,9 +255,51 @@ fn one_pull_request_matches_the_pr_schema_present_or_not() {
     assert_eq!(document["status"], "inaccessible");
     assert!(document["pr"].is_null());
 }
+
+#[test]
+fn a_report_matches_the_report_schema_in_both_scopes() {
+    let sandbox = Sandbox::new();
+    let (code, stdout) = sandbox.run(&["report", "--since", "3d", "--all-repos", "--json"]);
+    assert_eq!(code, Some(0), "{stdout}");
+    let report: Value = serde_json::from_str(&stdout).expect("--json prints one document");
+    assert_conforms(Schema::Report, &report);
+    assert_eq!(report["scope"]["type"], "all");
+    let merged: Vec<u64> = report["merged"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pr| pr["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(merged, [1830, 523]);
+    assert_eq!(report["merged"][0]["yours"], true);
+    assert_eq!(report["merged"][1]["yours"], false);
+    assert_eq!(report["opened"].as_array().unwrap().len(), 3);
+    assert!(report["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|pr| pr["category"] == "action"));
+    assert_eq!(report["truncated"], false);
+
+    let (code, markdown) = sandbox.run(&["report", "--repo", "demo-labs/atlas"]);
+    assert_eq!(code, Some(0), "{markdown}");
+    assert!(markdown.starts_with("# PR report · since "), "{markdown}");
+    assert!(markdown.contains("\n## Merged (1)\n"), "{markdown}");
+    assert!(
+        markdown.contains("- [demo-labs/atlas#1830](https://github.com/demo-labs/atlas/pull/1830) Cache invalidation on logout — yours, merged 2026-09-30\n"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("\n## Still need you ("), "{markdown}");
+}
+
 #[test]
 fn the_published_schemas_are_valid_draft_2020_12() {
-    for text in [schema_check::BOARD, schema_check::EVENT] {
+    for text in [
+        schema_check::BOARD,
+        schema_check::EVENT,
+        schema_check::PR,
+        schema_check::REPORT,
+    ] {
         let schema: Value = serde_json::from_str(text).unwrap();
         assert_eq!(
             schema["$schema"],
