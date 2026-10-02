@@ -13,6 +13,9 @@
 set -eu
 
 REPO="oliver-kriska/prmarmot"
+# Apple Developer Team that signs every release (IdeaX, s.r.o.); the install
+# refuses an app signed by anyone else, however well notarized.
+TEAM_ID=AUL48LCR3Y
 FROM_SOURCE=0
 DIR="${PRMARMOT_INSTALL_DIR:-}"
 DEFAULT_REPO="${PRMARMOT_REPO:-}"
@@ -208,6 +211,10 @@ install_release_macos() {
   [ -d "$TMP/prmarmot.app" ] || die "unexpected archive layout (no prmarmot.app)"
   [ -x "$TMP/prmarmot.app/Contents/MacOS/prmarmot" ] || die "archive has no prmarmot executable"
   codesign --verify --deep --strict "$TMP/prmarmot.app" || die "Developer ID signature verification failed"
+  # Gatekeeper accepts any notarized developer; the app must be signed by PR
+  # Marmot's own Apple team, so a substituted archive fails here.
+  codesign -dv --verbose=4 "$TMP/prmarmot.app" 2>&1 | grep -q "^TeamIdentifier=$TEAM_ID\$" \
+    || die "the app is not signed by PR Marmot's Apple team ($TEAM_ID)"
   # Gatekeeper checks notarization without requiring Xcode command-line tools
   # on end-user machines. CI validates the stapled ticket before publication.
   spctl --assess --type execute --verbose=2 "$TMP/prmarmot.app" || die "Gatekeeper rejected the app"
@@ -217,8 +224,18 @@ install_release_macos() {
   fi
   say "Installing to $DIR/prmarmot.app"
   mkdir -p "$DIR"
-  rm -rf "$DIR/prmarmot.app"
-  mv "$TMP/prmarmot.app" "$DIR/prmarmot.app"
+  # The old app is moved aside, not deleted, until the new one is in place,
+  # so a failed move leaves the previous version installed.
+  PREVIOUS=""
+  if [ -e "$DIR/prmarmot.app" ]; then
+    PREVIOUS="$DIR/.prmarmot.app.previous.$$"
+    mv "$DIR/prmarmot.app" "$PREVIOUS" || die "could not move the installed app aside"
+  fi
+  if ! mv "$TMP/prmarmot.app" "$DIR/prmarmot.app"; then
+    [ -n "$PREVIOUS" ] && mv "$PREVIOUS" "$DIR/prmarmot.app"
+    die "could not install the new app; the previous one is back in place"
+  fi
+  [ -n "$PREVIOUS" ] && rm -rf "$PREVIOUS"
   LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   [ -x "$LSREG" ] && "$LSREG" -f "$DIR/prmarmot.app" >/dev/null 2>&1 || true
   remove_legacy_app "$DIR"
