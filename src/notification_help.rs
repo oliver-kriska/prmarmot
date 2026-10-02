@@ -10,6 +10,7 @@ use gpui::{div, img, px, App, FontWeight, ParentElement, Styled, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{h_flex, v_flex, ActiveTheme, WindowExt};
 
+use crate::design::type_size;
 use crate::platform::NotificationPermission;
 
 #[cfg(target_os = "macos")]
@@ -117,10 +118,10 @@ pub fn open_notification_help(
             .child(
                 v_flex()
                     .gap_4()
-                    .text_size(px(13.))
+                    .text_size(type_size::BODY)
                     .child(h_flex().gap_4()
                         .child(img("branding/mascot.png").w(px(58.)).h(px(64.)).flex_shrink_0())
-                        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD)
+                        .child(div().flex_1().text_size(type_size::TITLE).font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().foreground).child(copy.status)))
                     .child(
                         v_flex().gap_2()
@@ -128,7 +129,7 @@ pub fn open_notification_help(
                             .children(copy.instructions.split('\n').map(|line| div().child(line))),
                     )
                     .when(settings_primary, |body| body.child(
-                        div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                        div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                             .child("PR Marmot missing from the list? Notification setup may be incomplete. Reopen the installed app and check again."),
                     ))
                     .child(

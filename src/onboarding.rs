@@ -9,6 +9,7 @@
 //! The protocol is `prmarmot_core::github::device_flow`; the storage is
 //! `prmarmot_local::auth`. This file only owns the screen and the poll timer.
 
+use crate::design::type_size;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -111,9 +112,7 @@ impl OnboardingView {
                     let probe = session::probe_transport(&host, &stored.token.access_token, &agent);
                     let login = viewer_login(&probe)?;
                     let stored = stored.with_login(login);
-                    token_store(store_kind)
-                        .save(&stored)
-                        .map_err(GhError::Network)?;
+                    token_store(store_kind).save(&stored)?;
                     Ok::<(), GhError>(())
                 })
                 .await;
@@ -291,7 +290,7 @@ impl OnboardingView {
     fn heading(&self, text: &str) -> impl IntoElement {
         div()
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(px(18.))
+            .text_size(type_size::TITLE)
             .child(text.to_owned())
     }
 
@@ -321,8 +320,8 @@ impl Render for OnboardingView {
                             .py_2()
                             .rounded(px(6.))
                             .bg(theme.muted)
-                            .font_family("monospace")
-                            .text_size(px(24.))
+                            .font_family(theme.mono_font_family.clone())
+                            .text_size(type_size::CODE)
                             .child(user_code.clone()),
                     )
                     .child(self.note(
@@ -477,7 +476,7 @@ impl Render for OnboardingView {
             body.child(
                 div()
                     .max_w(px(560.))
-                    .text_size(px(12.))
+                    .text_size(type_size::SMALL)
                     .text_color(cx.theme().danger)
                     .child(message),
             )

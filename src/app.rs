@@ -1,7 +1,7 @@
 //! Root view: header (repo, counts, sync + rate-limit status) over the board
 //! table, the auto-refresh loop, and the keyboard/mouse actions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -25,19 +25,30 @@ use gpui_component::{
 };
 use prmarmot_core::board::{BoardRow, BoardScope, Mode};
 use prmarmot_core::layout::{SectionKind, SectionOrder, Sort, COLLAPSIBLE_SECTIONS};
-use prmarmot_core::search::{local_only_terms, RemoteFilter};
+use prmarmot_core::search::{
+    local_only_terms, query_board, BoardQuery, QuickCounts, RemoteFilter, Search,
+};
 use prmarmot_core::status::{
     all_open_local_filter_notice, all_open_needs_repository, all_open_no_match_text,
+    no_loaded_match_text,
 };
 use prmarmot_local::config::{collapse_view, DetailsPosition, DEFAULT_COLLAPSED};
 
+use crate::design::type_size;
 use crate::state::{AppState, SetupStatus};
 use crate::table::{
-    changed_marker_tooltip, columns_for, label_chip, matches_search, take_filter_chips,
-    with_filter, BoardTableDelegate, FilterChip, Qualifier, StaleRule, TableWidthClass,
+    changed_marker_tooltip, columns_for, label_chip, take_filter_chips, with_filter,
+    BoardTableDelegate, ClickIntent, FilterChip, Qualifier, RowAttention, StaleRule,
+    TableWidthClass,
 };
 use crate::theme::ThemePref;
 use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion};
+
+mod chrome;
+mod details;
+mod pump;
+mod setup;
+mod updates;
 
 // `FocusSearch` (⌘F / Ctrl-F, Edit → Find) is bound in `main`.
 gpui::actions!(prmarmot, [CloseDetails, FocusSearch]);
@@ -62,6 +73,14 @@ fn scope_label(scope: &BoardScope) -> String {
 
 /// The footer's repository count: the repositories in the picker, not
 /// counting its "All repositories" entry.
+/// The Pin button's tooltip when every pin is taken.
+fn pin_limit_text() -> String {
+    format!(
+        "Unpin a repository first ({} pins maximum)",
+        crate::config::MAX_PINNED_REPOS
+    )
+}
+
 fn repo_count_status(count: usize, truncated: bool) -> String {
     format!(
         "{count} {}{}",
@@ -123,13 +142,6 @@ pub fn collapsed_from(file: &prmarmot_local::config::FileConfig) -> CollapsedSec
         .collect()
 }
 
-#[derive(Clone)]
-struct AvailableUpdate {
-    version: StableVersion,
-    page_url: String,
-    channel: InstallChannel,
-}
-
 /// Persist the current window size so the next launch opens the same way.
 /// Only the plain-windowed size — maximized/fullscreen store their restore
 /// size, which is what we'd want back anyway.
@@ -148,6 +160,9 @@ pub struct RootView {
     pinned_repos: Vec<String>,
     search_open: bool,
     discovering_repos: bool,
+    /// Discovery has run once (or is running); later runs are the Repos
+    /// button's.
+    repos_discovered: bool,
     repo_status: String,
     search: Entity<InputState>,
     /// The view the search box's placeholder was last written for.
@@ -177,14 +192,17 @@ pub struct RootView {
     /// Last real (non-header) selected row, so header bounces know which way
     /// the caret was travelling. Reset on any queue/repo switch.
     last_selected: usize,
+    /// Where a ⇧-click or ⇧↑/↓ range starts: the row of the last plain or
+    /// ⌘ select. Reset with the selection.
+    selection_anchor: Option<usize>,
     /// The current responsive width bucket, updated on window resize.
     width_class: TableWidthClass,
     /// Last-seen viewport width (px), the basis for the elastic Title/Note split.
     viewport_width: f32,
     /// Manually-resized column widths, remembered per (queue, width class) so a
     /// background refresh or a same-class window resize can't reset a layout the
-    /// user dragged. Bounded by construction: 2 modes × 3 classes × 2 scopes
-    /// = 12 entries.
+    /// user dragged. Bounded by construction: 3 views × 3 classes × 2 scopes
+    /// = 18 entries.
     col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
     changed_only: bool,
     /// The Needs you quick filter: only the rows the header counts as "need
@@ -199,24 +217,19 @@ pub struct RootView {
     smallest_first: bool,
     /// The order sections come in, in every view (`section_order`, Settings).
     section_order: SectionOrder,
-    /// Loaded PRs matching the search that changed since you looked.
-    changed_count: usize,
-    /// Snoozed PRs among the rows the table shows.
-    snoozed_count: usize,
-    /// Loaded PRs that need you, snoozed ones excluded: the header's number.
-    needs_you_count: usize,
-    /// Loaded PRs that `is:stale` matches.
-    stale_count: usize,
+    /// The quick filters' and the header's numbers over the loaded rows,
+    /// counted in `sync_table`, not per frame.
+    counts: QuickCounts,
     suppress_ack_for: Option<String>,
-    automatic_update_checks: bool,
-    update_paths: crate::config::UpdatePaths,
-    available_update: Option<AvailableUpdate>,
-    update_error: Option<String>,
+    /// The update check and the update it may offer (`app/updates.rs`).
+    updates: updates::Updates,
     config_warnings: crate::config::ConfigWarnings,
-    update_check_pending: bool,
-    update_starting: bool,
-    update_check_task: Option<gpui::Task<()>>,
     notification_help_shown: bool,
+    /// Delivered notifications whose click is awaited, oldest first, at most
+    /// [`crate::platform::MAX_NOTIFICATION_WAITERS`]: dropping a wait cancels
+    /// it and leaves the notification in Notification Center.
+    #[cfg(target_os = "macos")]
+    notification_clicks: std::collections::VecDeque<gpui::Task<()>>,
     /// The sign-in screen shown when neither a stored token nor `gh` works.
     onboarding: Entity<crate::onboarding::OnboardingView>,
 }
@@ -241,108 +254,9 @@ impl RootView {
         // is already responsive (no default-width flash).
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
-        let view = cx.entity().downgrade();
-        let table = cx.new(|cx| {
-            let mut delegate = BoardTableDelegate::new(mode, all_repos);
-            let group_view = view.clone();
-            let filter_view = view.clone();
-            let section_view = view.clone();
-            delegate.on_section_toggle = Some(std::rc::Rc::new(move |kind, _, cx| {
-                let _ = section_view.update(cx, |this, cx| this.toggle_section(kind, cx));
-            }));
-            delegate.on_filter_click = Some(std::rc::Rc::new(move |chip, window, cx| {
-                let _ = filter_view.update(cx, |this, cx| this.filter_by(chip, window, cx));
-            }));
-            delegate.on_row_action = Some(std::rc::Rc::new(move |row, action, window, cx| {
-                let _ = view.update(cx, |this, cx| this.row_action(row, action, window, cx));
-            }));
-            delegate.on_group_copy = Some(std::rc::Rc::new(move |copy, _, cx| {
-                let _ = group_view.update(cx, |this, cx| this.copy_group(copy, cx));
-            }));
-            delegate.set_columns(columns_for(mode, initial_class, initial_width, all_repos));
-            TableState::new(delegate, window, cx)
-                .sortable(false)
-                .col_movable(false)
-                .col_resizable(true)
-                .row_selectable(true)
-        });
-
-        let repo_select = {
-            let current = scope_label(&state.read(cx).scope);
-            let mut picker_items = launch.repos.clone();
-            picker_items.retain(|repo| !repo.eq_ignore_ascii_case(ALL_REPOS_LABEL));
-            picker_items.insert(0, ALL_REPOS_LABEL.to_owned());
-            let selected = picker_items
-                .iter()
-                .position(|r| *r == current)
-                .map(IndexPath::new);
-            let select = cx.new(|cx| {
-                SelectState::new(SearchableVec::new(picker_items), selected, window, cx)
-                    .searchable(true)
-            });
-            cx.subscribe(
-                &select,
-                |this: &mut Self, _, event: &SelectEvent<SearchableVec<String>>, cx| {
-                    let SelectEvent::Confirm(Some(repo)) = event else {
-                        return;
-                    };
-                    this.select_scope(scope_from_label(repo), cx);
-                },
-            )
-            .detach();
-            // 0.6 renders the trigger from the filtered cursor, not the committed
-            // value. Restore the full list on close (Escape or outside click).
-            // Focusable exposes the popup handle while open, the trigger otherwise.
-            let trigger = select.focus_handle(cx);
-            let mut was_open = false;
-            cx.observe_in(&select, window, move |_, select, window, cx| {
-                let open = select.focus_handle(cx) != trigger;
-                let closed = was_open && !open;
-                was_open = open;
-                if let Some(current) = select.read(cx).selected_value().cloned().filter(|_| closed)
-                {
-                    select.update(cx, |select, cx| {
-                        select.set_selected_value(&current, window, cx);
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-            select
-        };
-
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder(mode)));
-        cx.subscribe_in(
-            &search,
-            window,
-            |this: &mut Self, input, event: &InputEvent, window, cx| {
-                let all = match event {
-                    InputEvent::Change => false,
-                    InputEvent::PressEnter { .. } => true,
-                    // An empty box closes when you leave it; `/` reopens it.
-                    InputEvent::Blur => {
-                        if !this.filtering() {
-                            this.search_open = false;
-                            cx.notify();
-                        }
-                        return;
-                    }
-                    _ => return,
-                };
-                // A finished `label:x` becomes a chip; the field keeps the words.
-                let text = input.read(cx).value().to_string();
-                let (chips, rest) = take_filter_chips(&text, all);
-                if !chips.is_empty() {
-                    for chip in chips {
-                        this.add_filter_chip(chip, cx);
-                    }
-                    input.update(cx, |input, cx| input.set_value(rest.clone(), window, cx));
-                }
-                this.filter_text = rest;
-                this.sync_table(cx);
-            },
-        )
-        .detach();
+        let table = Self::build_table(mode, all_repos, initial_class, initial_width, window, cx);
+        let repo_select = Self::build_repo_select(&state, launch.repos.clone(), window, cx);
+        let search = Self::build_search(mode, window, cx);
 
         // Theme: apply the configured preference, and while in System mode
         // follow macOS appearance changes live.
@@ -359,32 +273,14 @@ impl RootView {
             })
             .detach();
 
-        // Push new rows into the table only when a fetch actually landed —
-        // gate the observer on generation (the PRFlow infinite-observer trap).
-        // On a mode switch, restore that queue's remembered selection + scroll
-        // once its rows are in place; on a plain refresh, keep the current
-        // selection but clamp it if the row count shrank.
-        cx.observe(&state, |this: &mut Self, state, cx| {
-            let generation = state.read(cx).generation;
-            if generation != this.seen_generation {
-                this.seen_generation = generation;
-                this.sync_table(cx);
-                // Load more's rows join their sections, not the bottom.
-                if let Some((_, added)) = state
-                    .read(cx)
-                    .loaded_more
-                    .filter(|&(landed, _)| landed == generation)
-                {
-                    this.show_feedback(loaded_more_text(added), cx);
-                }
-            }
-            cx.notify();
-        })
-        .detach();
+        Self::observe_state(&state, window, cx);
 
         cx.subscribe(&table, |this, _table, event: &TableEvent, cx| match event {
             TableEvent::DoubleClickedRow(row_ix) => this.open_row(*row_ix, cx),
             TableEvent::SelectRow(row_ix) => this.on_select_row(*row_ix, cx),
+            TableEvent::ClearSelection => {
+                this.clear_multi_selection(cx);
+            }
             TableEvent::ColumnWidthsChanged(widths) => {
                 this.on_column_widths_changed(widths.clone(), cx)
             }
@@ -404,86 +300,19 @@ impl RootView {
         #[cfg(feature = "perf")]
         crate::perf::start(window, cx);
 
-        // Remember the window size across sessions (red traffic light path;
-        // the `q` key saves too).
-        window.on_window_should_close(cx, |window, _cx| {
+        // The board is the app: closing its window (red traffic light, ⌘W)
+        // quits, the same as `q`. Left running with no window, the refresh
+        // ticker would die with the window and a Dock click would reopen
+        // nothing (the app registers no reopen handler), leaving a live
+        // process that does nothing until Quit from the Dock menu.
+        window.on_window_should_close(cx, |window, cx| {
             save_window_size(window);
+            cx.quit();
             true
         });
 
-        // The "synced Xm ago" label and the wait ages render only on notify —
-        // without a slow tick they can claim "just now" for a whole refresh
-        // interval. The tick runs every 5 s so notification clicks and timed
-        // snoozes are handled promptly, but it repaints only when the synced
-        // label changes (once a minute), while a rate-limit countdown is
-        // showing, or after a platform event. An idle window draws one frame
-        // a minute; nothing animates.
-        let ticker = cx.entity().downgrade();
-        let mut shown_sync_label = None;
-        cx.spawn_in(window, async move |_this, cx| loop {
-            cx.background_executor().timer(Duration::from_secs(5)).await;
-            let Some(view) = ticker.upgrade() else { break };
-            let _ = view.update_in(cx, |this, window, cx| {
-                let selected = this.selected_row_id(cx);
-                this.state.update(cx, |state, cx| {
-                    state.set_focused_selection(selected, window.is_window_active());
-                    state.wake_timed_snoozes(cx);
-                });
-                let state = this.state.read(cx);
-                let sync_label = state
-                    .last_synced
-                    .map(|t| relative((Local::now() - t).num_seconds()));
-                let counting_down = state.backoff_remaining().is_some();
-                let label_changed = sync_label != shown_sync_label;
-                shown_sync_label = sync_label;
-                let event = state.take_platform_event();
-                if !(label_changed || counting_down || event.is_some()) {
-                    return;
-                }
-                if let Some(event) = event {
-                    match event {
-                        crate::platform::PlatformEvent::Clicked { pr_id, url } => {
-                            window.activate_window();
-                            this.select_notification_pr(pr_id, url, cx);
-                        }
-                        crate::platform::PlatformEvent::NotificationError(error) => {
-                            this.state
-                                .update(cx, |state, _| state.notification_error = Some(error));
-                        }
-                        crate::platform::PlatformEvent::NotificationPermissionChanged(
-                            permission,
-                        ) => {
-                            #[cfg(target_os = "macos")]
-                            if permission == crate::platform::NotificationPermission::Allowed {
-                                this.state
-                                    .update(cx, |state, _| state.notification_error = None);
-                                this.show_feedback("Notifications are allowed", cx);
-                                return;
-                            }
-                            this.state.update(cx, |state, _| {
-                                state.notification_error =
-                                    Some("Notifications need attention".into());
-                            });
-                            if !this.notification_help_shown {
-                                this.notification_help_shown = true;
-                                this.show_notification_help(permission, window, cx);
-                            }
-                        }
-                        crate::platform::PlatformEvent::NotificationPermissionError {
-                            operation,
-                            message,
-                        } => {
-                            this.state.update(cx, |state, _| {
-                                state.notification_error =
-                                    Some(format!("{operation:?}: {message}"));
-                            });
-                        }
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        Self::start_ticker(window, cx);
+        Self::start_event_pump(state.read(cx).platform_event_signal(), window, cx);
 
         let onboarding = cx.new(|cx| crate::onboarding::OnboardingView::new(auth, window, cx));
         // A completed sign-in re-runs the setup check, which picks up the new
@@ -511,6 +340,7 @@ impl RootView {
             search_open: false,
             placeholder_mode: mode,
             discovering_repos: false,
+            repos_discovered: false,
             repo_status: String::new(),
             search,
             filter_text: String::new(),
@@ -527,6 +357,7 @@ impl RootView {
             selections: HashMap::new(),
             pending_restore: None,
             last_selected: 0,
+            selection_anchor: None,
             width_class: initial_class,
             viewport_width: initial_width,
             col_overrides: HashMap::new(),
@@ -536,20 +367,21 @@ impl RootView {
             details_position: launch.details_position,
             smallest_first: false,
             section_order: launch.section_order,
-            changed_count: 0,
-            snoozed_count: 0,
-            needs_you_count: 0,
-            stale_count: 0,
+            counts: QuickCounts::default(),
             suppress_ack_for: None,
-            automatic_update_checks: launch.automatic_update_checks,
-            update_paths: launch.update_paths,
-            available_update: None,
-            update_error: launch.update_failure,
+            updates: updates::Updates {
+                automatic: launch.automatic_update_checks,
+                paths: launch.update_paths,
+                available: None,
+                error: launch.update_failure,
+                check_pending: false,
+                starting: false,
+                check_task: None,
+            },
             config_warnings: launch.config_warnings,
-            update_check_pending: false,
-            update_starting: false,
-            update_check_task: None,
             notification_help_shown: false,
+            #[cfg(target_os = "macos")]
+            notification_clicks: std::collections::VecDeque::new(),
             onboarding,
         };
         if this.state.read(cx).attention_preferences.notifications {
@@ -557,7 +389,6 @@ impl RootView {
         }
         this.state.update(cx, |state, cx| state.validate_setup(cx));
         this.start_refresh_loop(cx);
-        this.discover_repos(window, cx);
         this.check_for_updates(cx);
         this.start_update_check_loop(cx);
         this
@@ -680,6 +511,7 @@ impl RootView {
             if let Some(ix) = next {
                 self.last_selected = ix;
                 self.table.update(cx, |table, cx| {
+                    table.delegate().set_click_intent(ix, ClickIntent::Keep);
                     table.set_selected_row(ix, cx);
                     table.scroll_to_row(ix, cx);
                 });
@@ -748,53 +580,39 @@ impl RootView {
             now: Utc::now(),
             after_days: state.config.stale_after_days,
         };
-        let matching: Vec<_> = state
-            .rows
-            .iter()
-            .filter(|row| matches_search(row, &self.filter_text, &self.filter_chips, stale))
-            .collect();
-        // The quick filters count every loaded row, so each pill's number is
-        // the header's (Needs you), what the chip would match on its own
-        // (Stale), or every changed PR whatever the search (Changed).
-        self.changed_count = state
-            .rows
-            .iter()
-            .filter(|row| state.is_changed(&row.id))
-            .count();
-        self.needs_you_count = need_you_count_of(state);
-        self.stale_count = state.rows.iter().filter(|row| stale.is_stale(row)).count();
-        let rows: Vec<_> = matching
-            .into_iter()
-            .filter(|row| !self.changed_only || state.is_changed(&row.id))
-            .filter(|row| !self.needs_you_only || needs_you_now(state, row))
-            .cloned()
-            .collect();
-        let changed: HashMap<_, _> = rows
-            .iter()
-            .filter(|row| state.is_changed(&row.id))
-            .map(|row| {
+        // The stores are scanned once here, not once per row.
+        let marks = state.marks();
+        let search = Search::new(&self.filter_text, &self.filter_chips);
+        // The rows and the pills' numbers by core's rules (`query_board`).
+        let query = BoardQuery {
+            search: &search,
+            stale,
+            changed_only: self.changed_only,
+            needs_you_only: self.needs_you_only,
+        };
+        let (shown, counts) = query_board(&state.rows, &query, &marks);
+        self.counts = counts;
+        let rows: Vec<BoardRow> = shown.into_iter().cloned().collect();
+        let mut attention = RowAttention {
+            collapsed: self.collapsed_here(state).to_vec(),
+            ..RowAttention::default()
+        };
+        for row in &rows {
+            if marks.is_changed(&row.id) {
                 let summary = state.change_summary(&row.id);
-                (row.id.clone(), changed_marker_tooltip(&summary))
-            })
-            .collect();
-        let watched: HashSet<_> = rows
-            .iter()
-            .filter(|row| state.is_watched(&row.id))
-            .map(|row| row.id.clone())
-            .collect();
-        let snoozed: HashSet<_> = rows
-            .iter()
-            .filter(|row| state.snooze_description(&row.id).is_some())
-            .map(|row| row.id.clone())
-            .collect();
+                attention
+                    .changed
+                    .insert(row.id.clone(), changed_marker_tooltip(&summary));
+            }
+            if marks.is_watched(&row.id) {
+                attention.watched.insert(row.id.clone());
+            }
+            if marks.is_snoozed(&row.id) {
+                attention.snoozed.insert(row.id.clone());
+            }
+        }
         self.visible_count = rows.len();
-        // Like the other buttons, Snoozed counts every loaded snoozed PR.
-        self.snoozed_count = state
-            .rows
-            .iter()
-            .filter(|row| state.snooze_description(&row.id).is_some())
-            .count();
-        let collapsed = self.collapsed_here(state).to_vec();
+        let can_load_more = state.pagination_can_load_more();
         let switching = self.pending_restore.take();
         let target_url = match switching {
             Some(mode) => self.selections.get(&mode).cloned(),
@@ -820,13 +638,12 @@ impl RootView {
             table
                 .delegate_mut()
                 .set_section_order(self.section_order.clone());
-            table.delegate_mut().set_rows(rows);
-            table
-                .delegate_mut()
-                .set_attention(changed, watched, snoozed, collapsed);
+            table.delegate_mut().set_can_load_more(can_load_more);
+            table.delegate_mut().set_rows_and_attention(rows, attention);
             table.refresh(cx);
             if let Some(ix) = target_url.and_then(|u| table.delegate().display_index_of_url(&u)) {
                 self.suppress_ack_for = table.delegate().row(ix).map(|row| row.id.clone());
+                table.delegate().set_click_intent(ix, ClickIntent::Keep);
                 table.set_selected_row(ix, cx);
                 if switching.is_some() {
                     table.scroll_to_row(ix, cx);
@@ -835,6 +652,7 @@ impl RootView {
                 .and_then(|kind| table.delegate().header_index(kind))
                 .filter(|&ix| table.delegate().is_selectable(ix))
             {
+                table.delegate().set_click_intent(ix, ClickIntent::Keep);
                 table.set_selected_row(ix, cx);
             } else {
                 table.clear_selection(cx);
@@ -854,6 +672,7 @@ impl RootView {
         self.selections.clear();
         self.pending_restore = None;
         self.last_selected = 0;
+        self.clear_multi_selection(cx);
         self.set_details_open(false, cx);
         let all_repos = scope.is_all();
         self.state.update(cx, |s, cx| s.switch_scope(scope, cx));
@@ -899,8 +718,8 @@ impl RootView {
                 // save means the file reads now; its values are checked again.
                 let (file, config_warnings) = crate::config::ConfigWarnings::load();
                 this.config_warnings = config_warnings;
-                let was_enabled = this.automatic_update_checks;
-                this.automatic_update_checks = file.automatic_update_checks;
+                let was_enabled = this.updates.automatic;
+                this.updates.automatic = file.automatic_update_checks;
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
                 this.theme_pref.apply(window, cx);
                 // The order is the window's alone, so a change to it redraws
@@ -923,12 +742,9 @@ impl RootView {
                     this.start_refresh_loop(cx);
                 }
                 this.state.update(cx, |state, cx| {
-                    state.apply_attention_preferences(crate::state::AttentionPreferences {
-                        notifications: file.notifications,
-                        notification_sound: file.notification_sound,
-                        notify_all_needs_action: file.notify_all_needs_action,
-                        dock_badge: file.dock_badge,
-                    });
+                    state.apply_attention_preferences(
+                        crate::state::AttentionPreferences::from_file(&file),
+                    );
                     state.apply_config(crate::board_config(&file), cx)
                 });
                 window.close_dialog(cx);
@@ -938,7 +754,7 @@ impl RootView {
                     this.notification_help_shown = false;
                     this.state.read(cx).check_notification_permission();
                 }
-                if !was_enabled && this.automatic_update_checks {
+                if !was_enabled && this.updates.automatic {
                     // The checker owns the persisted daily gate. Re-enabling
                     // evaluates it immediately without bypassing that limit.
                     this.check_for_updates(cx);
@@ -968,10 +784,48 @@ impl RootView {
         cx.notify();
     }
 
+    /// The empty board's button.
+    fn empty_action(
+        &mut self,
+        action: prmarmot_core::status::EmptyAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            prmarmot_core::status::EmptyAction::ShowAllRepositories => {
+                self.select_scope(BoardScope::AllRepositories, cx);
+                self.repo_select.update(cx, |select, cx| {
+                    select.set_selected_value(&ALL_REPOS_LABEL.to_owned(), window, cx);
+                });
+            }
+            prmarmot_core::status::EmptyAction::LoadMore => {
+                self.state.update(cx, |state, cx| state.load_more(cx));
+            }
+        }
+        self.table.focus_handle(cx).focus(window, cx);
+    }
+
+    /// The empty body when the search matched nothing. All open's is exact
+    /// when GitHub answered all of it for these rows, or when nothing is left
+    /// to load.
+    fn no_match_text(&self, cx: &App) -> String {
+        let s = self.state.read(cx);
+        let exact = s.mode == Mode::AllOpen
+            && (!s.truncated
+                || local_only_terms(&self.filter_text, &self.filter_chips, &s.rows_filter)
+                    .is_empty());
+        if exact {
+            all_open_no_match_text(&self.filter_summary())
+        } else {
+            no_loaded_match_text(&self.filter_summary())
+        }
+    }
+
     fn discover_repos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.discovering_repos {
             return;
         }
+        self.repos_discovered = true;
         self.discovering_repos = true;
         self.repo_status = "Finding accessible repositories…".into();
         cx.notify();
@@ -1016,182 +870,21 @@ impl RootView {
         let interval = self.refresh;
         let state = self.state.downgrade();
         // Replacing the task cancels the old timer, leaving exactly one loop.
-        self.refresh_task = Some(cx.spawn(async move |_this, cx| {
-            loop {
-                cx.background_executor().timer(interval).await;
-                // Rate-limit gating and in-flight dedup live inside refresh().
-                if state.update(cx, |s, cx| s.refresh(cx)).is_err() {
-                    break; // app is shutting down
-                }
-            }
-        }));
-    }
-
-    fn start_update_check_loop(&mut self, cx: &mut Context<Self>) {
-        self.update_check_task = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(crate::updates::AUTOMATIC_CHECK_INTERVAL)
-                .await;
-            if this
-                .update(cx, |this, cx| this.check_for_updates(cx))
+        // It sleeps until the open view's last refresh is `interval` old, so
+        // a view switch or a manual refresh moves the next one back.
+        self.refresh_task = Some(cx.spawn(async move |_this, cx| loop {
+            let Ok(wait) = state.read_with(cx, |s, _| s.refresh_wait(interval)) else {
+                break; // app is shutting down
+            };
+            cx.background_executor().timer(wait).await;
+            // Rate-limit gating and in-flight dedup live inside refresh().
+            if state
+                .update(cx, |s, cx| s.refresh_if_due(interval, cx))
                 .is_err()
             {
                 break;
             }
         }));
-    }
-
-    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if !self.automatic_update_checks || self.update_check_pending {
-            return;
-        }
-        self.update_check_pending = true;
-        let state_path = self.update_paths.check_state.clone();
-        cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let identity = crate::updates::ReleaseIdentity::new(crate::RELEASE_REPO)?;
-                    // The GitHub CLI when it can answer, else GitHub directly
-                    // without a token, so an install without `gh` still hears
-                    // about releases.
-                    let source = crate::updates::FallbackReleaseSource::new(
-                        crate::updates::GhReleaseSource::new(
-                            prmarmot_core::github::gh_cli::resolve_gh_path(),
-                        ),
-                        crate::updates::HttpReleaseSource::github(
-                            &prmarmot_local::session::user_agent(
-                                "prmarmot",
-                                env!("CARGO_PKG_VERSION"),
-                            ),
-                        ),
-                    );
-                    let checker = crate::updates::UpdateChecker::new(state_path, source);
-                    let checked = checker.automatic_check(
-                        true,
-                        unix_now(),
-                        env!("CARGO_PKG_VERSION"),
-                        &identity,
-                    )?;
-                    let channel = if check_result(&checked)
-                        .is_some_and(|result| matches!(result, CheckResult::Available { .. }))
-                    {
-                        #[cfg(target_os = "macos")]
-                        {
-                            Some(crate::updates::detect_current_install_channel(
-                                crate::CASK_TOKEN,
-                                &crate::updates::SystemCommandRunner,
-                            )?)
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            Some(InstallChannel::Direct)
-                        }
-                    } else {
-                        None
-                    };
-                    Ok::<_, crate::updates::UpdateError>((checked, channel))
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.update_check_pending = false;
-                match outcome {
-                    Ok((checked, channel)) => {
-                        if let Some(CheckResult::Available {
-                            version, page_url, ..
-                        }) = check_result(&checked)
-                        {
-                            this.available_update = Some(AvailableUpdate {
-                                version: *version,
-                                page_url: page_url.clone(),
-                                channel: channel.unwrap_or(InstallChannel::Direct),
-                            });
-                        } else if matches!(
-                            check_result(&checked),
-                            Some(CheckResult::UpToDate { .. })
-                        ) {
-                            this.available_update = None;
-                        }
-                    }
-                    Err(error) => eprintln!("prmarmot: automatic update check failed: {error}"),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn begin_update(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let Some(available) = self.available_update.clone() else {
-            return;
-        };
-        match available.channel {
-            InstallChannel::Direct => cx.open_url(&available.page_url),
-            InstallChannel::Homebrew { brew_path, .. } => {
-                if self.update_starting {
-                    return;
-                }
-                self.update_starting = true;
-                self.update_error = None;
-                let invocation = match crate::updates::UpgradeIdentity::new(
-                    crate::CASK_TOKEN,
-                    crate::APPLICATION_NAME,
-                ) {
-                    Ok(identity) => crate::updates::HelperInvocation {
-                        parent_pid: std::process::id(),
-                        brew_path,
-                        identity,
-                        receipt_path: self.update_paths.upgrade_receipt.clone(),
-                        lock_path: self.update_paths.helper_lock.clone(),
-                        open_path: PathBuf::from("/usr/bin/open"),
-                    },
-                    Err(error) => {
-                        self.update_starting = false;
-                        self.update_error = Some(error.to_string());
-                        cx.notify();
-                        return;
-                    }
-                };
-                let executable = match std::env::current_exe() {
-                    Ok(executable) => executable,
-                    Err(error) => {
-                        self.update_starting = false;
-                        self.update_error = Some(format!("Could not start update: {error}"));
-                        cx.notify();
-                        return;
-                    }
-                };
-                let window_size = window.window_bounds();
-                cx.spawn(async move |this, cx| {
-                    let result = cx
-                        .background_executor()
-                        .spawn(async move {
-                            crate::updates::spawn_upgrade_helper(&executable, &invocation)
-                        })
-                        .await;
-                    let _ = this.update(cx, |this, cx| match result {
-                        Ok(_) => {
-                            let (gpui::WindowBounds::Windowed(bounds)
-                            | gpui::WindowBounds::Maximized(bounds)
-                            | gpui::WindowBounds::Fullscreen(bounds)) = window_size;
-                            crate::config::persist_window(
-                                bounds.size.width.into(),
-                                bounds.size.height.into(),
-                            );
-                            // The detached copy is alive and waiting for this
-                            // PID. Quit only after that spawn succeeds.
-                            cx.quit();
-                        }
-                        Err(error) => {
-                            this.update_starting = false;
-                            this.update_error = Some(format!("Could not start update: {error}"));
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
-            }
-        }
     }
 
     fn selected_row_url(&self, cx: &App) -> Option<String> {
@@ -1241,6 +934,7 @@ impl RootView {
             }
         }
         self.last_selected = 0;
+        self.clear_multi_selection(cx);
         self.pending_restore = Some(mode);
         self.state.update(cx, |s, cx| s.set_mode(mode, cx));
         // The delegate no longer owns column widths (they track the live window
@@ -1372,7 +1066,10 @@ impl RootView {
             !this.table.read(cx).delegate().is_selectable(i)
         };
         if !skipped(row_ix, self, cx) {
+            let intent = self.table.read(cx).delegate().take_click_intent(row_ix);
+            let previous = self.last_selected;
             self.last_selected = row_ix;
+            self.apply_select_intent(intent, row_ix, previous, cx);
             if let Some(pr_id) = self
                 .table
                 .read(cx)
@@ -1386,6 +1083,9 @@ impl RootView {
                     self.state
                         .update(cx, |state, cx| state.acknowledge(&pr_id, cx));
                 }
+            } else {
+                // A folded section header: there is no PR to show.
+                self.set_details_open(false, cx);
             }
             cx.notify();
             return;
@@ -1397,9 +1097,323 @@ impl RootView {
         let target = if going_down { down.or(up) } else { up.or(down) };
         if let Some(t) = target {
             self.last_selected = t;
-            self.table
-                .update(cx, |table, cx| table.set_selected_row(t, cx));
+            self.table.update(cx, |table, cx| {
+                table.delegate().set_click_intent(t, ClickIntent::Keep);
+                table.set_selected_row(t, cx)
+            });
         }
+    }
+
+    /// What a select does to the rows already selected: a plain select
+    /// leaves one row selected, ⌘ toggles the clicked row, ⇧ selects from
+    /// the anchor to it. `previous` is the caret row before this select.
+    fn apply_select_intent(
+        &mut self,
+        intent: ClickIntent,
+        row_ix: usize,
+        previous: usize,
+        cx: &mut Context<Self>,
+    ) {
+        match intent {
+            ClickIntent::Keep => return,
+            ClickIntent::Plain => {
+                self.selection_anchor = Some(row_ix);
+                self.table.update(cx, |table, _| {
+                    table.delegate_mut().clear_multi();
+                });
+            }
+            ClickIntent::Range => {
+                let anchor = self.selection_anchor.unwrap_or(row_ix);
+                self.table.update(cx, |table, _| {
+                    let ids = table.delegate().ids_between(anchor, row_ix);
+                    table.delegate_mut().set_multi(ids);
+                });
+            }
+            ClickIntent::Toggle => {
+                self.selection_anchor = Some(row_ix);
+                let still_selected = self.table.update(cx, |table, cx| {
+                    let Some(clicked) = table.delegate().row(row_ix).map(|row| row.id.clone())
+                    else {
+                        return true;
+                    };
+                    let caret = (previous != row_ix)
+                        .then(|| table.delegate().row(previous).map(|row| row.id.clone()))
+                        .flatten();
+                    if table
+                        .delegate_mut()
+                        .toggle_multi(&clicked, caret.as_deref())
+                    {
+                        return true;
+                    }
+                    // The caret sits on a row that is no longer selected:
+                    // park it on the nearest one that is.
+                    match table.delegate().nearest_multi_index(row_ix) {
+                        Some(ix) => {
+                            if table.delegate().multi_len() == 1 {
+                                table.delegate_mut().clear_multi();
+                            }
+                            table.delegate().set_click_intent(ix, ClickIntent::Keep);
+                            table.set_selected_row(ix, cx);
+                            true
+                        }
+                        None => {
+                            table.clear_selection(cx);
+                            false
+                        }
+                    }
+                });
+                if !still_selected {
+                    self.set_details_open(false, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// ⇧↑ / ⇧↓: grow the selection by one PR from the caret, from the
+    /// anchor, which the first extension sets at the caret.
+    fn extend_selection(&mut self, down: bool, cx: &mut Context<Self>) {
+        let (caret, target) = {
+            let table = self.table.read(cx);
+            let delegate = table.delegate();
+            let Some(caret) = table.selected_row() else {
+                return;
+            };
+            let target = if down {
+                (caret + 1..delegate.display_len()).find(|&i| delegate.row(i).is_some())
+            } else {
+                (0..caret).rev().find(|&i| delegate.row(i).is_some())
+            };
+            (caret, target)
+        };
+        let Some(target) = target else {
+            return;
+        };
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(caret);
+        }
+        self.table.update(cx, |table, cx| {
+            table
+                .delegate()
+                .set_click_intent(target, ClickIntent::Range);
+            table.set_selected_row(target, cx);
+        });
+    }
+
+    /// ⌘A (Ctrl+A): every PR on screen; folded sections stay folded and
+    /// out of it.
+    fn select_all_rows(&mut self, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let ids = table.delegate().visible_pr_ids();
+            table.delegate_mut().set_multi(ids);
+            let caret_on_pr = table
+                .selected_row()
+                .is_some_and(|ix| table.delegate().row(ix).is_some());
+            if !caret_on_pr {
+                if let Some(ix) = table.delegate().nearest_multi_index(0) {
+                    table.delegate().set_click_intent(ix, ClickIntent::Keep);
+                    table.set_selected_row(ix, cx);
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    /// Back to the caret row alone. True when there was more.
+    fn clear_multi_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        self.selection_anchor = None;
+        let cleared = self
+            .table
+            .update(cx, |table, _| table.delegate_mut().clear_multi());
+        if cleared {
+            cx.notify();
+        }
+        cleared
+    }
+
+    fn multi_selection_active(&self, cx: &App) -> bool {
+        self.table.read(cx).delegate().multi_active()
+    }
+
+    /// One action over the whole selection, from its menu or a key.
+    fn selection_action(
+        &mut self,
+        action: crate::table::SelectionAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::table::SelectionAction;
+        use prmarmot_core::status::{selection_done_text, SelectionDone, MAX_OPEN_TOGETHER};
+        let rows = self.table.read(cx).delegate().multi_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let done = match action {
+            SelectionAction::Open => {
+                let opened = rows.len().min(MAX_OPEN_TOGETHER);
+                for row in &rows[..opened] {
+                    cx.open_url(&row.url);
+                }
+                SelectionDone::Opened {
+                    opened,
+                    selected: rows.len(),
+                }
+            }
+            SelectionAction::Copy(format) => {
+                if let Some(copy) = self.table.read(cx).delegate().selection_copy(format) {
+                    self.copy_group(copy, cx);
+                }
+                return;
+            }
+            SelectionAction::Watch => SelectionDone::Watching(self.watch_rows(&rows, true, cx)),
+            SelectionAction::Unwatch => SelectionDone::Unwatched(self.watch_rows(&rows, false, cx)),
+            SelectionAction::Snooze => {
+                self.snooze_rows(rows, window, cx);
+                return;
+            }
+            SelectionAction::CancelSnooze => {
+                let cancelled = self.state.update(cx, |state, cx| {
+                    let mut cancelled = 0;
+                    for row in &rows {
+                        if state.snooze_description(&row.id).is_some() {
+                            state.cancel_snooze(&row.id, cx);
+                            cancelled += 1;
+                        }
+                    }
+                    cancelled
+                });
+                SelectionDone::SnoozesCancelled(cancelled)
+            }
+        };
+        self.show_feedback(selection_done_text(done), cx);
+    }
+
+    /// Watch (or unwatch) the rows not already so. How many changed.
+    fn watch_rows(
+        &mut self,
+        rows: &[prmarmot_core::board::BoardRow],
+        watch: bool,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        self.state.update(cx, |state, cx| {
+            let mut changed = 0;
+            for row in rows {
+                if state.is_watched(&row.id) != watch {
+                    state.toggle_watch(row, cx);
+                    changed += 1;
+                }
+            }
+            changed
+        })
+    }
+
+    /// `w` over a selection: watch the ones not watched, or when every one
+    /// is, unwatch them all.
+    fn toggle_watch_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let any_unwatched = {
+            let rows = self.table.read(cx).delegate().multi_rows();
+            let state = self.state.read(cx);
+            rows.iter().any(|row| !state.is_watched(&row.id))
+        };
+        let action = if any_unwatched {
+            crate::table::SelectionAction::Watch
+        } else {
+            crate::table::SelectionAction::Unwatch
+        };
+        self.selection_action(action, window, cx);
+    }
+
+    /// The snooze dialog for several PRs: the same choices as one PR's,
+    /// each applied to every row (a condition's baseline is the row's own).
+    /// "Waiting on" is one person's, so it is not offered here.
+    fn snooze_rows(
+        &self,
+        rows: Vec<prmarmot_core::board::BoardRow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attention_state::{AttentionState, SnoozeCondition};
+        type Choice = fn(&prmarmot_core::board::BoardRow) -> SnoozeCondition;
+        let state = self.state.clone();
+        let view = cx.entity().downgrade();
+        let focus = self.table.focus_handle(cx);
+        let any_snoozed = {
+            let state = state.read(cx);
+            rows.iter()
+                .any(|row| state.snooze_description(&row.id).is_some())
+        };
+        let count = rows.len();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let choices: [(&str, Choice); 4] = [
+                (crate::attention_state::SNOOZE_ONE_HOUR, |_| {
+                    SnoozeCondition::Until {
+                        deadline: Utc::now() + ChronoDuration::hours(1),
+                    }
+                }),
+                (crate::attention_state::SNOOZE_UNTIL_TOMORROW, |_| {
+                    SnoozeCondition::Until {
+                        deadline: Utc::now() + ChronoDuration::hours(24),
+                    }
+                }),
+                (
+                    crate::attention_state::SNOOZE_WAITING_CI,
+                    AttentionState::waiting_ci,
+                ),
+                (
+                    crate::attention_state::SNOOZE_REVIEW_AGAIN,
+                    AttentionState::review_again,
+                ),
+            ];
+            let mut options = v_flex().gap_2();
+            for (index, (label, choice)) in choices.into_iter().enumerate() {
+                let state = state.clone();
+                let view = view.clone();
+                let rows = rows.clone();
+                options = options.child(
+                    Button::new(("snooze-selection", index))
+                        .label(label)
+                        .on_click(move |_, window, cx| {
+                            state.update(cx, |state, cx| {
+                                for row in &rows {
+                                    state.set_snooze(row, choice(row), cx);
+                                }
+                            });
+                            let _ = view.update(cx, |this, cx| {
+                                this.show_feedback(
+                                    prmarmot_core::status::selection_done_text(
+                                        prmarmot_core::status::SelectionDone::Snoozed(rows.len()),
+                                    ),
+                                    cx,
+                                )
+                            });
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            if any_snoozed {
+                let state = state.clone();
+                let rows = rows.clone();
+                options = options.child(
+                    Button::new("cancel-selection-snooze")
+                        .label(crate::attention_state::SNOOZE_CANCEL)
+                        .on_click(move |_, window, cx| {
+                            state.update(cx, |state, cx| {
+                                for row in &rows {
+                                    state.cancel_snooze(&row.id, cx);
+                                }
+                            });
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            let focus = focus.clone();
+            dialog
+                .title(format!("Snooze {count} PRs"))
+                .w(px(360.))
+                .close_button(true)
+                .child(options)
+                .on_close(move |_, window, cx| focus.focus(window, cx))
+        });
     }
 
     fn handle_key_down(
@@ -1412,6 +1426,10 @@ impl RootView {
             return;
         }
         if event.keystroke.key == "escape" {
+            // A selection of several rows goes first; Details next.
+            if self.clear_multi_selection(cx) {
+                return;
+            }
             self.set_details_open(false, cx);
             self.table.focus_handle(cx).focus(window, cx);
             cx.notify();
@@ -1419,21 +1437,49 @@ impl RootView {
         }
         // Text inputs own character keys; toolbar buttons do not. The select's
         // dynamic focus handle includes its searchable popup.
-        if self.search.focus_handle(cx).contains_focused(window, cx)
+        let in_text_input = self.search.focus_handle(cx).contains_focused(window, cx)
             || self
                 .repo_select
                 .focus_handle(cx)
-                .contains_focused(window, cx)
-            || event.keystroke.modifiers.platform
-            || event.keystroke.modifiers.control
-            || event.keystroke.modifiers.alt
-        {
+                .contains_focused(window, cx);
+        let table_focused = self.table.focus_handle(cx).contains_focused(window, cx);
+        let modifiers = event.keystroke.modifiers;
+        // ⌘A (Ctrl+A on Linux) over the table: every PR on screen.
+        if !in_text_input && table_focused && modifiers.secondary() && event.keystroke.key == "a" {
+            self.select_all_rows(cx);
+            cx.stop_propagation();
             return;
         }
-        let table_focused = self.table.focus_handle(cx).contains_focused(window, cx);
+        if in_text_input || modifiers.platform || modifiers.control || modifiers.alt {
+            return;
+        }
         let key = event.keystroke.key.as_str();
-        let platform = event.keystroke.modifiers.platform;
+        let platform = modifiers.platform;
+        // With several rows selected, the row keys act on all of them.
+        let multi = self.multi_selection_active(cx);
         match key {
+            "down" | "up" if table_focused && modifiers.shift => {
+                self.extend_selection(key == "down", cx);
+                cx.stop_propagation();
+            }
+            "enter" if table_focused && multi => {
+                self.selection_action(crate::table::SelectionAction::Open, window, cx)
+            }
+            "o" if multi => self.selection_action(crate::table::SelectionAction::Open, window, cx),
+            "y" if !platform && modifiers.shift && multi => self.selection_action(
+                crate::table::SelectionAction::Copy(prmarmot_core::share::ShareFormat::List),
+                window,
+                cx,
+            ),
+            "y" if !platform && multi => self.selection_action(
+                crate::table::SelectionAction::Copy(prmarmot_core::share::ShareFormat::Urls),
+                window,
+                cx,
+            ),
+            "w" if !platform && table_focused && multi => self.toggle_watch_selection(window, cx),
+            "s" if !platform && table_focused && multi => {
+                self.selection_action(crate::table::SelectionAction::Snooze, window, cx)
+            }
             "/" if !platform => {
                 self.open_search(window, cx);
                 cx.stop_propagation();
@@ -1546,15 +1592,22 @@ impl RootView {
         self.show_feedback(format!("Copied {} {what}{plural}{how}", copy.count), cx);
     }
 
-    /// `Y`: copy the group containing the selected PR as a list.
+    /// `Y`: copy the group containing the selected PR as a list, or the
+    /// selection when it is several rows.
     fn copy_selected_group(&mut self, cx: &mut Context<Self>) {
         let copy = {
             let table = self.table.read(cx);
-            table.selected_row().and_then(|row_ix| {
-                let delegate = table.delegate();
-                let label = delegate.group_label_at(row_ix)?;
-                delegate.group_copy(&label, prmarmot_core::share::ShareFormat::List)
-            })
+            if table.delegate().multi_active() {
+                table
+                    .delegate()
+                    .selection_copy(prmarmot_core::share::ShareFormat::List)
+            } else {
+                table.selected_row().and_then(|row_ix| {
+                    let delegate = table.delegate();
+                    let label = delegate.group_label_at(row_ix)?;
+                    delegate.group_copy(&label, prmarmot_core::share::ShareFormat::List)
+                })
+            }
         };
         if let Some(copy) = copy {
             self.copy_group(copy, cx);
@@ -1563,12 +1616,15 @@ impl RootView {
 
     fn row_action(
         &mut self,
-        row: prmarmot_core::board::BoardRow,
+        pr_id: &str,
         action: crate::table::RowAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::table::RowAction;
+        let Some(row) = self.table.read(cx).delegate().row_by_id(pr_id).cloned() else {
+            return; // gone from the board since the click
+        };
         match action {
             RowAction::Open => cx.open_url(&row.url),
             RowAction::Copy(text) => {
@@ -1616,8 +1672,9 @@ impl RootView {
             .state
             .update(cx, |state, cx| state.toggle_watch(row, cx))
         {
+            // The watch bumped the state's generation; its observer syncs
+            // the table.
             self.show_feedback_owned(message, cx);
-            self.sync_table(cx);
         }
     }
 
@@ -1728,6 +1785,31 @@ impl RootView {
         });
     }
 
+    /// Await one delivered notification's click as a task, keeping at most
+    /// [`crate::platform::MAX_NOTIFICATION_WAITERS`]: past that the oldest
+    /// wait is dropped, so a long session of ignored notifications never
+    /// stops new ones from being delivered or clicked.
+    #[cfg(target_os = "macos")]
+    fn await_notification_click(
+        &mut self,
+        pending: crate::platform::PendingClick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        while self.notification_clicks.len() >= crate::platform::MAX_NOTIFICATION_WAITERS {
+            self.notification_clicks.pop_front();
+        }
+        let wait = cx.spawn_in(window, async move |this, cx| {
+            if let Some((pr_id, url)) = pending.opened().await {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    window.activate_window();
+                    this.select_notification_pr(pr_id, url, cx);
+                });
+            }
+        });
+        self.notification_clicks.push_back(wait);
+    }
+
     fn select_notification_pr(&mut self, pr_id: String, url: String, cx: &mut Context<Self>) {
         self.sync_table(cx);
         if let Some(index) = self.table.read(cx).delegate().display_index_of_url(&url) {
@@ -1763,1196 +1845,20 @@ impl RootView {
         self.table.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
-
-    fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        // The pill and the Snoozed header's chevron are one switch.
-        let snoozed_shown = !self.collapsed_here(state).contains(&SectionKind::Snoozed);
-        let current_repo = state.scope.repository();
-        let pinned = self
-            .pinned_repos
-            .iter()
-            .any(|pin| current_repo.is_some_and(|repo| pin.eq_ignore_ascii_case(repo)));
-        h_flex()
-            .px(px(16.))
-            .py(px(6.))
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .when(!self.search_open, |bar| {
-                bar.child(
-                    h_flex()
-                        .id("pinned-repos")
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_x_scroll()
-                        .gap_2()
-                        .when(self.pinned_repos.is_empty(), |pins| {
-                            pins.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Pin your frequent repositories"),
-                            )
-                        })
-                        .children(self.pinned_repos.iter().enumerate().map(|(ix, repo)| {
-                            let target = repo.clone();
-                            Button::new(("pinned-repo", ix))
-                                .small()
-                                .child(div().max_w(px(160.)).truncate().child(repo.clone()))
-                                .when(
-                                    current_repo
-                                        .is_some_and(|current| repo.eq_ignore_ascii_case(current)),
-                                    |button| {
-                                        button
-                                            .bg(cx.theme().accent)
-                                            .text_color(cx.theme().accent_foreground)
-                                    },
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_scope(BoardScope::Repository(target.clone()), cx);
-                                    this.repo_select.update(cx, |select, cx| {
-                                        select.set_selected_value(&target, window, cx);
-                                    });
-                                    this.table.focus_handle(cx).focus(window, cx);
-                                }))
-                        })),
-                )
-                .child(
-                    Button::new("pin-current")
-                        .small()
-                        .w(px(60.))
-                        .label(if pinned { "Pinned" } else { "Pin" })
-                        .when(pinned, |button| button.bg(cx.theme().secondary))
-                        .tooltip(if pinned {
-                            "Unpin this repository"
-                        } else if self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS {
-                            "Unpin a repository first (12 pins maximum)"
-                        } else {
-                            "Pin this repository"
-                        })
-                        .disabled(
-                            current_repo.is_none()
-                                || (!pinned
-                                    && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_pin(cx))),
-                )
-                .child(
-                    Button::new("open-search")
-                        .small()
-                        .label("Search · /")
-                        .tooltip(match (state.mode, cfg!(target_os = "macos")) {
-                            (Mode::AllOpen, true) => "Filter open PRs (/ or ⌘F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
-                            (Mode::AllOpen, false) => "Filter open PRs (/ or Ctrl F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
-                            (_, true) => "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository.",
-                            (_, false) => "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, or is:stale, or click a label, author, or repository.",
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
-                )
-            })
-            .when(self.search_open, |bar| {
-                bar.child(self.render_search_box(cx))
-            })
-            .when(
-                self.filtering() || self.changed_only || self.needs_you_only,
-                |bar| {
-                bar.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "{} of {} loaded",
-                            self.visible_count,
-                            state.rows.len()
-                        )),
-                )
-            })
-            .child(
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .flex_shrink_0()
-                    .bg(cx.theme().border),
-            )
-            .child(
-                view_toggle(
-                    "needs-you-filter",
-                    NEEDS_YOU_TOGGLE_LABEL,
-                    self.needs_you_count,
-                    self.needs_you_only,
-                    None,
-                    cx,
-                )
-                .tooltip(needs_you_toggle_tooltip(
-                    self.needs_you_only,
-                    self.needs_you_count,
-                ))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.needs_you_only = !this.needs_you_only;
-                    this.sync_table(cx);
-                })),
-            )
-            .child(
-                view_toggle(
-                    "changed-filter",
-                    "Changed",
-                    self.changed_count,
-                    self.changed_only,
-                    Some(cx.theme().link),
-                    cx,
-                )
-                .tooltip(changed_toggle_tooltip(
-                    self.changed_only,
-                    self.changed_count,
-                ))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.changed_only = !this.changed_only;
-                    this.sync_table(cx);
-                })),
-            )
-            .child({
-                let stale_on = self.stale_filtering();
-                view_toggle(
-                    "stale-filter",
-                    STALE_TOGGLE_LABEL,
-                    self.stale_count,
-                    stale_on,
-                    None,
-                    cx,
-                )
-                .tooltip(stale_toggle_tooltip(
-                    stale_on,
-                    self.stale_count,
-                    state.config.stale_after_days,
-                ))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_stale_filter(window, cx);
-                }))
-            })
-            .child(
-                view_toggle(
-                    "snoozed-toggle",
-                    "Snoozed",
-                    self.snoozed_count,
-                    snoozed_shown,
-                    None,
-                    cx,
-                )
-                .tooltip(snoozed_toggle_tooltip(snoozed_shown, self.snoozed_count))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toggle_section(SectionKind::Snoozed, cx);
-                })),
-            )
-            .when(state.mode == Mode::Review, |bar| {
-                bar.child(
-                    view_toggle(
-                        "smallest-first",
-                        "Smallest first",
-                        0,
-                        self.smallest_first,
-                        None,
-                        cx,
-                    )
-                    .tooltip(if self.smallest_first {
-                        "Listing the smallest changes first. Click to list the longest wait first."
-                    } else {
-                        "List requested and available reviews by size: Small, then Medium, then Large"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.smallest_first = !this.smallest_first;
-                        this.sync_table(cx);
-                    })),
-                )
-            })
-            .when(self.search_open, |bar| bar.child(div().flex_1()))
-            .when(state.truncated, |bar| {
-                bar.child(
-                    Button::new("load-more")
-                        .small()
-                        .label(if state.syncing {
-                            "Loading…"
-                        } else if state.backoff_remaining().is_some() {
-                            "Paused"
-                        } else if state.can_load_more() {
-                            "Load more"
-                        } else if state.page_limit_reached() {
-                            "Page limit reached"
-                        } else {
-                            "Refresh to retry"
-                        })
-                        .disabled(!state.can_load_more())
-                        .tooltip(REFRESH_NOTE)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.load_more(cx))
-                        })),
-                )
-            })
-            // Details changes the layout, not the rows: set apart from the
-            // filters.
-            .child(
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .flex_shrink_0()
-                    .bg(cx.theme().border),
-            )
-            .child(
-                Button::new("show-details")
-                    .small()
-                    .label(if self.details_open {
-                        "Hide details"
-                    } else {
-                        "Details · Space"
-                    })
-                    .disabled(self.visible_count == 0)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_details(window, cx);
-                    })),
-            )
-    }
-
-    /// Details' rows: core's facts as a muted label beside its value (the
-    /// Note first, unlabelled), a hairline between them, then the attention
-    /// and snooze lines, muted. Labels are the chip row above, so their fact
-    /// is left out here. `columns` (the wide, short bottom pane) puts who is
-    /// involved in one group and the PR's health in another, side by side.
-    fn detail_field_rows(
-        &self,
-        row: &BoardRow,
-        mode: Mode,
-        columns: bool,
-        cx: &Context<Self>,
-    ) -> Vec<AnyElement> {
-        let theme = cx.theme();
-        let state = self.state.read(cx);
-        let fields = prmarmot_core::detail::detail_fields(
-            row,
-            mode,
-            Utc::now(),
-            crate::table::local_offset_secs(),
-        );
-        let mut rows: Vec<AnyElement> = Vec::new();
-        let mut health: Vec<AnyElement> = Vec::new();
-        for (ix, field) in fields.into_iter().enumerate() {
-            use prmarmot_core::detail::DetailKind;
-            // Author, reviewers, reviews, issue and stack say who and where;
-            // CI, threads, the wait and the size say how the PR stands.
-            let is_health = matches!(field.kind, DetailKind::Waiting | DetailKind::Size)
-                || (field.kind == DetailKind::Facts && field.label != Some("Author"));
-            let group = if columns && is_health {
-                &mut health
-            } else {
-                &mut rows
-            };
-            match (field.kind, field.label) {
-                (DetailKind::Labels, _) => {}
-                (_, None) => rows.push(
-                    div()
-                        .pb(px(6.))
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .text_size(px(13.))
-                        .child(SelectableText::new(("detail-field", ix), field.value))
-                        .into_any_element(),
-                ),
-                (_, Some(label)) => group.push(
-                    h_flex()
-                        .items_start()
-                        .gap_2()
-                        .pb(px(6.))
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(
-                            div()
-                                .w(px(DETAILS_LABEL_WIDTH))
-                                .flex_shrink_0()
-                                .text_size(px(12.))
-                                .text_color(theme.muted_foreground)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(13.))
-                                .child(SelectableText::new(("detail-field", ix), field.value)),
-                        )
-                        .into_any_element(),
-                ),
-            }
-        }
-        if columns {
-            // The Note (unlabelled) stays above both groups.
-            let people: Vec<AnyElement> = rows.drain(1.min(rows.len())..).collect();
-            rows.push(
-                h_flex()
-                    .items_start()
-                    .gap_6()
-                    .child(v_flex().flex_1().min_w_0().gap_2().children(people))
-                    .child(v_flex().flex_1().min_w_0().gap_2().children(health))
-                    .into_any_element(),
-            );
-        }
-        let mut closing = vec![prmarmot_core::detail::attention_line(
-            state.is_changed(&row.id),
-            state.is_watched(&row.id),
-        )];
-        closing.extend(state.snooze_description(&row.id));
-        rows.extend(closing.into_iter().map(|line| {
-            div()
-                .text_size(px(12.))
-                .text_color(theme.muted_foreground)
-                .child(line)
-                .into_any_element()
-        }));
-        rows
-    }
-
-    /// Details at the bottom (`right` false: a 210 px pane, the facts as
-    /// sentences) or on the right (a full-height panel, the facts as label and
-    /// value rows). Both read core's `detail` module, so they say the same.
-    fn render_details(&self, right: bool, cx: &Context<Self>) -> impl IntoElement {
-        let table = self.table.read(cx);
-        let selected = table
-            .selected_row()
-            .and_then(|ix| table.delegate().row(ix))
-            .cloned();
-        let mode = self.state.read(cx).mode;
-        let theme = cx.theme();
-        let (hover_border, hover_text) = (theme.muted_foreground, theme.foreground);
-        let field_rows: Vec<AnyElement> = selected
-            .as_ref()
-            .map(|row| self.detail_field_rows(row, mode, !right, cx))
-            .unwrap_or_default();
-        // The PR's title and its labels as chips, on one line when they fit;
-        // a chip click filters by the label, as in the table. It heads the
-        // right panel, and takes the place of "PR details" in the bottom pane
-        // so the short pane keeps room for the facts.
-        let heading = selected.as_ref().map(|row| {
-            h_flex()
-                .flex_wrap()
-                .items_center()
-                .gap_x_3()
-                .gap_y_1()
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(SelectableText::new(
-                            "detail-title",
-                            format!("#{}  {}", row.number, row.title),
-                        )),
-                )
-                .when(!row.labels.is_empty(), |heading| {
-                    heading.child(h_flex().flex_wrap().gap_1().text_size(px(13.)).children(
-                        row.labels.iter().enumerate().map(|(ix, label)| {
-                            let target = FilterChip::new(Qualifier::Label, label);
-                            let tip = format!("Filter by {}", target.term());
-                            label_chip(theme)
-                                .id(("detail-label", ix))
-                                .cursor_pointer()
-                                .text_color(theme.secondary_foreground)
-                                .hover(|style| {
-                                    style.border_color(hover_border).text_color(hover_text)
-                                })
-                                .child(label.clone())
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(tip.clone()).build(window, cx)
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.filter_by(target.clone(), window, cx)
-                                }))
-                        }),
-                    ))
-                })
-        });
-        let (bar_heading, content_heading) = if right {
-            (None, heading)
-        } else {
-            (heading, None)
-        };
-        v_flex()
-            .map(|panel| {
-                if right {
-                    panel.w(px(DETAILS_PANEL_WIDTH)).h_full().border_l_1()
-                } else {
-                    panel.h(px(210.)).border_t_1()
-                }
-            })
-            .flex_shrink_0()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .px(px(16.))
-            .py(px(10.))
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().map(|title| match bar_heading {
-                        Some(heading) => title.child(heading),
-                        None if !right => {
-                            title.font_weight(FontWeight::SEMIBOLD).child("PR details")
-                        }
-                        None => title,
-                    }))
-                    .when_some(selected.clone(), |bar, row| {
-                        let copy_row = row.clone();
-                        let view = cx.entity().downgrade();
-                        bar.child(
-                            Button::new("copy-detail")
-                                .small()
-                                .label("Copy")
-                                .dropdown_caret(true)
-                                .dropdown_menu(move |mut menu, _, _| {
-                                    for (label, text) in
-                                        crate::table::row_copy_items(&copy_row, mode)
-                                    {
-                                        let view = view.clone();
-                                        menu = menu.item(PopupMenuItem::new(label).on_click(
-                                            move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    text.clone(),
-                                                ));
-                                                let _ = view.update(cx, |this, cx| {
-                                                    this.show_feedback("Copied to clipboard", cx)
-                                                });
-                                            },
-                                        ));
-                                    }
-                                    menu
-                                }),
-                        )
-                    })
-                    .when_some(selected.clone(), |bar, row| {
-                        bar.child(
-                            Button::new("open-detail")
-                                .small()
-                                .label("Open on GitHub")
-                                .on_click(move |_, _, cx| cx.open_url(&row.url)),
-                        )
-                    })
-                    .child(
-                        Button::new("close-details")
-                            .small()
-                            .label("Close · Esc")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.set_details_open(false, cx);
-                                this.table.focus_handle(cx).focus(window, cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("pr-details-content")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .gap_2()
-                    .map(|content| match selected {
-                        Some(_) => content.children(content_heading).children(field_rows),
-                        None => content.child("Select a PR to inspect its details."),
-                    }),
-            )
-    }
-
-    fn render_header(&self, cx: &Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let theme = cx.theme();
-        // Just the total: the section headers already carry the per-category
-        // breakdown, so repeating "N need action · N awaiting…" here is
-        // redundant and truncates at narrow widths (design review). This frees
-        // titlebar room. "Loaded", not "shown": search, Changed, and a
-        // collapsed Snoozed group hide rows; the tools bar says how many.
-        let (counts, counts_tip) = header_counts(&HeaderCounts {
-            loaded: state.rows.len(),
-            truncated: state.truncated,
-            mode: state.mode,
-            all_repos: state.scope.is_all(),
-            need_you: need_you_count_of(state),
-            badge: state.badge_count,
-            badge_complete: state.badge_coverage_complete,
-            followed: state
-                .rows
-                .iter()
-                .filter(|row| {
-                    state.is_watched(&row.id) || state.snooze_description(&row.id).is_some()
-                })
-                .count(),
-            tracked_loaded: state.tracked_loaded,
-            tracked_total: state.tracked_total,
-            total: state.total,
-            filtered: !state.rows_filter.is_empty(),
-        });
-        // Status priority: a hard error wins; then a rate-limit back-off (so a
-        // switch into a paused window shows "paused", not a permanent
-        // "Loading…"); otherwise the queue-specific sync line. Static text only
-        // — a spinner would defeat the idle-GPU half of the spike gate.
-        let (status_text, status_color) = if state.setup == SetupStatus::Checking {
-            ("Checking GitHub CLI…".to_owned(), theme.muted_foreground)
-        } else if state.setup != SetupStatus::Ready {
-            ("GitHub setup required".to_owned(), theme.warning)
-        } else if let Some(err) = state.error.clone() {
-            (err, theme.danger)
-        } else if let Some(secs) = state.backoff_remaining() {
-            (
-                format!("paused · retry in {}", human_duration(secs)),
-                theme.warning,
-            )
-        } else {
-            (
-                queue_sync_text(
-                    state.mode,
-                    state.scope.is_all(),
-                    state.syncing,
-                    state.last_synced,
-                ),
-                theme.muted_foreground,
-            )
-        };
-        // Under a tenth of the hourly budget left, the readout turns the
-        // warning colour well before fetching pauses at the reserve.
-        let budget = state.rate.as_ref().map(|r| {
-            div()
-                .flex_shrink_0()
-                .when(r.is_low(), |this| this.text_color(theme.warning))
-                .child(format!("API {}/{}", r.remaining, r.limit))
-        });
-        let selected_mode = match state.mode {
-            Mode::Authored => 0,
-            Mode::Review => 1,
-            Mode::AllOpen => 2,
-        };
-        // The queue is a primary scope, not a hidden preference. A compact
-        // toolbar tab view keeps every choice visible and the selected state
-        // persistent (Apple HIG); equal widths prevent any queue from
-        // appearing subordinate. Keyboard 1/2/3 and v remain accelerators.
-        // All open needs one repository, so with all of them it stays in
-        // place, disabled, and says why on hover rather than disappearing.
-        let all_repos = state.scope.is_all();
-        let view_switcher = TabBar::new("view-switcher")
-            .small()
-            .segmented()
-            .selected_index(selected_mode)
-            .child(
-                Tab::new()
-                    .label(if state.scope.is_all() {
-                        "Involving me"
-                    } else {
-                        "My PRs"
-                    })
-                    .w(px(104.))
-                    .font_weight(if state.mode == Mode::Authored {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::MEDIUM
-                    }),
-            )
-            .child(Tab::new().label("Review queue").w(px(104.)).font_weight(
-                if state.mode == Mode::Review {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                },
-            ))
-            .child(
-                Tab::new()
-                    .label("All open")
-                    .w(px(104.))
-                    .disabled(all_repos)
-                    .when(all_repos, |tab| {
-                        tab.tooltip(|window, cx| {
-                            Tooltip::new(all_open_needs_repository()).build(window, cx)
-                        })
-                    })
-                    .font_weight(if state.mode == Mode::AllOpen {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::MEDIUM
-                    }),
-            )
-            .on_click(cx.listener(|this, index: &usize, _, cx| {
-                let mode = match index {
-                    0 => Mode::Authored,
-                    1 => Mode::Review,
-                    _ => Mode::AllOpen,
-                };
-                this.select_mode(mode, cx);
-            }));
-
-        // One-line toolbar living INSIDE the transparent titlebar: repository
-        // identity, primary queue scope, flexible counts, then sync status.
-        // An error replaces the sync text — it IS the sync status then.
-        h_flex()
-            .flex_1()
-            .min_w_0()
-            // TitleBar's inner container does not shrink to its viewport in 0.6.
-            // Reserve its platform chrome and bound our flexible content explicitly.
-            .max_w(px(
-                self.viewport_width - if cfg!(target_os = "macos") { 80. } else { 114. }
-            ))
-            .pr(px(crate::design::HEADER_PAD_X))
-            .gap_3()
-            .items_center()
-            .child(
-                div()
-                    .w(px(220.))
-                    .flex_shrink_0()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(
-                        Select::new(&self.repo_select)
-                            .small()
-                            .menu_width(px(420.))
-                            .search_placeholder("Search accessible repositories…")
-                            .accessibility_label("Repository"),
-                    ),
-            )
-            .child(view_switcher)
-            .child(
-                div()
-                    .id("header-counts")
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_size(px(13.))
-                    .text_color(theme.muted_foreground)
-                    .child(counts)
-                    .tooltip(move |window, cx| Tooltip::new(counts_tip.clone()).build(window, cx)),
-            )
-            .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .max_w(px(self.viewport_width * 0.28))
-                    .gap_3()
-                    .text_size(px(12.))
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        div()
-                            .id("sync-status")
-                            .min_w_0()
-                            .truncate()
-                            .text_color(status_color)
-                            .child(status_text.clone())
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(format!("{status_text}\n{SYNC_STATUS_NOTE}"))
-                                    .build(window, cx)
-                            }),
-                    )
-                    .when_some(budget, |this, b| this.child(b)),
-            )
-    }
-
-    fn render_update_banners(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        // Core words the notice; the board below is still right, so it is
-        // muted, not an error, and cannot be dismissed while it stays true.
-        let state = self.state.read(cx);
-        let access_notice = prmarmot_core::status::access_notice(&state.access);
-        let reach_notice = state
-            .token_reach_hint
-            .then(|| prmarmot_core::status::pasted_token_reach_notice().to_owned());
-        // All open: part of the search matched only the loaded PRs, and
-        // GitHub has more, so a short list is not the repository's answer.
-        let filter_notice = (state.mode == Mode::AllOpen)
-            .then(|| {
-                all_open_local_filter_notice(
-                    &local_only_terms(&self.filter_text, &self.filter_chips, &state.rows_filter),
-                    state.rows.len(),
-                    state.total,
-                    state.pagination_can_load_more(),
-                )
-            })
-            .flatten();
-        v_flex()
-            .flex_shrink_0()
-            .children(
-                access_notice
-                    .into_iter()
-                    .chain(reach_notice)
-                    .chain(filter_notice)
-                    .enumerate()
-                    .map(|(index, notice)| {
-                        let tooltip = notice.clone();
-                        h_flex()
-                            .px(px(crate::design::HEADER_PAD_X))
-                            .py_1()
-                            .bg(theme.muted)
-                            .border_b_1()
-                            .border_color(theme.border)
-                            .child(
-                                div()
-                                    .id(("access-notice", index))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .text_color(theme.muted_foreground)
-                                    .child(notice)
-                                    .tooltip(move |window, cx| {
-                                        Tooltip::new(tooltip.clone()).build(window, cx)
-                                    }),
-                            )
-                    }),
-            )
-            .when(!self.config_warnings.is_empty(), |banners| {
-                let mut lines = v_flex().flex_1().min_w_0();
-                for (index, (line, whole)) in
-                    self.config_warnings.banner_lines().into_iter().enumerate()
-                {
-                    lines = lines.child(
-                        div()
-                            .id(("config-warning", index))
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(theme.warning)
-                            .child(line)
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(whole.clone()).build(window, cx)
-                            }),
-                    );
-                }
-                banners.child(
-                    h_flex()
-                        .items_start()
-                        .px(px(crate::design::HEADER_PAD_X))
-                        .py_1()
-                        .gap_2()
-                        .bg(theme.muted)
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(lines)
-                        .child(
-                            Button::new("dismiss-config-warning")
-                                .small()
-                                .ghost()
-                                .label("Dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.config_warnings = Default::default();
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            })
-            .when_some(self.update_error.clone(), |banners, error| {
-                let tooltip = error.clone();
-                banners.child(
-                    h_flex()
-                        .px(px(crate::design::HEADER_PAD_X))
-                        .py_1()
-                        .gap_2()
-                        .bg(theme.muted)
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(
-                            div()
-                                .id("update-error-message")
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(12.))
-                                .text_color(theme.danger)
-                                .child(format!("Update failed — {error}"))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(tooltip.clone()).build(window, cx)
-                                }),
-                        )
-                        .child(
-                            Button::new("dismiss-update-error")
-                                .small()
-                                .ghost()
-                                .label("Dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.update_error = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            })
-            .when_some(self.available_update.clone(), |banners, update| {
-                banners.child(
-                    h_flex()
-                        .px(px(crate::design::HEADER_PAD_X))
-                        .py_1()
-                        .gap_2()
-                        .bg(theme.secondary)
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!("v{} available", update.version)),
-                        )
-                        .child(
-                            Button::new("install-update")
-                                .small()
-                                .primary()
-                                .label(if self.update_starting {
-                                    "Starting update…"
-                                } else {
-                                    "Update"
-                                })
-                                .disabled(self.update_starting)
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.begin_update(window, cx)
-                                    }),
-                                ),
-                        ),
-                )
-            })
-    }
-
-    fn render_footer(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let hints: Vec<(&str, String)> = vec![
-            ("↑↓", "select".into()),
-            ("⏎", "open".into()),
-            ("w", "watch".into()),
-            ("s", "snooze".into()),
-            ("r", "refresh".into()),
-        ];
-        // Keycap legend (spec §6): reference material lives at the bottom,
-        // status at the top — the gh-dash/native pattern.
-        let mut bar = h_flex()
-            .flex_shrink_0()
-            .px(px(crate::design::HEADER_PAD_X))
-            .py(px(crate::design::FOOTER_PAD_Y))
-            .gap_3()
-            .items_center()
-            .bg(theme.title_bar)
-            .border_t_1()
-            .border_color(theme.title_bar_border);
-        for (key, label) in hints {
-            bar = bar.child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        div()
-                            .px_1()
-                            .rounded(px(3.))
-                            .bg(theme.muted)
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.secondary_foreground)
-                            .child(key),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme.muted_foreground)
-                            .child(label),
-                    ),
-            );
-        }
-        bar.child(
-            Button::new("shortcuts")
-                .small()
-                .ghost()
-                .label("Shortcuts")
-                .on_click(cx.listener(|this, _, window, cx| this.show_shortcuts(window, cx))),
-        )
-        .child(div().flex_1())
-        .when_some(self.feedback.clone(), |bar, message| {
-            bar.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(theme.foreground)
-                    .child(message),
-            )
-        })
-        .when_some(
-            self.state
-                .read(cx)
-                .attention
-                .as_ref()
-                .and_then(|attention| attention.storage_error.clone()),
-            |bar, error| {
-                bar.child(
-                    div()
-                        .id("attention-storage-error")
-                        .max_w(px(260.))
-                        .truncate()
-                        .text_size(px(11.))
-                        .text_color(theme.warning)
-                        .child(error.clone())
-                        .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx)),
-                )
-            },
-        )
-        .when_some(
-            self.state.read(cx).notification_error.clone(),
-            |bar, error| {
-                bar.child(
-                    Button::new("notification-help")
-                        .small()
-                        .label("Enable notifications…")
-                        .tooltip(error)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.notification_help_shown = false;
-                            this.state.read(cx).check_notification_permission();
-                        })),
-                )
-            },
-        )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_size(px(11.))
-                .text_color(theme.muted_foreground)
-                .child(self.repo_status.clone()),
-        )
-        .child(
-            Button::new("discover-repos")
-                .small()
-                .label("Repos")
-                .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
-        )
-        .child(
-            Button::new("configuration")
-                .small()
-                .label("Settings")
-                .tooltip("Reviewer suggestions, refresh interval and appearance")
-                .on_click(cx.listener(|this, _, window, cx| this.show_config(window, cx))),
-        )
-    }
-
-    /// One search box: a search glyph, the label tokens (each removable),
-    /// the typed words, and one × that clears everything and closes it.
-    fn render_search_box(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, hover_bg, hover_text) =
-            (theme.muted_foreground, theme.secondary, theme.foreground);
-        let icon = |path: &'static str, size: f32| {
-            gpui::svg()
-                .path(path)
-                .size(px(size))
-                .flex_shrink_0()
-                .text_color(muted)
-        };
-        let tokens = h_flex()
-            .id("filter-chips")
-            .max_w(px(360.))
-            .overflow_x_scroll()
-            .gap_1()
-            .children(self.filter_chips.iter().enumerate().map(|(ix, chip)| {
-                let tip = format!("Stop filtering by {}", chip.term());
-                // "label:" as typed, so the chip teaches the syntax.
-                label_chip(theme)
-                    .flex_shrink_0()
-                    .gap(px(3.))
-                    .pr(px(2.))
-                    .text_color(theme.secondary_foreground)
-                    .child(
-                        h_flex()
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(format!("{}:", chip.qualifier.key())),
-                            )
-                            .child(div().max_w(px(140.)).truncate().child(chip.value.clone())),
-                    )
-                    .child(
-                        div()
-                            .id(("remove-filter-chip", ix))
-                            .size(px(14.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(3.))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(hover_bg))
-                            .child(icon("icons/close.svg", 9.))
-                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.remove_filter_chip(ix, window, cx)
-                            })),
-                    )
-            }));
-        let close = div()
-            .id("close-search")
-            .size(px(18.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(4.))
-            .cursor_pointer()
-            .hover(|style| style.bg(hover_bg).text_color(hover_text))
-            .child(icon("icons/close.svg", 11.))
-            .tooltip(|window, cx| Tooltip::new("Clear and close search").build(window, cx))
-            .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx)));
-        // Nothing to clear in an empty box; leaving it closes it.
-        let has_content = self.filtering() || !self.search.read(cx).value().is_empty();
-        // Wider with tokens, so the words keep room to type.
-        let width = 300. + 110. * self.filter_chips.len().min(3) as f32;
-        div().w(px(width)).flex_shrink_0().child(
-            Input::new(&self.search)
-                .small()
-                .aria_label("Filter loaded PRs")
-                .prefix(
-                    h_flex()
-                        .gap_1p5()
-                        .child(icon("icons/search.svg", 13.))
-                        .when(!self.filter_chips.is_empty(), |prefix| prefix.child(tokens)),
-                )
-                .when(has_content, |input| input.suffix(close)),
-        )
-    }
-
-    fn show_shortcuts(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.table.focus_handle(cx);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let mut rows = v_flex().id("shortcut-list").overflow_y_scroll()
-                .max_h((window.viewport_size().height - px(300.)).min(px(450.)))
-                .gap_2().text_size(px(13.));
-            for (label, keys) in [
-                ("Select a PR", "↑ / ↓"),
-                ("Open selected PR", "Enter / o"),
-                ("Copy selected PR URL", "y"),
-                ("Copy selected PR's group as a list", "Y"),
-                ("Watch / unwatch selected PR", "w"),
-                ("Snooze selected PR", "s"),
-                ("Fold / unfold the selected section", "c"),
-                ("My PRs / Review queue / All open", "1 / 2 / 3"),
-                ("Switch queue", "v"),
-                ("Refresh", "r"),
-                (
-                    "Search loaded PRs",
-                    if cfg!(target_os = "macos") { "/ or ⌘F" } else { "/ or Ctrl F" },
-                ),
-                ("Search one label, author, or repo", "label: author: repo:"),
-                ("Search PRs waiting too long for a reviewer", "is:stale"),
-                ("Remove the last search filter", "⌫ in empty search"),
-                ("Toggle selected PR details", "Space"),
-                ("Cycle theme", "t"),
-                ("Close dialog or details", "Esc"),
-                ("Quit", if cfg!(target_os = "macos") { "⌘Q / q" } else { "Ctrl Q / q" }),
-            ] {
-                rows = rows.child(h_flex().justify_between().child(label).child(
-                    div().px_1().rounded(px(3.)).bg(cx.theme().muted)
-                        .text_color(cx.theme().muted_foreground).child(keys),
-                ));
-            }
-            let focus = focus.clone();
-            dialog.title("Keyboard shortcuts").w(px(420.)).close_button(false).child(rows)
-                .child(div().mt_3().text_size(px(12.)).text_color(cx.theme().muted_foreground)
-                    .child("Clicking a label, author, or repository in the table adds it to the search. Quote values with spaces: label:\"help wanted\"."))
-                .child(div().mt_2().text_size(px(12.)).text_color(cx.theme().muted_foreground)
-                    .child("Typing in search, the repository picker, or Settings never triggers dashboard shortcuts. Arrow keys, Enter, and Space act on the focused control."))
-                .child(h_flex().mt_3().justify_end().child(Button::new("close-shortcuts")
-                    .label("Done").on_click(|_, window, cx| window.close_dialog(cx))))
-                .on_close(move |_, window, cx| focus.focus(window, cx))
-        });
-    }
-}
-
-/// A toolbar toggle with a fixed label, the count it applies to, and an
-/// optional dot. When on it takes the accent, like the current pinned repo.
-fn view_toggle(
-    id: &'static str,
-    label: &'static str,
-    count: usize,
-    on: bool,
-    dot: Option<gpui::Hsla>,
-    cx: &App,
-) -> Button {
-    let theme = cx.theme();
-    let count_color = if on {
-        theme.accent_foreground
-    } else {
-        theme.muted_foreground
-    };
-    // The content is a row, not a label, so name it for screen readers.
-    let name: SharedString = if count > 0 {
-        format!("{label} ({count})").into()
-    } else {
-        label.into()
-    };
-    Button::new(id)
-        .small()
-        .toggled(on)
-        .accessibility_label(name)
-        .child(
-            h_flex()
-                .gap_1p5()
-                .items_center()
-                // On is said by a mark too, not by colour alone.
-                .when(on, |row| row.child(div().text_size(px(11.)).child("✓")))
-                .when_some(dot.filter(|_| count > 0), |row, color| {
-                    row.child(
-                        div()
-                            .size(px(crate::design::STATUS_DOT))
-                            .rounded_full()
-                            .bg(color),
-                    )
-                })
-                .child(label)
-                .when(count > 0, |row| {
-                    row.child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(count_color)
-                            .child(count.to_string()),
-                    )
-                }),
-        )
-        .when(on, |button| {
-            button.bg(theme.accent).text_color(theme.accent_foreground)
-        })
 }
 
 // The header sentence, the toggle tooltips and the two duration phrasings
 // live in `prmarmot_core::status`, so the iPad shows the same words.
 use prmarmot_core::status::{
-    changed_toggle_tooltip, header_counts as core_header_counts, human_duration, loaded_more_text,
-    need_you_count, needs_you_toggle_tooltip, queue_loading_text,
-    queue_sync_text as core_queue_sync_text, relative, row_needs_you, snoozed_toggle_tooltip,
-    stale_toggle_tooltip, BadgeName, HeaderCounts, NEEDS_YOU_TOGGLE_LABEL, REFRESH_NOTE,
-    STALE_TOGGLE_LABEL, SYNC_STATUS_NOTE,
+    changed_toggle_tooltip, header_counts as core_header_counts, loaded_more_text,
+    needs_you_toggle_tooltip, queue_loading_text, queue_sync_text as core_queue_sync_text,
+    relative, snoozed_toggle_tooltip, stale_toggle_tooltip, BadgeName, HeaderCounts,
+    NEEDS_YOU_TOGGLE_LABEL, REFRESH_NOTE, STALE_TOGGLE_LABEL, SYNC_STATUS_NOTE,
 };
-
-/// Whether this row is one the header counts as "need you" right now.
-fn needs_you_now(state: &AppState, row: &BoardRow) -> bool {
-    row_needs_you(state.mode, row) && state.snooze_description(&row.id).is_none()
-}
-
-/// The header's "need you", which the Needs you filter shows as its count.
-fn need_you_count_of(state: &AppState) -> usize {
-    need_you_count(state.mode, &state.rows, |row| {
-        state.snooze_description(&row.id).is_some()
-    })
-}
 
 /// The `is:stale` chip the Stale quick filter adds and removes.
 fn stale_chip() -> FilterChip {
     FilterChip::new(Qualifier::Is, "stale")
-}
-
-/// The header's count line and the tooltip that explains it, with the badge
-/// called by its desktop name.
-fn header_counts(c: &HeaderCounts) -> (String, String) {
-    core_header_counts(c, BadgeName::Dock)
-}
-
-/// [`core_queue_sync_text`] with a local timestamp rather than an elapsed count.
-fn queue_sync_text(
-    mode: Mode,
-    all_repos: bool,
-    syncing: bool,
-    last_synced: Option<DateTime<Local>>,
-) -> String {
-    core_queue_sync_text(
-        mode,
-        all_repos,
-        syncing,
-        last_synced.map(|t| (Local::now() - t).num_seconds()),
-    )
 }
 
 /// What the table area shows, derived from `AppState` truth (`last_synced` /
@@ -2980,110 +1886,195 @@ fn unix_now() -> i64 {
         .map_or(0, |duration| duration.as_secs() as i64)
 }
 
+/// "45s" / "3m" / "1h 5m" — compact, for the back-off retry countdown.
 impl RootView {
-    fn render_setup(&self, setup: SetupStatus, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        // Not signed in: the sign-in screen takes over, with the GitHub CLI
-        // route offered underneath for people who already use it.
-        if matches!(
-            setup,
-            SetupStatus::MissingGh | SetupStatus::NotAuthenticated
-        ) {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_4()
-                .px_4()
-                .child(self.onboarding.clone())
-                .child(
-                    v_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .max_w(px(560.))
-                                .text_size(px(12.))
-                                .text_color(theme.muted_foreground)
-                                .child(
-                                    "Already use the GitHub CLI? Run `gh auth login` in Terminal, \
-                                     then choose Retry.",
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    Button::new("copy-gh-auth")
-                                        .small()
-                                        .label("Copy `gh auth login`")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                "gh auth login".to_owned(),
-                                            ));
-                                            this.show_feedback("Command copied", cx);
-                                        })),
-                                )
-                                .child(Button::new("retry-setup").small().label("Retry").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| state.validate_setup(cx));
-                                    }),
-                                )),
-                        ),
-                )
-                .into_any_element();
-        }
-        let (title, detail) = match &setup {
-            SetupStatus::Checking => (
-                "Checking your GitHub sign-in…".to_owned(),
-                "PR Marmot uses your GitHub CLI login when you have one, or a token you sign in \
-                 with here."
-                    .to_owned(),
-            ),
-            SetupStatus::MissingGh | SetupStatus::NotAuthenticated => {
-                (String::new(), String::new())
+    /// The board table, its delegate calling back into this view by handle.
+    fn build_table(
+        mode: Mode,
+        all_repos: bool,
+        initial_class: TableWidthClass,
+        initial_width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TableState<BoardTableDelegate>> {
+        let view = cx.entity().downgrade();
+        cx.new(|cx| {
+            let mut delegate = BoardTableDelegate::new(mode, all_repos);
+            let group_view = view.clone();
+            let empty_view = view.clone();
+            let filter_view = view.clone();
+            let section_view = view.clone();
+            delegate.on_section_toggle = Some(std::rc::Rc::new(move |kind, _, cx| {
+                let _ = section_view.update(cx, |this, cx| this.toggle_section(kind, cx));
+            }));
+            delegate.on_filter_click = Some(std::rc::Rc::new(move |chip, window, cx| {
+                let _ = filter_view.update(cx, |this, cx| this.filter_by(chip, window, cx));
+            }));
+            let selection_view = view.clone();
+            delegate.on_row_action = Some(std::rc::Rc::new(move |pr_id, action, window, cx| {
+                let _ = view.update(cx, |this, cx| this.row_action(&pr_id, action, window, cx));
+            }));
+            delegate.on_selection_action = Some(std::rc::Rc::new(move |action, window, cx| {
+                let _ =
+                    selection_view.update(cx, |this, cx| this.selection_action(action, window, cx));
+            }));
+            delegate.on_group_copy = Some(std::rc::Rc::new(move |copy, _, cx| {
+                let _ = group_view.update(cx, |this, cx| this.copy_group(copy, cx));
+            }));
+            delegate.on_empty_action = Some(std::rc::Rc::new(move |action, window, cx| {
+                let _ = empty_view.update(cx, |this, cx| this.empty_action(action, window, cx));
+            }));
+            delegate.set_columns(columns_for(mode, initial_class, initial_width, all_repos));
+            TableState::new(delegate, window, cx)
+                .sortable(false)
+                .col_movable(false)
+                .col_resizable(true)
+                .row_selectable(true)
+        })
+    }
+
+    /// The repository picker: All repositories first, then the configured
+    /// and pinned ones; discovery fills in the rest when it first opens.
+    fn build_repo_select(
+        state: &Entity<AppState>,
+        repos: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SelectState<SearchableVec<String>>> {
+        let current = scope_label(&state.read(cx).scope);
+        let mut picker_items = repos;
+        picker_items.retain(|repo| !repo.eq_ignore_ascii_case(ALL_REPOS_LABEL));
+        picker_items.insert(0, ALL_REPOS_LABEL.to_owned());
+        let selected = picker_items
+            .iter()
+            .position(|r| *r == current)
+            .map(IndexPath::new);
+        let select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(picker_items), selected, window, cx)
+                .searchable(true)
+        });
+        cx.subscribe_in(
+            &select,
+            window,
+            |this: &mut Self, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                let SelectEvent::Confirm(Some(repo)) = event else {
+                    return;
+                };
+                this.select_scope(scope_from_label(repo), cx);
+                // The picker focuses itself after it confirms; give the
+                // keyboard back to the board once it has, as the pinned
+                // repository chips do, or Space and the arrows do nothing.
+                cx.defer_in(window, |this, window, cx| {
+                    this.table.focus_handle(cx).focus(window, cx);
+                });
+            },
+        )
+        .detach();
+        // 0.6 renders the trigger from the filtered cursor, not the committed
+        // value. Restore the full list on close (Escape or outside click).
+        // Focusable exposes the popup handle while open, the trigger otherwise.
+        let trigger = select.focus_handle(cx);
+        let mut was_open = false;
+        cx.observe_in(
+            &select,
+            window,
+            move |this: &mut Self, select, window, cx| {
+                let open = select.focus_handle(cx) != trigger;
+                let closed = was_open && !open;
+                if open && !was_open && !this.repos_discovered {
+                    this.discover_repos(window, cx);
+                }
+                was_open = open;
+                if let Some(current) = select.read(cx).selected_value().cloned().filter(|_| closed)
+                {
+                    select.update(cx, |select, cx| {
+                        select.set_selected_value(&current, window, cx);
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+        select
+    }
+
+    /// The search box: a finished `label:x` becomes a chip, the rest filters.
+    fn build_search(mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder(mode)));
+        cx.subscribe_in(
+            &search,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| {
+                let all = match event {
+                    InputEvent::Change => false,
+                    InputEvent::PressEnter { .. } => true,
+                    // An empty box closes when you leave it; `/` reopens it.
+                    InputEvent::Blur => {
+                        if !this.filtering() {
+                            this.search_open = false;
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    _ => return,
+                };
+                // A finished `label:x` becomes a chip; the field keeps the words.
+                let text = input.read(cx).value().to_string();
+                let (chips, rest) = take_filter_chips(&text, all);
+                if !chips.is_empty() {
+                    for chip in chips {
+                        this.add_filter_chip(chip, cx);
+                    }
+                    input.update(cx, |input, cx| input.set_value(rest.clone(), window, cx));
+                }
+                this.filter_text = rest;
+                this.sync_table(cx);
+            },
+        )
+        .detach();
+        search
+    }
+
+    /// Push new rows into the table only when a fetch actually landed —
+    /// gate the observer on generation (the PRFlow infinite-observer trap).
+    /// On a mode switch, restore that queue's remembered selection + scroll
+    /// once its rows are in place; on a plain refresh, keep the current
+    /// selection but clamp it if the row count shrank.
+    fn observe_state(state: &Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.observe_in(state, window, |this: &mut Self, state, window, cx| {
+            // The view can change without a window at hand (a scope change
+            // falls back from All open), so the placeholder follows it here.
+            let mode = state.read(cx).mode;
+            if this.placeholder_mode != mode {
+                this.placeholder_mode = mode;
+                this.search.update(cx, |input, cx| {
+                    input.set_placeholder(search_placeholder(mode), window, cx)
+                });
             }
-            SetupStatus::Network(_) => (
-                "GitHub could not be reached".to_owned(),
-                "Check your connection and your GitHub sign-in, then retry.".to_owned(),
-            ),
-            SetupStatus::Failed(message) => ("GitHub setup failed".to_owned(), message.clone()),
-            SetupStatus::Ready => (String::new(), String::new()),
-        };
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .px_4()
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(18.))
-                    .child(title),
-            )
-            .child(
-                div()
-                    .max_w(px(560.))
-                    .text_color(theme.muted_foreground)
-                    .child(detail),
-            )
-            .when(setup != SetupStatus::Checking, |view| {
-                view.child(
-                    Button::new("retry-setup")
-                        .primary()
-                        .label("Retry")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.validate_setup(cx));
-                        })),
-                )
-            })
-            .into_any_element()
+            // Discovery waits for the first board (or for the picker to
+            // open) rather than competing with it for the connection.
+            if !this.repos_discovered && state.read(cx).first_fetch_done() {
+                this.discover_repos(window, cx);
+            }
+            let generation = state.read(cx).generation;
+            if generation != this.seen_generation {
+                this.seen_generation = generation;
+                this.sync_table(cx);
+                // Load more's rows join their sections, not the bottom.
+                if let Some((_, added)) = state
+                    .read(cx)
+                    .loaded_more
+                    .filter(|&(landed, _)| landed == generation)
+                {
+                    this.show_feedback(loaded_more_text(added), cx);
+                }
+            }
+            cx.notify();
+        })
+        .detach();
     }
 }
 
-/// "45s" / "3m" / "1h 5m" — compact, for the back-off retry countdown.
 impl Focusable for RootView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -3093,18 +2084,6 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
-        if self.selected_row_url(cx).is_none() {
-            self.set_details_open(false, cx);
-        }
-        // The view can change without a window at hand (a scope change falls
-        // back from All open), so the placeholder follows it here.
-        let mode = self.state.read(cx).mode;
-        if self.placeholder_mode != mode {
-            self.placeholder_mode = mode;
-            self.search.update(cx, |input, cx| {
-                input.set_placeholder(search_placeholder(mode), window, cx)
-            });
-        }
         let theme = cx.theme();
         // Body state from truth, not `generation` (which also bumps on a switch
         // to an unseen queue and on a repo change): a queue has loaded ONLY
@@ -3112,31 +2091,14 @@ impl Render for RootView {
         // reason it's not showing rows — paused for back-off, a first-fetch
         // error, or still loading — never a stale "Loading…" over an error or
         // a premature "empty" over a fetch in flight (critique #6).
-        // All open's empty filter result is exact when GitHub answered all of
-        // it for these rows, or when nothing is left to load.
-        let no_match = {
-            let s = self.state.read(cx);
-            let exact = s.mode == Mode::AllOpen
-                && (!s.truncated
-                    || local_only_terms(&self.filter_text, &self.filter_chips, &s.rows_filter)
-                        .is_empty());
-            if exact {
-                all_open_no_match_text(&self.filter_summary())
-            } else {
-                format!(
-                    "No loaded PRs match {} — clear the search or load more.",
-                    self.filter_summary()
-                )
-            }
-        };
         let body = {
             let s = self.state.read(cx);
             if s.setup != SetupStatus::Ready {
                 BodyState::Setup(s.setup.clone())
             } else if s.last_synced.is_some() {
                 BodyState::Loaded
-            } else if let Some(secs) = s.backoff_remaining() {
-                BodyState::Paused(format!("Paused — retrying in {}", human_duration(secs)))
+            } else if let Some(paused) = s.pause_text() {
+                BodyState::Paused(paused)
             } else if let Some(err) = s.error.clone() {
                 BodyState::Failed(format!("Couldn't load — {err}"))
             } else {
@@ -3193,7 +2155,7 @@ impl Render for RootView {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .text_size(px(crate::design::TABLE_TEXT_PX))
+                            .text_size(type_size::BODY)
                             .map(|this| match body {
                                 // bordered defaults to TRUE — at full bleed the outer
                                 // border + rounded corners fight the window edge
@@ -3209,7 +2171,7 @@ impl Render for RootView {
                                             .size_full()
                                             .justify_center()
                                             .text_color(theme.muted_foreground)
-                                            .child(no_match),
+                                            .child(self.no_match_text(cx)),
                                     )
                                 }
                                 BodyState::Loaded => this.child(

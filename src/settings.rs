@@ -15,10 +15,11 @@ use prmarmot_core::board::IssueLinkRule;
 use prmarmot_core::layout::{section_name, section_views, SectionOrder};
 
 use prmarmot_local::auth::{token_store, TokenKind};
-use prmarmot_local::config::AuthSettings;
+use prmarmot_local::config::{AuthSettings, EnvOverrides};
 use prmarmot_local::session::Connection;
 
 use crate::config::{self, SettingsUpdate};
+use crate::design::type_size;
 use crate::theme::ThemePref;
 use prmarmot_local::config::DetailsPosition;
 
@@ -90,39 +91,6 @@ pub struct SettingsSaved;
 
 impl EventEmitter<SettingsSaved> for SettingsView {}
 
-#[derive(Default)]
-struct EnvOverrides {
-    reviewers: Option<String>,
-    refresh: Option<u64>,
-    theme: Option<String>,
-    issue_link: Option<(String, String)>,
-}
-
-impl EnvOverrides {
-    fn current() -> Self {
-        let reviewers = std::env::var("PRMARMOT_DEFAULT_REVIEWERS")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let refresh = std::env::var("PRMARMOT_REFRESH_SECS")
-            .ok()
-            .and_then(|value| value.parse().ok());
-        let theme = std::env::var("PRMARMOT_THEME").ok();
-        let issue_link = match (
-            std::env::var("PRMARMOT_ISSUE_PATTERN"),
-            std::env::var("PRMARMOT_ISSUE_URL_TEMPLATE"),
-        ) {
-            (Ok(pattern), Ok(template)) => Some((pattern, template)),
-            _ => None,
-        };
-        Self {
-            reviewers,
-            refresh,
-            theme,
-            issue_link,
-        }
-    }
-}
-
 pub struct SettingsView {
     reviewers: Entity<InputState>,
     refresh: Entity<InputState>,
@@ -172,10 +140,10 @@ impl SettingsView {
             .clone()
             .unwrap_or_else(|| file.default_reviewers.join(", "));
         let refresh = env
-            .refresh
+            .refresh_secs
             .or(file.refresh_secs)
-            .unwrap_or(300)
-            .max(30)
+            .unwrap_or(prmarmot_core::github::rate_limit::DEFAULT_REFRESH_SECS)
+            .max(prmarmot_core::github::rate_limit::MIN_REFRESH_SECS)
             .to_string();
         let theme = resolve_theme(env.theme.as_deref().or(file.theme.as_deref()));
         let auth = {
@@ -261,7 +229,7 @@ impl SettingsView {
                 }
             }
         };
-        let refresh = if let Some(value) = self.env.refresh {
+        let refresh = if let Some(value) = self.env.refresh_secs {
             value
         } else {
             match validate_refresh(&refresh_text) {
@@ -285,7 +253,7 @@ impl SettingsView {
 
         let update = SettingsUpdate {
             default_reviewers: self.env.reviewers.is_none().then_some(reviewers),
-            refresh_secs: self.env.refresh.is_none().then_some(refresh),
+            refresh_secs: self.env.refresh_secs.is_none().then_some(refresh),
             theme: self
                 .env
                 .theme
@@ -355,12 +323,17 @@ impl SettingsView {
             .child(
                 h_flex().justify_between().child("Account").child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(type_size::CAPTION)
                         .text_color(muted)
                         .child(self.auth.host.clone()),
                 ),
             )
-            .child(div().text_size(px(12.)).text_color(muted).child(detail))
+            .child(
+                div()
+                    .text_size(type_size::SMALL)
+                    .text_color(muted)
+                    .child(detail),
+            )
             .when(self.account.is_some(), |block| {
                 block.child(
                     Button::new("settings-disconnect")
@@ -370,7 +343,12 @@ impl SettingsView {
                 )
             })
             .when_some(self.account_message.clone(), |block, message| {
-                block.child(div().text_size(px(12.)).text_color(muted).child(message))
+                block.child(
+                    div()
+                        .text_size(type_size::SMALL)
+                        .text_color(muted)
+                        .child(message),
+                )
             })
     }
 
@@ -393,7 +371,7 @@ impl SettingsView {
                     self.auth.host
                 ));
             }
-            Err(message) => self.account_message = Some(message),
+            Err(error) => self.account_message = Some(error.to_string()),
         }
         cx.notify();
     }
@@ -419,7 +397,7 @@ impl SettingsView {
                         })),
                 ),
             )
-            .child(div().text_size(px(12.)).text_color(muted).child(
+            .child(div().text_size(type_size::SMALL).text_color(muted).child(
                 "The order sections come in, the same in every view; each view shows the ones it \
                  has. Saved as section_order in config.toml.",
             ))
@@ -443,7 +421,7 @@ impl SettingsView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(11.))
+                                    .text_size(type_size::CAPTION)
                                     .text_color(muted)
                                     .child(section_views(kind)),
                             )
@@ -491,7 +469,7 @@ impl SettingsView {
                     .when_some(env_name, |row, name| {
                         row.child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(type_size::CAPTION)
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!("Controlled by {name}")),
                         )
@@ -513,7 +491,7 @@ impl SettingsView {
             .when(label == "Refresh interval", |field| {
                 field.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(type_size::SMALL)
                         .text_color(cx.theme().muted_foreground)
                         .child("Minimum 30 seconds. Default 300 (5 minutes)."),
                 )
@@ -521,7 +499,7 @@ impl SettingsView {
             .when(self.error_field == Some(label), |field| {
                 field.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(type_size::SMALL)
                         .text_color(cx.theme().danger)
                         .child(self.error.clone().unwrap_or_default()),
                 )
@@ -538,7 +516,7 @@ impl Render for SettingsView {
             .map(|_| "PRMARMOT_ISSUE_PATTERN + PRMARMOT_ISSUE_URL_TEMPLATE");
         v_flex()
             .max_h((window.viewport_size().height - px(190.)).min(px(500.)))
-            .text_size(px(13.))
+            .text_size(type_size::BODY)
             .child(
                 v_flex()
                     .id("settings-scroll")
@@ -551,7 +529,7 @@ impl Render for SettingsView {
                         h_flex().gap_4().pb_3()
                             .child(img("branding/mascot.png").w(px(58.)).h(px(64.)).flex_shrink_0())
                             .child(v_flex().gap_1()
-                                .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("PR Marmot"))
+                                .child(div().text_size(type_size::DISPLAY).font_weight(FontWeight::SEMIBOLD).child("PR Marmot"))
                                 .child(div().text_color(cx.theme().muted_foreground)
                                     .child(format!("Version {}", env!("CARGO_PKG_VERSION"))))),
                     )
@@ -567,12 +545,12 @@ impl Render for SettingsView {
                             cx,
                         ),
                     )
-                    .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                    .child(div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                         .child("Comma-separated usernames, a hint only — no assignments or CODEOWNERS. Used where no [repo_reviewers] entry in config.toml matches the owner or repository. Leave empty for generic hints."))
                     .child(self.field(
                         "Refresh interval",
                         &self.refresh,
-                        self.env.refresh.map(|_| "PRMARMOT_REFRESH_SECS"),
+                        self.env.refresh_secs.map(|_| "PRMARMOT_REFRESH_SECS"),
                         cx,
                     ))
                     .child(
@@ -583,7 +561,7 @@ impl Render for SettingsView {
                                 |row, _| {
                                     row.child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(type_size::CAPTION)
                                             .text_color(cx.theme().muted_foreground)
                                             .child("Controlled by PRMARMOT_THEME"),
                                     )
@@ -645,7 +623,7 @@ impl Render for SettingsView {
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(type_size::CAPTION)
                                     .text_color(cx.theme().muted_foreground)
                                     .child("Automatic puts Details on the right when the window is wide enough to keep the full table beside it."),
                             ),
@@ -749,7 +727,7 @@ impl Render for SettingsView {
                                         })),
                                 ),
                         )
-                                .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                                .child(div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                                     .child("Off by default. Watches remain independent."))
                                 .child(self.field(
                                     "Issue ID regular expression",
@@ -763,7 +741,7 @@ impl Render for SettingsView {
                                     issue_env,
                                     cx,
                                 ))
-                                .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground)
+                                .child(div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                                     .child("Use {id} for the matched issue ID. Clear both fields to disable issue links."))
                                 .child(
                                     v_flex()
@@ -771,7 +749,7 @@ impl Render for SettingsView {
                                         .child("Config file")
                                         .child(
                                             div()
-                                                .text_size(px(11.))
+                                                .text_size(type_size::CAPTION)
                                                 .text_color(cx.theme().muted_foreground)
                                                 .child(self.path.clone()),
                                         )

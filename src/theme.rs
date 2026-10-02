@@ -15,8 +15,8 @@ pub enum ThemePref {
 impl ThemePref {
     /// `PRMARMOT_THEME` > config-file `theme` > system.
     pub fn resolve(config_theme: Option<&str>) -> Self {
-        let pref = std::env::var("PRMARMOT_THEME")
-            .ok()
+        let pref = prmarmot_local::config::EnvOverrides::current()
+            .theme
             .or_else(|| config_theme.map(str::to_string));
         match pref.as_deref() {
             Some("light") => ThemePref::Light,

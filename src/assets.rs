@@ -15,6 +15,14 @@ const ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/branding/mascot.png"),
     ),
     (
+        "icons/arrow-down.svg",
+        include_bytes!("../assets/icons/arrow-down.svg"),
+    ),
+    (
+        "icons/arrow-up.svg",
+        include_bytes!("../assets/icons/arrow-up.svg"),
+    ),
+    (
         "icons/binoculars.svg",
         include_bytes!("../assets/icons/binoculars.svg"),
     ),
@@ -76,21 +84,59 @@ mod tests {
         assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 212);
     }
 
+    /// Every icon the app names must be embedded: a missing asset draws
+    /// nothing, silently, so a button renders as an empty square. The names
+    /// are read from the sources so a new `IconName::` use cannot be forgotten.
     #[test]
-    fn dialog_close_icon_is_embedded_at_the_framework_path() {
-        use gpui_component::{IconName, IconNamed};
-        let bytes = Assets
-            .load(&IconName::Close.path())
-            .unwrap()
-            .expect("missing dialog close icon");
-        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
-    }
-
-    #[test]
-    fn settings_disclosure_icons_are_embedded() {
-        for path in ["icons/chevron-right.svg", "icons/chevron-down.svg"] {
-            let bytes = Assets.load(path).unwrap().expect("missing disclosure icon");
+    fn every_icon_the_app_names_is_embedded_at_the_framework_path() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut names = icon_names_in(&src);
+        // Requested by gpui-component widgets themselves, not by name in src/.
+        names.extend(["Close", "ChevronDown"].map(String::from));
+        names.sort();
+        names.dedup();
+        assert!(names.len() >= 5, "found only {names:?}");
+        for name in names {
+            let path = format!("icons/{}.svg", kebab(&name));
+            let bytes = Assets
+                .load(&path)
+                .unwrap()
+                .unwrap_or_else(|| panic!("IconName::{name} needs {path} in ICONS"));
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
         }
+    }
+
+    fn icon_names_in(dir: &std::path::Path) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                names.extend(icon_names_in(&path));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (ix, _) in text.match_indices("IconName::") {
+                    let rest = &text[ix + "IconName::".len()..];
+                    let name: String = rest
+                        .chars()
+                        .take_while(char::is_ascii_alphanumeric)
+                        .collect();
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    fn kebab(variant: &str) -> String {
+        let mut out = String::new();
+        for (ix, c) in variant.chars().enumerate() {
+            if c.is_ascii_uppercase() && ix > 0 {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+        out
     }
 }

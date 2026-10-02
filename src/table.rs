@@ -15,7 +15,7 @@ use chrono::{Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, rems, AnyElement, App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Pixels, SharedString, Stateful,
+    IntoElement, Modifiers, MouseButton, ParentElement, Pixels, SharedString, Stateful,
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
@@ -34,11 +34,13 @@ use prmarmot_core::layout::{
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use prmarmot_core::size::ChangeSize;
+use prmarmot_core::status::EmptyAction;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::design::{CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
+use crate::design::type_size;
+use crate::design::{self, CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
 
 /// One rendered line of the table: either a category section header or a PR
 /// (an index into `rows`). Headers are pseudo-rows — `row()` returns `None`
@@ -120,9 +122,10 @@ const QUANTUM: f32 = 16.0;
 /// immediately relayouts to the real window width.
 const DEFAULT_VIEWPORT_WIDTH: f32 = 1280.0;
 
-/// Horizontal padding gpui-component adds to every cell. The table is rendered
-/// `.small()` (Size::Small → 6px each side); subtracted when eliding cell text.
-const CELL_PAD_X: f32 = 12.0;
+/// Horizontal padding gpui-component adds to every cell, both sides together:
+/// the table is rendered `.small()`, [`design::CELL_PAD_X`] each side.
+/// Subtracted when eliding cell text.
+const CELL_PADDING: f32 = 2.0 * design::CELL_PAD_X;
 /// The cell font size, in rems. The `.small()` table applies `text_sm()` =
 /// `rems(0.875)` to every cell, *overriding* the ambient 13px — so eliding must
 /// measure at this size, not the ambient one, or long labels clip their "…".
@@ -156,8 +159,8 @@ fn measure_width(window: &mut Window, text: &str) -> Pixels {
         .width
 }
 
-/// Chip text size in px, as [`label_chip`] renders it.
-const CHIP_TEXT_PX: f32 = 11.0;
+/// Chip text size, as [`label_chip`] renders it and measures it.
+const CHIP_TEXT: Pixels = type_size::CAPTION;
 /// A chip whose text room is narrower than this shows only "…"; fold it into
 /// "+n" instead.
 const CHIP_TEXT_MIN: f32 = 18.0;
@@ -179,7 +182,7 @@ fn chip_width(window: &mut Window, text: &str) -> f32 {
     let run = chip_text_style(window).to_run(text.len());
     let text_w = window
         .text_system()
-        .layout_line(text, px(CHIP_TEXT_PX), &[run], None)
+        .layout_line(text, CHIP_TEXT, &[run], None)
         .width;
     f32::from(text_w) + chip_chrome()
 }
@@ -190,7 +193,7 @@ fn elide_chip_text(window: &mut Window, text: &str, max_width: Pixels) -> String
     let runs = vec![style.to_run(text.len())];
     window
         .text_system()
-        .line_wrapper(style.font(), px(CHIP_TEXT_PX))
+        .line_wrapper(style.font(), CHIP_TEXT)
         .truncate_line(
             text.to_string().into(),
             max_width,
@@ -224,6 +227,37 @@ fn chips_that_fit(widths: &[f32], more: impl Fn(usize) -> f32, avail: f32, gap: 
     shown
 }
 
+/// Which label chips a cell `avail` wide shows, by index into `texts`, with
+/// the first one shortened when not even one fits whole, and how many fold
+/// into "+n". The "+n" chips are measured only when some do not fit.
+fn fit_label_chips(window: &mut Window, texts: &[String], avail: f32) -> ChipFit {
+    let widths: Vec<f32> = texts.iter().map(|t| chip_width(window, t)).collect();
+    let whole = widths.iter().sum::<f32>() + GAP_1 * widths.len().saturating_sub(1) as f32;
+    if whole <= avail {
+        return (texts.iter().cloned().enumerate().collect(), 0);
+    }
+    let more: Vec<f32> = (0..=texts.len())
+        .map(|n| chip_width(window, &format!("+{n}")))
+        .collect();
+    let shown = chips_that_fit(&widths, |n| more[n], avail, GAP_1);
+    let mut visible: Vec<(usize, String)> = texts.iter().cloned().enumerate().take(shown).collect();
+    if shown == 0 {
+        // Not even one whole chip: shorten the first one.
+        let left_out = texts.len() - 1;
+        let reserve = if left_out == 0 {
+            0.0
+        } else {
+            GAP_1 + more[left_out]
+        };
+        let room = avail - reserve - chip_chrome();
+        if room >= CHIP_TEXT_MIN {
+            visible.push((0, elide_chip_text(window, &texts[0], px(room))));
+        }
+    }
+    let hidden = texts.len() - visible.len();
+    (visible, hidden)
+}
+
 /// Truncate `text` with a trailing "…" so it fits within `max_width`, at the
 /// cell's rendered font size and using gpui's own line metrics. Done by hand
 /// because gpui's in-cell `.truncate()` is inert inside gpui-component's
@@ -250,6 +284,141 @@ fn elide(window: &mut Window, text: &str, max_width: Pixels) -> String {
         )
         .0
         .to_string()
+}
+
+/// Which elided text of a row a [`CellFits`] entry holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CellPart {
+    Title,
+    ReviewNames,
+    NotePrimary,
+    NoteTail,
+}
+
+/// Elided cell text and label-chip fits kept between frames. GPUI caches
+/// shaping, but truncating a line and measuring every "+n" chip are not, and
+/// the table redraws every visible cell on each frame. An entry is keyed by
+/// the row's index in `rows` and holds the room it was fitted to, so it is
+/// reused only for the same text at the same width. Cleared whenever rows or
+/// columns change or the rem size does, and bounded by [`MAX_CELL_FITS`].
+#[derive(Default)]
+struct CellFits {
+    rem: Pixels,
+    elided: HashMap<(usize, CellPart), (String, Pixels, String)>,
+    chips: HashMap<usize, (f32, ChipFit)>,
+}
+
+/// The label chips a cell shows, by index into the row's ordered labels
+/// (the first possibly shortened), and how many fold into "+n".
+type ChipFit = (Vec<(usize, String)>, usize);
+
+/// Visible rows × elided parts is a few hundred; past this the cache starts
+/// over rather than evicting one by one.
+const MAX_CELL_FITS: usize = 4096;
+
+impl CellFits {
+    fn clear(&mut self) {
+        self.elided.clear();
+        self.chips.clear();
+    }
+
+    /// Start over when the rem size changed or the bound is reached.
+    fn check(&mut self, window: &Window) {
+        let rem = window.rem_size();
+        if rem != self.rem || self.elided.len() + self.chips.len() >= MAX_CELL_FITS {
+            self.rem = rem;
+            self.clear();
+        }
+    }
+
+    /// [`elide`], remembered for this row, part, text and room.
+    fn elide(
+        &mut self,
+        window: &mut Window,
+        key: (usize, CellPart),
+        text: &str,
+        room: Pixels,
+    ) -> String {
+        self.check(window);
+        if let Some((input, fitted, output)) = self.elided.get(&key) {
+            if *fitted == room && input == text {
+                return output.clone();
+            }
+        }
+        let output = elide(window, text, room);
+        self.elided
+            .insert(key, (text.to_owned(), room, output.clone()));
+        output
+    }
+}
+
+/// What a column shows. `render_td` matches it exhaustively, so a column
+/// without a cell is a compile error rather than a silently blank column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnKind {
+    Pr,
+    Repo,
+    Title,
+    Ci,
+    Review,
+    Author,
+    Unresolved,
+    Labels,
+    Note,
+}
+
+impl ColumnKind {
+    const ALL: [Self; 9] = [
+        Self::Pr,
+        Self::Repo,
+        Self::Title,
+        Self::Ci,
+        Self::Review,
+        Self::Author,
+        Self::Unresolved,
+        Self::Labels,
+        Self::Note,
+    ];
+
+    /// The column's key: stable, and what saved width overrides refer to.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Pr => "pr",
+            Self::Repo => "repo",
+            Self::Title => "title",
+            Self::Ci => "ci",
+            Self::Review => "review",
+            Self::Author => "author",
+            Self::Unresolved => "unresolved",
+            Self::Labels => "labels",
+            Self::Note => "note",
+        }
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            Self::Pr => "PR",
+            Self::Repo => "Repo",
+            Self::Title => "Title",
+            Self::Ci => "CI",
+            Self::Review => "Review",
+            Self::Author => "Author",
+            Self::Unresolved => "Unres",
+            Self::Labels => "Labels",
+            Self::Note => "Note",
+        }
+    }
+
+    /// The kind of a column [`columns_for`] made.
+    pub fn of(column: &Column) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| column.key.as_ref() == kind.key())
+    }
+
+    fn column(self, width: f32) -> Column {
+        Column::new(self.key(), self.header()).width(px(width))
+    }
 }
 
 /// The responsive column set for a mode at a given width class and viewport.
@@ -323,57 +492,57 @@ pub fn columns_for(
         all_open_review_w = review_w;
     }
 
-    let col = |key: &'static str, name: &'static str, w: f32| Column::new(key, name).width(px(w));
+    let col = |kind: ColumnKind, w: f32| kind.column(w);
     match mode {
         Mode::Authored => {
-            let mut cols = vec![col("pr", "PR", PR_W)];
+            let mut cols = vec![col(ColumnKind::Pr, PR_W)];
             if all_repos {
-                cols.push(col("repo", "Repo", repo_w));
+                cols.push(col(ColumnKind::Repo, repo_w));
             }
             cols.extend([
-                col("title", "Title", title_w),
-                col("ci", "CI", CI_W),
-                col("review", "Review", review_w),
+                col(ColumnKind::Title, title_w),
+                col(ColumnKind::Ci, CI_W),
+                col(ColumnKind::Review, review_w),
             ]);
             if show_labels {
-                cols.push(col("labels", "Labels", labels_w));
+                cols.push(col(ColumnKind::Labels, labels_w));
             }
-            cols.push(col("note", "Note", note_w));
+            cols.push(col(ColumnKind::Note, note_w));
             cols
         }
         Mode::Review => {
-            let mut cols = vec![col("pr", "PR", PR_W)];
+            let mut cols = vec![col(ColumnKind::Pr, PR_W)];
             if all_repos {
-                cols.push(col("repo", "Repo", repo_w));
+                cols.push(col(ColumnKind::Repo, repo_w));
             }
             cols.extend([
-                col("title", "Title", title_w),
-                col("ci", "CI", CI_W),
-                col("author", "Author", author_w),
-                col("unresolved", "Unres", UNRESOLVED_W),
+                col(ColumnKind::Title, title_w),
+                col(ColumnKind::Ci, CI_W),
+                col(ColumnKind::Author, author_w),
+                col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
             if show_labels {
-                cols.push(col("labels", "Labels", labels_w));
+                cols.push(col(ColumnKind::Labels, labels_w));
             }
-            cols.push(col("note", "Note", note_w));
+            cols.push(col(ColumnKind::Note, note_w));
             cols
         }
         // Everyone's PRs: who wrote it, and where its review stands. The
         // author and label cells filter the whole repository when clicked.
         Mode::AllOpen => {
             let mut cols = vec![
-                col("pr", "PR", PR_W),
-                col("title", "Title", title_w),
-                col("ci", "CI", CI_W),
-                col("author", "Author", author_w),
+                col(ColumnKind::Pr, PR_W),
+                col(ColumnKind::Title, title_w),
+                col(ColumnKind::Ci, CI_W),
+                col(ColumnKind::Author, author_w),
             ];
             if !compact {
-                cols.push(col("review", "Review", all_open_review_w));
+                cols.push(col(ColumnKind::Review, all_open_review_w));
             }
             if show_labels {
-                cols.push(col("labels", "Labels", labels_w));
+                cols.push(col(ColumnKind::Labels, labels_w));
             }
-            cols.push(col("note", "Note", note_w));
+            cols.push(col(ColumnKind::Note, note_w));
             cols
         }
     }
@@ -382,9 +551,7 @@ pub fn columns_for(
 // The search grammar lives in `prmarmot-core` so the desktop app and the iPad
 // cannot drift on what `label:"help wanted"` means. Only the drawing stays
 // here.
-pub use prmarmot_core::search::{
-    matches_search, take_filter_chips, with_filter, FilterChip, Qualifier, StaleRule,
-};
+pub use prmarmot_core::search::{take_filter_chips, with_filter, FilterChip, Qualifier, StaleRule};
 
 /// One neutral chip style for labels (spec §7): GitHub's arbitrary label
 /// hues would out-shout the status system. Also used for the search tokens.
@@ -397,7 +564,7 @@ pub fn label_chip(theme: &gpui_component::Theme) -> Div {
         .bg(theme.muted)
         .border_1()
         .border_color(theme.border)
-        .text_size(px(11.))
+        .text_size(type_size::CAPTION)
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
 }
@@ -440,10 +607,54 @@ pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)>
     prmarmot_core::detail::copy_items(row, mode, Utc::now(), local_offset_secs())
 }
 
-type RowActionHandler = std::rc::Rc<dyn Fn(BoardRow, RowAction, &mut Window, &mut App)>;
+/// A row's action, by PR id: the row is looked up when it runs, so a frame
+/// never copies rows into closures it may not call.
+type RowActionHandler = std::rc::Rc<dyn Fn(String, RowAction, &mut Window, &mut App)>;
 type FilterClickHandler = Rc<dyn Fn(FilterChip, &mut Window, &mut App)>;
 type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
 type SectionToggleHandler = Rc<dyn Fn(SectionKind, &mut Window, &mut App)>;
+type EmptyActionHandler = Rc<dyn Fn(EmptyAction, &mut Window, &mut App)>;
+type SelectionActionHandler = Rc<dyn Fn(SelectionAction, &mut Window, &mut App)>;
+
+/// How the next `SelectRow` treats the rows already selected. Recorded at
+/// mouse-down, because the framework's click event carries no modifiers, and
+/// by the app before a select it makes itself; each for one display row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickIntent {
+    /// Select this row alone.
+    Plain,
+    /// ⌘-click (Ctrl on Linux): add or remove this row.
+    Toggle,
+    /// ⇧-click, ⇧↑/↓: every PR between the anchor and this row.
+    Range,
+    /// The app moved the caret itself (a restore after a refresh, a header
+    /// bounce): the selection stays as it is.
+    Keep,
+}
+
+impl ClickIntent {
+    fn from_modifiers(modifiers: Modifiers) -> Self {
+        if modifiers.shift {
+            Self::Range
+        } else if modifiers.secondary() {
+            Self::Toggle
+        } else {
+            Self::Plain
+        }
+    }
+}
+
+/// One action over every selected row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionAction {
+    /// On GitHub, at most [`prmarmot_core::status::MAX_OPEN_TOGETHER`].
+    Open,
+    Copy(ShareFormat),
+    Watch,
+    Unwatch,
+    Snooze,
+    CancelSnooze,
+}
 
 /// A board group rendered for the clipboard, ready for `app.rs` to write.
 pub struct GroupCopy {
@@ -462,6 +673,16 @@ const GROUP_COPY_ITEMS: [(&str, ShareFormat); 4] = [
 
 /// Hover group for a section header's reveal-on-hover Copy button.
 const HEADER_GROUP: &str = "board-section-header";
+
+/// The marks the table draws beside rows: changed (with the marker's
+/// tooltip), watched, snoozed, and the folded sections.
+#[derive(Default)]
+pub struct RowAttention {
+    pub changed: HashMap<String, SharedString>,
+    pub watched: HashSet<String>,
+    pub snoozed: HashSet<String>,
+    pub collapsed: Vec<SectionKind>,
+}
 
 pub struct BoardTableDelegate {
     rows: Vec<BoardRow>,
@@ -490,6 +711,23 @@ pub struct BoardTableDelegate {
     pub on_filter_click: Option<FilterClickHandler>,
     /// A section header was clicked: collapse or expand that section.
     pub on_section_toggle: Option<SectionToggleHandler>,
+    /// The empty board's one button (Show all repositories, Load more).
+    pub on_empty_action: Option<EmptyActionHandler>,
+    /// A right-click on a selected row chose an action for the selection.
+    pub on_selection_action: Option<SelectionActionHandler>,
+    /// Several rows selected at once (⇧-click, ⌘-click, ⇧↑/↓), by PR id,
+    /// the caret row included; empty while the caret row is the whole
+    /// selection. Ids, not indices, so a refresh that reorders rows keeps
+    /// the same PRs selected.
+    multi: HashSet<String>,
+    /// The modifiers of the last mouse-down on a PR row, with the row, read
+    /// once by the `SelectRow` that follows it.
+    click_intent: Rc<Cell<Option<(usize, ClickIntent)>>>,
+    /// GitHub has another page for this view, for the empty board's copy.
+    can_load_more: bool,
+    fits: CellFits,
+    /// What each of `columns` shows, read once per column set.
+    kinds: Vec<Option<ColumnKind>>,
     /// Display index of the header whose Copy menu is open, so its button
     /// stays visible while the pointer is over the menu instead of the header.
     copy_menu_open: Rc<Cell<Option<usize>>>,
@@ -497,15 +735,17 @@ pub struct BoardTableDelegate {
 
 impl BoardTableDelegate {
     pub fn new(mode: Mode, all_repos: bool) -> Self {
+        let columns = columns_for(
+            mode,
+            TableWidthClass::Medium,
+            DEFAULT_VIEWPORT_WIDTH,
+            all_repos,
+        );
         Self {
             rows: Vec::new(),
             display: Vec::new(),
-            columns: columns_for(
-                mode,
-                TableWidthClass::Medium,
-                DEFAULT_VIEWPORT_WIDTH,
-                all_repos,
-            ),
+            kinds: columns.iter().map(ColumnKind::of).collect(),
+            columns,
             mode,
             all_repos,
             changed: HashMap::new(),
@@ -520,26 +760,35 @@ impl BoardTableDelegate {
             on_group_copy: None,
             on_filter_click: None,
             on_section_toggle: None,
+            on_empty_action: None,
+            on_selection_action: None,
+            multi: HashSet::new(),
+            click_intent: Rc::new(Cell::new(None)),
+            can_load_more: false,
+            fits: CellFits::default(),
             copy_menu_open: Rc::new(Cell::new(None)),
         }
     }
 
-    /// Switch queue: change the sort/grouping mode and re-band the display.
+    /// Switch queue: change the sort/grouping mode. Like the scope, it takes
+    /// effect with the next [`Self::set_rows_and_attention`], which the
+    /// switch's own row sync runs, so a switch lays the table out once.
     /// Columns are owned by `RootView` (they depend on the live window width),
     /// so it calls `set_columns` right after this.
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
-        self.rebuild_display();
     }
 
+    /// Takes effect with the next [`Self::set_rows_and_attention`].
     pub fn set_scope(&mut self, all_repos: bool) {
         self.all_repos = all_repos;
-        self.rebuild_display();
     }
 
     /// Replace the whole column set (responsive relayout or a mode switch).
     pub fn set_columns(&mut self, columns: Vec<Column>) {
+        self.kinds = columns.iter().map(ColumnKind::of).collect();
         self.columns = columns;
+        self.fits.clear();
     }
 
     /// Current column widths, in column order — used to snapshot a manual
@@ -559,11 +808,18 @@ impl BoardTableDelegate {
         for (col, w) in self.columns.iter_mut().zip(widths) {
             col.width = *w;
         }
+        self.fits.clear();
         true
     }
 
     pub fn set_stale_after_days(&mut self, days: u64) {
         self.stale_after_days = days;
+    }
+
+    /// Whether GitHub has another page for this view; the empty board says
+    /// so and offers Load more.
+    pub fn set_can_load_more(&mut self, can_load_more: bool) {
+        self.can_load_more = can_load_more;
     }
 
     /// Takes effect with the next `set_rows`.
@@ -576,12 +832,14 @@ impl BoardTableDelegate {
         self.sections = sections;
     }
 
-    pub fn set_rows(&mut self, rows: Vec<BoardRow>) {
+    #[cfg(test)]
+    fn set_rows(&mut self, rows: Vec<BoardRow>) {
         self.rows = rows;
         self.rebuild_display();
     }
 
-    pub fn set_attention(
+    #[cfg(test)]
+    fn set_attention(
         &mut self,
         changed: HashMap<String, SharedString>,
         watched: HashSet<String>,
@@ -595,9 +853,211 @@ impl BoardTableDelegate {
         self.rebuild_display();
     }
 
+    /// The rows to show and their marks, laid out once.
+    pub fn set_rows_and_attention(&mut self, rows: Vec<BoardRow>, attention: RowAttention) {
+        self.rows = rows;
+        self.changed = attention.changed;
+        self.watched = attention.watched;
+        self.snoozed = attention.snoozed;
+        self.collapsed = attention.collapsed;
+        self.rebuild_display();
+        // A selected PR that left the board leaves the selection; one left
+        // alone is the caret row again.
+        let ids: HashSet<&str> = self.rows.iter().map(|row| row.id.as_str()).collect();
+        self.multi.retain(|id| ids.contains(id.as_str()));
+        if self.multi.len() <= 1 {
+            self.multi.clear();
+        }
+    }
+
+    // -- Several rows at once -------------------------------------------
+
+    /// Record how the app's own next select of `row_ix` treats the selection.
+    pub fn set_click_intent(&self, row_ix: usize, intent: ClickIntent) {
+        self.click_intent.set(Some((row_ix, intent)));
+    }
+
+    /// The intent recorded for `row_ix`, consumed; `Plain` when none was.
+    pub fn take_click_intent(&self, row_ix: usize) -> ClickIntent {
+        match self.click_intent.take() {
+            Some((ix, intent)) if ix == row_ix => intent,
+            _ => ClickIntent::Plain,
+        }
+    }
+
+    pub fn multi_active(&self) -> bool {
+        !self.multi.is_empty()
+    }
+
+    pub fn multi_len(&self) -> usize {
+        self.multi.len()
+    }
+
+    #[cfg(test)]
+    pub fn in_multi(&self, pr_id: &str) -> bool {
+        self.multi.contains(pr_id)
+    }
+
+    /// The selected rows in display order.
+    pub fn multi_rows(&self) -> Vec<BoardRow> {
+        self.display
+            .iter()
+            .filter_map(|d| match d {
+                DisplayRow::Pr(i) => self.rows.get(*i).filter(|row| self.multi.contains(&row.id)),
+                DisplayRow::Header { .. } => None,
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn set_multi(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.multi = ids.into_iter().collect();
+        if self.multi.len() <= 1 {
+            self.multi.clear();
+        }
+    }
+
+    /// Back to the caret row alone. True when there was more.
+    pub fn clear_multi(&mut self) -> bool {
+        let had = !self.multi.is_empty();
+        self.multi.clear();
+        had
+    }
+
+    /// ⌘-click: add `pr_id`, or remove it. A single caret row (`caret`)
+    /// joins first, so the selection grows from where it was. Returns
+    /// whether `pr_id` is selected afterwards.
+    pub fn toggle_multi(&mut self, pr_id: &str, caret: Option<&str>) -> bool {
+        if self.multi.is_empty() {
+            if let Some(caret) = caret {
+                self.multi.insert(caret.to_owned());
+            }
+        }
+        if self.multi.remove(pr_id) {
+            return false;
+        }
+        self.multi.insert(pr_id.to_owned());
+        true
+    }
+
+    /// The PR ids from one display row to another, both included, in
+    /// display order; headers and folded sections hold no rows to select.
+    pub fn ids_between(&self, a: usize, b: usize) -> Vec<String> {
+        let (from, to) = if a <= b { (a, b) } else { (b, a) };
+        self.display
+            .get(from..=to)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| match d {
+                DisplayRow::Pr(i) => self.rows.get(*i).map(|row| row.id.clone()),
+                DisplayRow::Header { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Every PR on screen, folded sections excluded: ⌘A.
+    pub fn visible_pr_ids(&self) -> Vec<String> {
+        self.ids_between(0, self.display.len().saturating_sub(1))
+    }
+
+    /// The selected display row nearest `from`, for the caret after the row
+    /// it sat on was deselected.
+    pub fn nearest_multi_index(&self, from: usize) -> Option<usize> {
+        self.display
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| match d {
+                DisplayRow::Pr(i) => self
+                    .rows
+                    .get(*i)
+                    .is_some_and(|row| self.multi.contains(&row.id)),
+                DisplayRow::Header { .. } => false,
+            })
+            .min_by_key(|(ix, _)| ix.abs_diff(from))
+            .map(|(ix, _)| ix)
+    }
+
+    /// The selection for the clipboard, under the shared selection heading.
+    pub fn selection_copy(&self, format: ShareFormat) -> Option<GroupCopy> {
+        let rows = self.multi_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        Some(GroupCopy {
+            format,
+            count: rows.len(),
+            payload: share_group(
+                prmarmot_core::share::SELECTION_TITLE,
+                &rows,
+                self.mode,
+                format,
+            ),
+        })
+    }
+
+    /// The right-click menu of a row that is part of the selection: every
+    /// item acts on all of it, and says how many that is.
+    fn selection_menu(&self, mut menu: PopupMenu) -> PopupMenu {
+        let Some(handler) = self.on_selection_action.clone() else {
+            return menu;
+        };
+        let rows = self.multi_rows();
+        let n = rows.len();
+        let unwatched = rows
+            .iter()
+            .filter(|row| !self.watched.contains(&row.id))
+            .count();
+        let snoozed = rows
+            .iter()
+            .filter(|row| self.snoozed.contains(&row.id))
+            .count();
+        let open = if n > prmarmot_core::status::MAX_OPEN_TOGETHER {
+            format!(
+                "Open the first {} of {n} on GitHub",
+                prmarmot_core::status::MAX_OPEN_TOGETHER
+            )
+        } else {
+            format!("Open {n} PRs on GitHub")
+        };
+        let mut items: Vec<(String, SelectionAction)> = vec![(open, SelectionAction::Open)];
+        items.extend(
+            GROUP_COPY_ITEMS
+                .iter()
+                .map(|(label, format)| (format!("{label} ({n})"), SelectionAction::Copy(*format))),
+        );
+        if unwatched > 0 {
+            items.push((format!("Watch {unwatched} PRs"), SelectionAction::Watch));
+        }
+        if unwatched < n {
+            items.push((
+                format!("Unwatch {} PRs", n - unwatched),
+                SelectionAction::Unwatch,
+            ));
+        }
+        items.push((format!("Snooze {n} PRs…"), SelectionAction::Snooze));
+        if snoozed > 0 {
+            items.push((
+                format!("Cancel snooze for {snoozed} PRs"),
+                SelectionAction::CancelSnooze,
+            ));
+        }
+        for (index, (label, action)) in items.into_iter().enumerate() {
+            if index == 1 || index == 5 {
+                menu = menu.separator();
+            }
+            let handler = handler.clone();
+            menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                handler(action, window, cx);
+            }));
+        }
+        menu
+    }
+
     /// Rebuild display rows from the shared core layout (sections, the Approved
     /// split, stacks, Snoozed), adding the window's own Snoozed wording.
     fn rebuild_display(&mut self) {
+        // Fits are keyed by the index into `rows`, which may now be another PR.
+        self.fits.clear();
         let now = Utc::now();
         self.common_labels = if self.mode == Mode::AllOpen {
             common_labels(&self.rows)
@@ -668,6 +1128,11 @@ impl BoardTableDelegate {
     }
 
     /// The `BoardRow` at a display index, or `None` if it is a section header.
+    /// The shown row with this PR id.
+    pub fn row_by_id(&self, pr_id: &str) -> Option<&BoardRow> {
+        self.rows.iter().find(|row| row.id == pr_id)
+    }
+
     pub fn row(&self, display_ix: usize) -> Option<&BoardRow> {
         match self.display.get(display_ix)? {
             DisplayRow::Pr(i) => self.rows.get(*i),
@@ -876,12 +1341,709 @@ fn tone_color(tone: Tone, theme: &gpui_component::theme::Theme) -> Hsla {
     }
 }
 
-fn status_dot(color: Hsla) -> Div {
+/// The Note's dot and primary-text colours for one of core's tones: only an
+/// exceptional blocker is red; routine notes get a muted dot; a draft none.
+/// The table's Note cell and the Details Note line agree through this.
+pub(crate) fn note_tone_colors(
+    tone: Tone,
+    theme: &gpui_component::theme::Theme,
+) -> (Option<Hsla>, Hsla) {
+    let muted = theme.muted_foreground;
+    match tone {
+        Tone::Danger => (Some(theme.danger), theme.danger),
+        Tone::Warning => (Some(theme.warning), muted),
+        Tone::Success => (Some(theme.success), muted),
+        Tone::Routine => (Some(muted), muted),
+        Tone::Muted => (None, muted),
+    }
+}
+
+pub(crate) fn status_dot(color: Hsla) -> Div {
     div()
         .size(px(STATUS_DOT))
         .rounded_full()
         .flex_shrink_0()
         .bg(color)
+}
+
+/// One function per cell, each drawn for one PR row of `rows[at]`.
+impl BoardTableDelegate {
+    fn pr_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        // Draft rows dim their text — inactive, not merely different.
+        let dim = row.draft;
+        // Single-click link (critique #5): the blue #number opens the
+        // PR. Drafts need no badge here: they have their own section,
+        // a dimmed number, and a Note that starts with "draft".
+        let url = row.url.clone();
+        let number = h_flex()
+            .id(("pr-link", row_ix))
+            .cursor_pointer()
+            .text_color(if dim { muted } else { theme.link })
+            .hover(|this| this.underline())
+            .child(format!("#{}", row.number))
+            // Stop the click bubbling to the row (which would also open
+            // the PR / start a double-click) and open only on a single
+            // click — the gpui-component `Link` pattern (critique #3).
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+                if e.click_count() == 1 {
+                    cx.open_url(&url);
+                }
+            }));
+        let mut cell = h_flex()
+            .relative()
+            .w_full()
+            .h(px(20.))
+            .pr(px(24.))
+            .gap_1()
+            .items_center();
+        if let Some(tooltip) = self.changed.get(&row.id).cloned() {
+            // A padded hover target (offset by an equal negative
+            // margin) so the 7px dot is easy to point at without
+            // shifting the PR number.
+            cell = cell.child(
+                div()
+                    .id(("changed-marker", row_ix))
+                    .flex_shrink_0()
+                    .p(px(4.))
+                    .m(px(-4.))
+                    .child(status_dot(theme.link))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+            );
+        }
+        cell = cell.child(number);
+        if let Some(handler) = self.on_row_action.clone() {
+            let watched = self.watched.contains(&row.id);
+            let pr_id = row.id.clone();
+            cell = cell.child(
+                div()
+                    .id(("watch-pr", row_ix))
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .flex_shrink_0()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(if watched {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground.opacity(0.55)
+                    })
+                    .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
+                    .child(
+                        gpui::svg()
+                            .path("icons/binoculars.svg")
+                            .size(px(15.))
+                            .text_color(if watched {
+                                theme.foreground
+                            } else {
+                                theme.muted_foreground.opacity(0.55)
+                            }),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(if watched {
+                            "Unwatch PR · w"
+                        } else {
+                            "Watch PR · w"
+                        })
+                        .build(window, cx)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 1 {
+                            handler(pr_id.clone(), RowAction::Watch, window, cx);
+                        }
+                    })
+                    .on_click(|_, _, cx| cx.stop_propagation()),
+            );
+        }
+        cell.into_any_element()
+    }
+
+    fn labels_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let cell: Div = {
+            if row.labels.is_empty() {
+                // Blank, not a dash: three vertical bands of "—" start to
+                // read as data (design review). Dashes stay only where
+                // "none" is a meaningful status (CI).
+                div()
+            } else {
+                // Chips; "bug" is the loud one. Only whole chips are
+                // drawn — each is a click target — and the rest fold into
+                // "+n". The tooltip carries the full list.
+                let full = row.labels.join(", ");
+                // "bug" must never hide behind the +n overflow, and in
+                // All open a label nearly every row carries goes last.
+                let ordered = label_order(&row.labels, &self.common_labels);
+                // 🐛 is the single permitted emoji: semantic, not decorative.
+                let texts: Vec<String> = ordered
+                    .iter()
+                    .map(|label| {
+                        if label == "bug" {
+                            format!("🐛 {label}")
+                        } else {
+                            label.clone()
+                        }
+                    })
+                    .collect();
+                let avail = f32::from(self.columns[col_ix].width) - CELL_PADDING - ELIDE_SAFETY;
+                self.fits.check(window);
+                let (visible, hidden) = match self.fits.chips.get(&at) {
+                    Some((fitted, fit)) if *fitted == avail => fit.clone(),
+                    _ => {
+                        let fit = fit_label_chips(window, &texts, avail);
+                        self.fits.chips.insert(at, (avail, fit.clone()));
+                        fit
+                    }
+                };
+                let mut chips = h_flex().gap_1().flex_shrink_0();
+                let (hover_border, hover_text) = (muted, theme.foreground);
+                for (ix, text) in visible {
+                    let label = &ordered[ix];
+                    let chip = label_chip(theme)
+                        .flex_shrink_0()
+                        .text_color(theme.secondary_foreground)
+                        .child(text);
+                    // A click filters the board by the label. It must not
+                    // reach the row, which would select it or open details.
+                    chips = chips.child(match self.on_filter_click.clone() {
+                        Some(handler) => {
+                            let filter = FilterChip::new(Qualifier::Label, label.as_str());
+                            chip.id(("label-chip", ix))
+                                .cursor_pointer()
+                                .hover(|style| {
+                                    style.border_color(hover_border).text_color(hover_text)
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |event: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    if event.click_count() == 1 {
+                                        handler(filter.clone(), window, cx);
+                                    }
+                                })
+                                .into_any_element()
+                        }
+                        None => chip.into_any_element(),
+                    });
+                }
+                // "+n" sits outside the chips' tooltip, which would
+                // otherwise open over the menu it drops down.
+                let mut cell = h_flex().gap_1().overflow_hidden();
+                let tip: SharedString = if self.on_filter_click.is_some() {
+                    format!("{full}\nClick a label to search for label:<name>").into()
+                } else {
+                    full.into()
+                };
+                cell = cell.child(
+                    chips
+                        .id(("labels", row_ix))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                );
+                if hidden > 0 {
+                    let more = format!("+{hidden}");
+                    cell = cell.child(match self.on_filter_click.clone() {
+                        // "+n" opens the hidden labels, each a filter.
+                        Some(handler) => {
+                            let rest = ordered[ordered.len() - hidden..].to_vec();
+                            div()
+                                .flex_shrink_0()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    Button::new(("more-labels", row_ix))
+                                        .ghost()
+                                        .xsmall()
+                                        .h(px(CHIP_HEIGHT))
+                                        .px(px(CHIP_PAD_X))
+                                        .rounded(px(CHIP_RADIUS))
+                                        .bg(theme.muted)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .child(
+                                            // A Button label ignores the
+                                            // button's text size.
+                                            div()
+                                                .text_size(CHIP_TEXT)
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(muted)
+                                                .child(more),
+                                        )
+                                        .dropdown_menu(move |mut menu, _, _| {
+                                            menu = menu
+                                                .label("Filter by label")
+                                                .scrollable(true)
+                                                .max_h(px(320.));
+                                            for label in &rest {
+                                                let handler = handler.clone();
+                                                let target =
+                                                    FilterChip::new(Qualifier::Label, label);
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(label.clone()).on_click(
+                                                        move |_, window, cx| {
+                                                            handler(target.clone(), window, cx)
+                                                        },
+                                                    ),
+                                                );
+                                            }
+                                            menu
+                                        }),
+                                )
+                                .into_any_element()
+                        }
+                        None => label_chip(theme)
+                            .flex_shrink_0()
+                            .text_color(muted)
+                            .child(more)
+                            .into_any_element(),
+                    });
+                }
+                return cell.into_any_element();
+            }
+        };
+        cell.into_any_element()
+    }
+
+    // The calm rule (spec §8): bad states get colored text, good
+    // states get only a colored dot with muted text.
+    fn ci_cell(
+        &mut self,
+        at: usize,
+        _row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let cell: Div = match row.ci {
+            Ci::Pass => h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(status_dot(theme.success))
+                .child(div().text_color(muted).child("pass")),
+            Ci::Fail => h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(status_dot(theme.danger))
+                .child(div().text_color(theme.danger).child("fail")),
+            Ci::Running => h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(status_dot(theme.warning))
+                .child(div().text_color(muted).child("running")),
+            Ci::None => h_flex().child(div().text_color(muted.opacity(0.5)).child("—")),
+            // The token may not read the checks: a word, never the dash
+            // that means "no checks".
+            Ci::Hidden => h_flex().child(div().text_color(muted).child("hidden")),
+        };
+        cell.into_any_element()
+    }
+
+    fn repo_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let chip = FilterChip::new(Qualifier::Repo, row.repo.as_str());
+        div()
+            .text_color(muted)
+            .child(self.filter_target(("repo-filter", row_ix), row.repo.clone(), Some(chip)))
+            .into_any_element()
+    }
+
+    fn author_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let chip = row
+            .author
+            .as_deref()
+            .map(|author| FilterChip::new(Qualifier::Author, author));
+        let text = row.author.clone().unwrap_or_else(|| "?".into());
+        self.filter_target(("author-filter", row_ix), text, chip)
+            .into_any_element()
+    }
+
+    fn unresolved_cell(
+        &mut self,
+        at: usize,
+        _row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let cell: Div = {
+            if row.unresolved > 0 {
+                div()
+                    .text_color(theme.warning)
+                    .child(if row.unresolved_capped {
+                        format!("{}+", row.unresolved)
+                    } else {
+                        row.unresolved.to_string()
+                    })
+            } else {
+                div()
+            }
+        };
+        cell.into_any_element()
+    }
+
+    fn review_column_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let cell: Div = {
+            // Merged Requested + Reviewed by: completed reviews win (they
+            // supersede a pending request); else show who's requested; else
+            // "Not requested". Most cells were empty split across two
+            // columns — this recovers ~150px for Title/Note. The wording,
+            // the glyphs and the order are core's, so the iPad says the
+            // same; only the colours are the theme's.
+            match review_cell(row) {
+                ReviewCell::Reviewed {
+                    marks,
+                    summary,
+                    hover,
+                } => {
+                    let mut cell = h_flex().gap_2().items_center().overflow_hidden();
+                    for mark in marks {
+                        cell = cell.child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .whitespace_nowrap()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(tone_color(mark.tone, theme))
+                                        .child(mark.glyph),
+                                )
+                                .child(mark.login),
+                        );
+                    }
+                    cell = cell.child(div().flex_shrink_0().text_color(muted).child(summary));
+                    return cell
+                        .id(("review", row_ix))
+                        .tooltip(move |window, cx| Tooltip::new(hover.clone()).build(window, cx))
+                        .into_any_element();
+                }
+                ReviewCell::Requested {
+                    names,
+                    arrow,
+                    suffix,
+                    hover,
+                } => {
+                    let full = hover;
+                    // Elide the names to the room left by the "→" and the
+                    // "— requested" suffix (both flex_shrink_0), with a real "…".
+                    let arrow_w = measure_width(window, &arrow);
+                    let suffix_w = measure_width(window, &suffix);
+                    let col_w = self.columns[col_ix].width;
+                    let avail = col_w
+                        - arrow_w
+                        - suffix_w
+                        - px(CELL_PADDING + GAP_1 + GAP_1 + ELIDE_SAFETY);
+                    let names = self
+                        .fits
+                        .elide(window, (at, CellPart::ReviewNames), &names, avail);
+                    return h_flex()
+                        .w_full()
+                        .gap_1()
+                        .items_center()
+                        .overflow_hidden()
+                        .child(div().flex_shrink_0().text_color(muted).child(arrow))
+                        .child(div().flex_shrink_0().child(names))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(muted.opacity(0.7))
+                                .child(suffix),
+                        )
+                        .id(("review", row_ix))
+                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                        .into_any_element();
+                }
+                ReviewCell::NotRequested { text } => div().text_color(muted).child(text),
+            }
+        };
+        cell.into_any_element()
+    }
+
+    fn title_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        // Draft rows dim their text — inactive, not merely different.
+        let dim = row.draft;
+        let mut full = match &row.issue {
+            Some(issue) => format!("{issue} · {}", row.title),
+            None => row.title.clone(),
+        };
+        let stack_prefix = row.stack.as_ref().map(|s| {
+                    let position = s.position.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
+                    full.push_str(&format!("\nStack #{} · layer {}/{} · base {}. Only matching PRs are shown; layers may be in other sections.", s.number, position, s.size, s.base_ref_name));
+                    let branch = if self.stack_ends_at(row_ix) { "└─" } else { "├─" };
+                    format!("{branch} {position}/{}", s.size)
+                });
+        let stack_w = stack_prefix
+            .as_deref()
+            .map(|s| measure_width(window, s) + px(GAP_1))
+            .unwrap_or(px(0.));
+        let tag_color = if dim { muted } else { theme.accent_foreground };
+        // Elide the title to the width the flexible region actually has
+        // (column minus the issue tag, gap and cell padding). A real
+        // "…", not a mid-word clip — the affordance that says "there's
+        // more, hover" (critique #3). Done by hand via `elide` because
+        // gpui's in-cell `.truncate()` is inert in this table.
+        let col_w = self.columns[col_ix].width;
+        let issue_w = row
+            .issue
+            .as_deref()
+            .map(|s| measure_width(window, s))
+            .unwrap_or(px(0.));
+        let gap = if row.issue.is_some() { GAP_1 } else { 0.0 };
+        let avail = col_w - issue_w - stack_w - px(CELL_PADDING + gap + ELIDE_SAFETY);
+        let title = self
+            .fits
+            .elide(window, (at, CellPart::Title), &row.title, avail);
+        let inner = match (&row.issue, &row.issue_url) {
+            // A linked issue is a single-click link of its own
+            // (critique #5): the tag opens the tracker, not the PR.
+            (Some(issue), Some(issue_url)) => {
+                let issue_url = issue_url.clone();
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .overflow_hidden()
+                    .when(dim, |t| t.text_color(muted))
+                    .child(
+                        h_flex()
+                            .id(("issue-link", row_ix))
+                            .flex_shrink_0()
+                            .cursor_pointer()
+                            .text_color(if dim { muted } else { theme.link })
+                            .hover(|this| this.underline())
+                            .child(issue.clone())
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+                                if e.click_count() == 1 {
+                                    cx.open_url(&issue_url)
+                                }
+                            })),
+                    )
+                    .child(div().flex_shrink_0().child(title))
+            }
+            (Some(issue), None) => h_flex()
+                .w_full()
+                .gap_1()
+                .overflow_hidden()
+                .when(dim, |t| t.text_color(muted))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(tag_color)
+                        .child(issue.clone()),
+                )
+                .child(div().flex_shrink_0().child(title)),
+            (None, _) => h_flex().w_full().overflow_hidden().child(
+                div()
+                    .flex_shrink_0()
+                    .when(dim, |t| t.text_color(muted))
+                    .child(title),
+            ),
+        };
+        h_flex()
+            .w_full()
+            .gap_1()
+            .overflow_hidden()
+            .when_some(stack_prefix, |this, prefix| {
+                this.child(div().flex_shrink_0().text_color(muted).child(prefix))
+            })
+            .child(inner)
+            .id(("title", row_ix))
+            .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+            .into_any_element()
+    }
+
+    fn note_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        // Exception-first Note (note-hierarchy plan): the dot + a single
+        // emphasized primary phrase carry the row's worst blocker;
+        // every other blocker trails as muted context so nothing hides
+        // in the tooltip. Only genuinely exceptional blockers get red —
+        // routine "assign reviewers" / "resolve N" rows are amber-muted,
+        // so a column of them no longer reads as one red wall.
+        let NotePresentation {
+            tone,
+            primary,
+            remedy,
+            context,
+            mut tooltip,
+        } = note_presentation(row);
+        // How long it has waited for a reviewer trails the Note and,
+        // like the primary, never elides; a stale wait is amber.
+        let now = Utc::now();
+        let wait = waiting_secs(row, now).map(|secs| {
+            let stale = is_stale(row, now, self.stale_after_days);
+            (format!(" · {}", wait_label(secs)), stale)
+        });
+        if let Some((label, stale)) = &wait {
+            tooltip.push_str(&format!(
+                "\nWaiting for a reviewer:{}{}",
+                label.trim_start_matches(" ·"),
+                if *stale { " (stale)" } else { "" }
+            ));
+        }
+        // In the review queue and All open the size band trails
+        // last, muted: both are lists to pick a review from.
+        let size = row
+            .size
+            .filter(|_| matches!(self.mode, Mode::Review | Mode::AllOpen));
+        if let Some(size) = size {
+            tooltip.push_str(&format!("\nSize: {}", size_text(size)));
+        }
+        let size = size.map(|size| format!(" · {}", size.band().label()));
+        let (dot_color, primary_color) = note_tone_colors(tone, theme);
+        // The muted tail: the primary's remedy, then the remaining
+        // blockers as context, in presentation-priority order.
+        let mut tail = String::new();
+        if let Some(remedy) = &remedy {
+            tail.push_str(" — ");
+            tail.push_str(remedy);
+        }
+        for fact in &context {
+            tail.push_str(" · ");
+            tail.push_str(fact);
+        }
+        // pr_2: the terminal column needs an optical margin the 6px
+        // cell pad doesn't give (critique #4).
+        let mut cell = h_flex()
+            .w_full()
+            .gap_1p5()
+            .items_center()
+            .overflow_hidden()
+            .pr_2();
+        if let Some(color) = dot_color {
+            cell = cell.child(status_dot(color));
+        }
+        // The muted tail absorbs the ellipsis when the row is narrow;
+        // the wait and size never elide. The primary is shortened only
+        // when it cannot fit beside them on its own: a calm note is
+        // one whole sentence, and clipped it would hide the wait.
+        // (A real "…", see `elide`.)
+        let dot_region = if dot_color.is_some() {
+            STATUS_DOT + GAP_1P5
+        } else {
+            0.0
+        };
+        let wait_w = wait
+            .as_ref()
+            .map_or(px(0.), |(label, _)| measure_width(window, label));
+        let size_w = size
+            .as_ref()
+            .map_or(px(0.), |label| measure_width(window, label));
+        let room = self.columns[col_ix].width
+            - wait_w
+            - size_w
+            - px(CELL_PADDING + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
+        let mut primary_w = measure_width(window, &primary);
+        let primary = if primary_w > room {
+            let shortened = self
+                .fits
+                .elide(window, (at, CellPart::NotePrimary), &primary, room);
+            primary_w = measure_width(window, &shortened);
+            shortened
+        } else {
+            primary
+        };
+        cell = cell.child(
+            div()
+                .flex_shrink_0()
+                .text_color(primary_color)
+                .child(primary),
+        );
+        let tail_room = room - primary_w;
+        // Below a few characters' room the tail would be a bare "…".
+        if !tail.is_empty() && tail_room >= px(TAIL_MIN) {
+            let tail = self
+                .fits
+                .elide(window, (at, CellPart::NoteTail), &tail, tail_room);
+            cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
+        }
+        if let Some((label, stale)) = wait {
+            cell = cell.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(if stale { theme.warning } else { muted })
+                    .child(label),
+            );
+        }
+        if let Some(label) = size {
+            cell = cell.child(div().flex_shrink_0().text_color(muted).child(label));
+        }
+        cell.id(("note", row_ix))
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .into_any_element()
+    }
 }
 
 impl TableDelegate for BoardTableDelegate {
@@ -907,6 +2069,9 @@ impl TableDelegate for BoardTableDelegate {
         let Some(row) = self.row(row_ix).cloned() else {
             return menu;
         };
+        if self.multi.contains(&row.id) {
+            return self.selection_menu(menu);
+        }
         let Some(handler) = self.on_row_action.clone() else {
             return menu;
         };
@@ -938,10 +2103,10 @@ impl TableDelegate for BoardTableDelegate {
             if index == 2 || index == 7 {
                 menu = menu.separator();
             }
-            let row = row.clone();
+            let pr_id = row.id.clone();
             let handler = handler.clone();
             menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                handler(row.clone(), action.clone(), window, cx);
+                handler(pr_id.clone(), action.clone(), window, cx);
             }));
         }
         menu
@@ -1038,7 +2203,11 @@ impl TableDelegate for BoardTableDelegate {
                                 .child(
                                     div()
                                         .id(("section-title", row_ix))
-                                        .text_size(px(if count.is_some() { 12. } else { 11. }))
+                                        .text_size(if count.is_some() {
+                                            type_size::SMALL
+                                        } else {
+                                            type_size::CAPTION
+                                        })
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.secondary_foreground)
                                         .child(label.clone())
@@ -1062,7 +2231,7 @@ impl TableDelegate for BoardTableDelegate {
                                             .px(px(6.))
                                             .rounded(px(4.))
                                             .bg(theme.background)
-                                            .text_size(px(11.))
+                                            .text_size(type_size::CAPTION)
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.muted_foreground)
                                             .child(count.to_string()),
@@ -1073,7 +2242,7 @@ impl TableDelegate for BoardTableDelegate {
                                     // content: read, not greyed out.
                                     header.child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(type_size::CAPTION)
                                             .text_color(if *collapsed {
                                                 theme.secondary_foreground
                                             } else {
@@ -1118,13 +2287,27 @@ impl TableDelegate for BoardTableDelegate {
             // and flattens individual CI-fail / conflict rows into one alarm
             // block (design review, 2026-07-24). Zebra striping stays; state
             // lives in the Note cell.
-            Some(DisplayRow::Pr(ix)) => tr
-                // Built-in striping generates filler rows below the data.
-                // Style real PRs here instead; headers keep their own bands.
-                .when(ix % 2 != 0, |row| row.bg(theme.table_even))
-                .when(self.stack_ends_at(row_ix), |row| {
-                    row.border_b_1().border_color(theme.border)
-                }),
+            Some(DisplayRow::Pr(ix)) => {
+                let selected = self
+                    .rows
+                    .get(*ix)
+                    .is_some_and(|row| self.multi.contains(&row.id));
+                let intent = self.click_intent.clone();
+                tr
+                    // Built-in striping generates filler rows below the data.
+                    // Style real PRs here instead; headers keep their own bands.
+                    .when(ix % 2 != 0, |row| row.bg(theme.table_even))
+                    // Part of a multi-selection: the caret row's tint without
+                    // its border, which the framework draws on the caret.
+                    .when(selected, |row| row.bg(theme.table_active))
+                    .when(self.stack_ends_at(row_ix), |row| {
+                        row.border_b_1().border_color(theme.border)
+                    })
+                    // The click's modifiers, for the `SelectRow` it becomes.
+                    .on_mouse_down(MouseButton::Left, move |event, _, _| {
+                        intent.set(Some((row_ix, ClickIntent::from_modifiers(event.modifiers))));
+                    })
+            }
             None => tr,
         }
     }
@@ -1138,612 +2321,25 @@ impl TableDelegate for BoardTableDelegate {
     ) -> impl IntoElement {
         // Header rows carry no cell content — the label is an overlay from
         // render_tr; empty (transparent) cells let it show through.
-        let row = match self.display.get(row_ix) {
-            Some(DisplayRow::Pr(i)) => match self.rows.get(*i) {
-                Some(r) => r,
-                None => return div().into_any_element(),
-            },
+        let at = match self.display.get(row_ix) {
+            Some(&DisplayRow::Pr(i)) if i < self.rows.len() => i,
             _ => return div().into_any_element(),
         };
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        // Draft rows dim their text — inactive, not merely different.
-        let dim = row.draft;
 
-        let cell = match self.columns[col_ix].key.as_ref() {
-            "pr" => {
-                // Single-click link (critique #5): the blue #number opens the
-                // PR. Drafts need no badge here: they have their own section,
-                // a dimmed number, and a Note that starts with "draft".
-                let url = row.url.clone();
-                let number = h_flex()
-                    .id(("pr-link", row_ix))
-                    .cursor_pointer()
-                    .text_color(if dim { muted } else { theme.link })
-                    .hover(|this| this.underline())
-                    .child(format!("#{}", row.number))
-                    // Stop the click bubbling to the row (which would also open
-                    // the PR / start a double-click) and open only on a single
-                    // click — the gpui-component `Link` pattern (critique #3).
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
-                        if e.click_count() == 1 {
-                            cx.open_url(&url);
-                        }
-                    }));
-                let mut cell = h_flex()
-                    .relative()
-                    .w_full()
-                    .h(px(20.))
-                    .pr(px(24.))
-                    .gap_1()
-                    .items_center();
-                if let Some(tooltip) = self.changed.get(&row.id).cloned() {
-                    // A padded hover target (offset by an equal negative
-                    // margin) so the 7px dot is easy to point at without
-                    // shifting the PR number.
-                    cell = cell.child(
-                        div()
-                            .id(("changed-marker", row_ix))
-                            .flex_shrink_0()
-                            .p(px(4.))
-                            .m(px(-4.))
-                            .child(status_dot(theme.link))
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(tooltip.clone()).build(window, cx)
-                            }),
-                    );
-                }
-                cell = cell.child(number);
-                if let Some(handler) = self.on_row_action.clone() {
-                    let watched = self.watched.contains(&row.id);
-                    let watched_row = row.clone();
-                    cell = cell.child(
-                        div()
-                            .id(("watch-pr", row_ix))
-                            .absolute()
-                            .right_0()
-                            .top_0()
-                            .flex_shrink_0()
-                            .size(px(20.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_color(if watched {
-                                theme.foreground
-                            } else {
-                                theme.muted_foreground.opacity(0.55)
-                            })
-                            .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
-                            .child(
-                                gpui::svg()
-                                    .path("icons/binoculars.svg")
-                                    .size(px(15.))
-                                    .text_color(if watched {
-                                        theme.foreground
-                                    } else {
-                                        theme.muted_foreground.opacity(0.55)
-                                    }),
-                            )
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(if watched {
-                                    "Unwatch PR · w"
-                                } else {
-                                    "Watch PR · w"
-                                })
-                                .build(window, cx)
-                            })
-                            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                                cx.stop_propagation();
-                                if event.click_count == 1 {
-                                    handler(watched_row.clone(), RowAction::Watch, window, cx);
-                                }
-                            })
-                            .on_click(|_, _, cx| cx.stop_propagation()),
-                    );
-                }
-                return cell.into_any_element();
-            }
-            "labels" => {
-                if row.labels.is_empty() {
-                    // Blank, not a dash: three vertical bands of "—" start to
-                    // read as data (design review). Dashes stay only where
-                    // "none" is a meaningful status (CI).
-                    div()
-                } else {
-                    // Chips; "bug" is the loud one. Only whole chips are
-                    // drawn — each is a click target — and the rest fold into
-                    // "+n". The tooltip carries the full list.
-                    let full = row.labels.join(", ");
-                    // "bug" must never hide behind the +n overflow, and in
-                    // All open a label nearly every row carries goes last.
-                    let ordered = label_order(&row.labels, &self.common_labels);
-                    // 🐛 is the single permitted emoji: semantic, not decorative.
-                    let texts: Vec<String> = ordered
-                        .iter()
-                        .map(|label| {
-                            if label == "bug" {
-                                format!("🐛 {label}")
-                            } else {
-                                label.clone()
-                            }
-                        })
-                        .collect();
-                    let avail = f32::from(self.columns[col_ix].width) - CELL_PAD_X - ELIDE_SAFETY;
-                    let widths: Vec<f32> = texts.iter().map(|t| chip_width(window, t)).collect();
-                    let more: Vec<f32> = (0..=texts.len())
-                        .map(|n| chip_width(window, &format!("+{n}")))
-                        .collect();
-                    let shown = chips_that_fit(&widths, |n| more[n], avail, GAP_1);
-                    let mut visible: Vec<(usize, String)> =
-                        texts.iter().cloned().enumerate().take(shown).collect();
-                    if shown == 0 {
-                        // Not even one whole chip: shorten the first one.
-                        let left_out = texts.len() - 1;
-                        let reserve = if left_out == 0 {
-                            0.0
-                        } else {
-                            GAP_1 + more[left_out]
-                        };
-                        let room = avail - reserve - chip_chrome();
-                        if room >= CHIP_TEXT_MIN {
-                            visible.push((0, elide_chip_text(window, &texts[0], px(room))));
-                        }
-                    }
-                    let hidden = texts.len() - visible.len();
-                    let mut chips = h_flex().gap_1().flex_shrink_0();
-                    let (hover_border, hover_text) = (muted, theme.foreground);
-                    for (ix, text) in visible {
-                        let label = &ordered[ix];
-                        let chip = label_chip(theme)
-                            .flex_shrink_0()
-                            .text_color(theme.secondary_foreground)
-                            .child(text);
-                        // A click filters the board by the label. It must not
-                        // reach the row, which would select it or open details.
-                        chips = chips.child(match self.on_filter_click.clone() {
-                            Some(handler) => {
-                                let filter = FilterChip::new(Qualifier::Label, label.as_str());
-                                chip.id(("label-chip", ix))
-                                    .cursor_pointer()
-                                    .hover(|style| {
-                                        style.border_color(hover_border).text_color(hover_text)
-                                    })
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(move |event: &ClickEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        if event.click_count() == 1 {
-                                            handler(filter.clone(), window, cx);
-                                        }
-                                    })
-                                    .into_any_element()
-                            }
-                            None => chip.into_any_element(),
-                        });
-                    }
-                    // "+n" sits outside the chips' tooltip, which would
-                    // otherwise open over the menu it drops down.
-                    let mut cell = h_flex().gap_1().overflow_hidden();
-                    let tip: SharedString = if self.on_filter_click.is_some() {
-                        format!("{full}\nClick a label to search for label:<name>").into()
-                    } else {
-                        full.into()
-                    };
-                    cell =
-                        cell.child(chips.id(("labels", row_ix)).tooltip(move |window, cx| {
-                            Tooltip::new(tip.clone()).build(window, cx)
-                        }));
-                    if hidden > 0 {
-                        let more = format!("+{hidden}");
-                        cell = cell.child(match self.on_filter_click.clone() {
-                            // "+n" opens the hidden labels, each a filter.
-                            Some(handler) => {
-                                let rest = ordered[ordered.len() - hidden..].to_vec();
-                                div()
-                                    .flex_shrink_0()
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .child(
-                                        Button::new(("more-labels", row_ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .h(px(CHIP_HEIGHT))
-                                            .px(px(CHIP_PAD_X))
-                                            .rounded(px(CHIP_RADIUS))
-                                            .bg(theme.muted)
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .child(
-                                                // A Button label ignores the
-                                                // button's text size.
-                                                div()
-                                                    .text_size(px(CHIP_TEXT_PX))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(muted)
-                                                    .child(more),
-                                            )
-                                            .dropdown_menu(move |mut menu, _, _| {
-                                                menu = menu
-                                                    .label("Filter by label")
-                                                    .scrollable(true)
-                                                    .max_h(px(320.));
-                                                for label in &rest {
-                                                    let handler = handler.clone();
-                                                    let target =
-                                                        FilterChip::new(Qualifier::Label, label);
-                                                    menu = menu.item(
-                                                        PopupMenuItem::new(label.clone()).on_click(
-                                                            move |_, window, cx| {
-                                                                handler(target.clone(), window, cx)
-                                                            },
-                                                        ),
-                                                    );
-                                                }
-                                                menu
-                                            }),
-                                    )
-                                    .into_any_element()
-                            }
-                            None => label_chip(theme)
-                                .flex_shrink_0()
-                                .text_color(muted)
-                                .child(more)
-                                .into_any_element(),
-                        });
-                    }
-                    return cell.into_any_element();
-                }
-            }
-            // The calm rule (spec §8): bad states get colored text, good
-            // states get only a colored dot with muted text.
-            "ci" => match row.ci {
-                Ci::Pass => h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(status_dot(theme.success))
-                    .child(div().text_color(muted).child("pass")),
-                Ci::Fail => h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(status_dot(theme.danger))
-                    .child(div().text_color(theme.danger).child("fail")),
-                Ci::Running => h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(status_dot(theme.warning))
-                    .child(div().text_color(muted).child("running")),
-                Ci::None => h_flex().child(div().text_color(muted.opacity(0.5)).child("—")),
-                // The token may not read the checks: a word, never the dash
-                // that means "no checks".
-                Ci::Hidden => h_flex().child(div().text_color(muted).child("hidden")),
-            },
-            "repo" => {
-                let chip = FilterChip::new(Qualifier::Repo, row.repo.as_str());
-                return div()
-                    .text_color(muted)
-                    .child(self.filter_target(
-                        ("repo-filter", row_ix),
-                        row.repo.clone(),
-                        Some(chip),
-                    ))
-                    .into_any_element();
-            }
-            "author" => {
-                let chip = row
-                    .author
-                    .as_deref()
-                    .map(|author| FilterChip::new(Qualifier::Author, author));
-                let text = row.author.clone().unwrap_or_else(|| "?".into());
-                return self
-                    .filter_target(("author-filter", row_ix), text, chip)
-                    .into_any_element();
-            }
-            "unresolved" => {
-                if row.unresolved > 0 {
-                    div()
-                        .text_color(theme.warning)
-                        .child(if row.unresolved_capped {
-                            format!("{}+", row.unresolved)
-                        } else {
-                            row.unresolved.to_string()
-                        })
-                } else {
-                    div()
-                }
-            }
-            "review" => {
-                // Merged Requested + Reviewed by: completed reviews win (they
-                // supersede a pending request); else show who's requested; else
-                // "Not requested". Most cells were empty split across two
-                // columns — this recovers ~150px for Title/Note. The wording,
-                // the glyphs and the order are core's, so the iPad says the
-                // same; only the colours are the theme's.
-                match review_cell(row) {
-                    ReviewCell::Reviewed {
-                        marks,
-                        summary,
-                        hover,
-                    } => {
-                        let mut cell = h_flex().gap_2().items_center().overflow_hidden();
-                        for mark in marks {
-                            cell = cell.child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .whitespace_nowrap()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(tone_color(mark.tone, theme))
-                                            .child(mark.glyph),
-                                    )
-                                    .child(mark.login),
-                            );
-                        }
-                        cell = cell.child(div().flex_shrink_0().text_color(muted).child(summary));
-                        return cell
-                            .id(("review", row_ix))
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(hover.clone()).build(window, cx)
-                            })
-                            .into_any_element();
-                    }
-                    ReviewCell::Requested {
-                        names,
-                        arrow,
-                        suffix,
-                        hover,
-                    } => {
-                        let full = hover;
-                        // Elide the names to the room left by the "→" and the
-                        // "— requested" suffix (both flex_shrink_0), with a real "…".
-                        let arrow_w = measure_width(window, &arrow);
-                        let suffix_w = measure_width(window, &suffix);
-                        let col_w = self.columns[col_ix].width;
-                        let avail = col_w
-                            - arrow_w
-                            - suffix_w
-                            - px(CELL_PAD_X + GAP_1 + GAP_1 + ELIDE_SAFETY);
-                        let names = elide(window, &names, avail);
-                        return h_flex()
-                            .w_full()
-                            .gap_1()
-                            .items_center()
-                            .overflow_hidden()
-                            .child(div().flex_shrink_0().text_color(muted).child(arrow))
-                            .child(div().flex_shrink_0().child(names))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_color(muted.opacity(0.7))
-                                    .child(suffix),
-                            )
-                            .id(("review", row_ix))
-                            .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                            .into_any_element();
-                    }
-                    ReviewCell::NotRequested { text } => div().text_color(muted).child(text),
-                }
-            }
-            "title" => {
-                let mut full = match &row.issue {
-                    Some(issue) => format!("{issue} · {}", row.title),
-                    None => row.title.clone(),
-                };
-                let stack_prefix = row.stack.as_ref().map(|s| {
-                    let position = s.position.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
-                    full.push_str(&format!("\nStack #{} · layer {}/{} · base {}. Only matching PRs are shown; layers may be in other sections.", s.number, position, s.size, s.base_ref_name));
-                    let branch = if self.stack_ends_at(row_ix) { "└─" } else { "├─" };
-                    format!("{branch} {position}/{}", s.size)
-                });
-                let stack_w = stack_prefix
-                    .as_deref()
-                    .map(|s| measure_width(window, s) + px(GAP_1))
-                    .unwrap_or(px(0.));
-                let tag_color = if dim { muted } else { theme.accent_foreground };
-                // Elide the title to the width the flexible region actually has
-                // (column minus the issue tag, gap and cell padding). A real
-                // "…", not a mid-word clip — the affordance that says "there's
-                // more, hover" (critique #3). Done by hand via `elide` because
-                // gpui's in-cell `.truncate()` is inert in this table.
-                let col_w = self.columns[col_ix].width;
-                let issue_w = row
-                    .issue
-                    .as_deref()
-                    .map(|s| measure_width(window, s))
-                    .unwrap_or(px(0.));
-                let gap = if row.issue.is_some() { GAP_1 } else { 0.0 };
-                let avail = col_w - issue_w - stack_w - px(CELL_PAD_X + gap + ELIDE_SAFETY);
-                let title = elide(window, &row.title, avail);
-                let inner = match (&row.issue, &row.issue_url) {
-                    // A linked issue is a single-click link of its own
-                    // (critique #5): the tag opens the tracker, not the PR.
-                    (Some(issue), Some(issue_url)) => {
-                        let issue_url = issue_url.clone();
-                        h_flex()
-                            .w_full()
-                            .gap_1()
-                            .overflow_hidden()
-                            .when(dim, |t| t.text_color(muted))
-                            .child(
-                                h_flex()
-                                    .id(("issue-link", row_ix))
-                                    .flex_shrink_0()
-                                    .cursor_pointer()
-                                    .text_color(if dim { muted } else { theme.link })
-                                    .hover(|this| this.underline())
-                                    .child(issue.clone())
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
-                                        if e.click_count() == 1 {
-                                            cx.open_url(&issue_url)
-                                        }
-                                    })),
-                            )
-                            .child(div().flex_shrink_0().child(title))
-                    }
-                    (Some(issue), None) => h_flex()
-                        .w_full()
-                        .gap_1()
-                        .overflow_hidden()
-                        .when(dim, |t| t.text_color(muted))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_color(tag_color)
-                                .child(issue.clone()),
-                        )
-                        .child(div().flex_shrink_0().child(title)),
-                    (None, _) => h_flex().w_full().overflow_hidden().child(
-                        div()
-                            .flex_shrink_0()
-                            .when(dim, |t| t.text_color(muted))
-                            .child(title),
-                    ),
-                };
-                return h_flex()
-                    .w_full()
-                    .gap_1()
-                    .overflow_hidden()
-                    .when_some(stack_prefix, |this, prefix| {
-                        this.child(div().flex_shrink_0().text_color(muted).child(prefix))
-                    })
-                    .child(inner)
-                    .id(("title", row_ix))
-                    .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                    .into_any_element();
-            }
-            "note" => {
-                // Exception-first Note (note-hierarchy plan): the dot + a single
-                // emphasized primary phrase carry the row's worst blocker;
-                // every other blocker trails as muted context so nothing hides
-                // in the tooltip. Only genuinely exceptional blockers get red —
-                // routine "assign reviewers" / "resolve N" rows are amber-muted,
-                // so a column of them no longer reads as one red wall.
-                let NotePresentation {
-                    tone,
-                    primary,
-                    remedy,
-                    context,
-                    mut tooltip,
-                } = note_presentation(row);
-                // How long it has waited for a reviewer trails the Note and,
-                // like the primary, never elides; a stale wait is amber.
-                let now = Utc::now();
-                let wait = waiting_secs(row, now).map(|secs| {
-                    let stale = is_stale(row, now, self.stale_after_days);
-                    (format!(" · {}", wait_label(secs)), stale)
-                });
-                if let Some((label, stale)) = &wait {
-                    tooltip.push_str(&format!(
-                        "\nWaiting for a reviewer:{}{}",
-                        label.trim_start_matches(" ·"),
-                        if *stale { " (stale)" } else { "" }
-                    ));
-                }
-                // In the review queue and All open the size band trails
-                // last, muted: both are lists to pick a review from.
-                let size = row
-                    .size
-                    .filter(|_| matches!(self.mode, Mode::Review | Mode::AllOpen));
-                if let Some(size) = size {
-                    tooltip.push_str(&format!("\nSize: {}", size_text(size)));
-                }
-                let size = size.map(|size| format!(" · {}", size.band().label()));
-                let (dot_color, primary_color) = match tone {
-                    Tone::Danger => (Some(theme.danger), theme.danger),
-                    Tone::Warning => (Some(theme.warning), muted),
-                    Tone::Success => (Some(theme.success), muted),
-                    Tone::Routine => (Some(muted), muted),
-                    Tone::Muted => (None, muted),
-                };
-                // The muted tail: the primary's remedy, then the remaining
-                // blockers as context, in presentation-priority order.
-                let mut tail = String::new();
-                if let Some(remedy) = &remedy {
-                    tail.push_str(" — ");
-                    tail.push_str(remedy);
-                }
-                for fact in &context {
-                    tail.push_str(" · ");
-                    tail.push_str(fact);
-                }
-                // pr_2: the terminal column needs an optical margin the 6px
-                // cell pad doesn't give (critique #4).
-                let mut cell = h_flex()
-                    .w_full()
-                    .gap_1p5()
-                    .items_center()
-                    .overflow_hidden()
-                    .pr_2();
-                if let Some(color) = dot_color {
-                    cell = cell.child(status_dot(color));
-                }
-                // The muted tail absorbs the ellipsis when the row is narrow;
-                // the wait and size never elide. The primary is shortened only
-                // when it cannot fit beside them on its own: a calm note is
-                // one whole sentence, and clipped it would hide the wait.
-                // (A real "…", see `elide`.)
-                let dot_region = if dot_color.is_some() {
-                    STATUS_DOT + GAP_1P5
-                } else {
-                    0.0
-                };
-                let wait_w = wait
-                    .as_ref()
-                    .map_or(px(0.), |(label, _)| measure_width(window, label));
-                let size_w = size
-                    .as_ref()
-                    .map_or(px(0.), |label| measure_width(window, label));
-                let room = self.columns[col_ix].width
-                    - wait_w
-                    - size_w
-                    - px(CELL_PAD_X + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
-                let mut primary_w = measure_width(window, &primary);
-                let primary = if primary_w > room {
-                    let shortened = elide(window, &primary, room);
-                    primary_w = measure_width(window, &shortened);
-                    shortened
-                } else {
-                    primary
-                };
-                cell = cell.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_color(primary_color)
-                        .child(primary),
-                );
-                let tail_room = room - primary_w;
-                // Below a few characters' room the tail would be a bare "…".
-                if !tail.is_empty() && tail_room >= px(TAIL_MIN) {
-                    let tail = elide(window, &tail, tail_room);
-                    cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
-                }
-                if let Some((label, stale)) = wait {
-                    cell = cell.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_color(if stale { theme.warning } else { muted })
-                            .child(label),
-                    );
-                }
-                if let Some(label) = size {
-                    cell = cell.child(div().flex_shrink_0().text_color(muted).child(label));
-                }
-                return cell
-                    .id(("note", row_ix))
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .into_any_element();
-            }
-            _ => div(),
+        let Some(kind) = self.kinds.get(col_ix).copied().flatten() else {
+            return div().into_any_element();
         };
-        cell.into_any_element()
+        match kind {
+            ColumnKind::Pr => self.pr_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Labels => self.labels_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Ci => self.ci_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Repo => self.repo_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Author => self.author_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Unresolved => self.unresolved_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Review => self.review_column_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Title => self.title_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Note => self.note_cell(at, row_ix, col_ix, window, cx),
+        }
     }
 
     fn render_last_empty_col(
@@ -1765,12 +2361,24 @@ impl TableDelegate for BoardTableDelegate {
         // "nothing here" so an empty Review queue never reads as no authored
         // PRs. Text only — the default empty view pulls an SVG from an asset
         // bundle this app does not ship.
-        let msg = prmarmot_core::status::queue_empty_text(self.mode, self.all_repos);
-        h_flex()
+        let empty =
+            prmarmot_core::status::queue_empty(self.mode, self.all_repos, self.can_load_more);
+        let handler = self.on_empty_action.clone();
+        gpui_component::v_flex()
             .size_full()
+            .gap_3()
+            .items_center()
             .justify_center()
             .text_color(cx.theme().muted_foreground)
-            .child(msg)
+            .child(empty.text)
+            .when_some(empty.action.zip(handler), |body, (action, handler)| {
+                body.child(
+                    Button::new("empty-action")
+                        .small()
+                        .label(action.label())
+                        .on_click(move |_, window, cx| handler(action, window, cx)),
+                )
+            })
     }
 }
 
@@ -1783,7 +2391,7 @@ mod tests {
     use super::*;
     use prmarmot_core::board::{Blocker, Category, ReviewState};
     use prmarmot_core::layout::group_label;
-    use prmarmot_core::search::matches_filter;
+    use prmarmot_core::search::{matches_filter, matches_search};
 
     fn rule() -> StaleRule {
         StaleRule {
@@ -1853,6 +2461,7 @@ mod tests {
             created_at: String::new(),
             waiting_since: None,
             size: None,
+            checks: None,
             note: String::new(),
         }
     }
@@ -2024,6 +2633,7 @@ mod tests {
         );
 
         d.set_scope(true);
+        d.rebuild_display();
         assert!(matches!(
             &d.display[1],
             DisplayRow::Header { label, .. } if label == "acme/widgets · Stack #7"
@@ -2567,6 +3177,87 @@ mod tests {
         assert!(d
             .display_index_of_url("https://github.com/acme/widgets/pull/999")
             .is_none());
+    }
+
+    #[test]
+    fn a_range_takes_every_pr_between_two_rows_and_skips_the_headers() {
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![
+            row(1, Category::Action),
+            row(2, Category::Action),
+            row(3, Category::Await),
+            row(4, Category::Draft),
+        ]);
+        let first = d
+            .display_index_of_url(&row(1, Category::Action).url)
+            .unwrap();
+        let last = d
+            .display_index_of_url(&row(4, Category::Draft).url)
+            .unwrap();
+        assert!(last - first > 3, "headers lie between the sections");
+        let ids = d.ids_between(last, first);
+        assert_eq!(
+            ids,
+            (1..=4)
+                .map(|n| format!("https://github.com/acme/widgets/pull/{n}"))
+                .collect::<Vec<_>>(),
+            "both ends in, display order, headers out"
+        );
+        d.set_multi(ids);
+        assert_eq!(d.multi_len(), 4);
+        assert_eq!(
+            d.multi_rows().iter().map(|r| r.number).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(d.visible_pr_ids().len(), 4);
+    }
+
+    #[test]
+    fn a_toggle_grows_from_the_caret_and_one_row_left_is_the_caret_again() {
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![row(1, Category::Action), row(2, Category::Action)]);
+        let (one, two) = (row(1, Category::Action).id, row(2, Category::Action).id);
+        assert!(!d.multi_active());
+        // ⌘-click #2 while the caret is on #1: both selected.
+        assert!(d.toggle_multi(&two, Some(&one)));
+        assert!(d.in_multi(&one) && d.in_multi(&two));
+        // ⌘-click #2 again: it leaves, #1 alone is no longer a multi-selection.
+        assert!(!d.toggle_multi(&two, Some(&one)));
+        assert_eq!(d.multi_len(), 1);
+        let caret = d.nearest_multi_index(d.display_index_of_url(&two).unwrap());
+        assert_eq!(caret, d.display_index_of_url(&one));
+        d.clear_multi();
+        assert!(!d.multi_active());
+    }
+
+    #[test]
+    fn a_refresh_drops_selected_prs_that_left_the_board() {
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![
+            row(1, Category::Action),
+            row(2, Category::Action),
+            row(3, Category::Action),
+        ]);
+        d.set_multi(d.visible_pr_ids());
+        assert_eq!(d.multi_len(), 3);
+        d.set_rows(vec![row(3, Category::Action), row(1, Category::Action)]);
+        assert_eq!(d.multi_len(), 2, "#2 merged; #1 and #3 stay selected");
+        assert_eq!(
+            d.multi_rows().iter().map(|r| r.number).collect::<Vec<_>>(),
+            [3, 1],
+            "in the new display order"
+        );
+        let copy = d.selection_copy(ShareFormat::Urls).unwrap();
+        assert_eq!(copy.count, 2);
+        assert_eq!(
+            copy.payload.plain,
+            "https://github.com/acme/widgets/pull/3\nhttps://github.com/acme/widgets/pull/1"
+        );
+        d.set_rows(vec![row(1, Category::Action)]);
+        assert!(
+            !d.multi_active(),
+            "one row left is the caret row, not a selection"
+        );
     }
 
     // ---- Responsive layout (Phase 3) + manual-resize preservation (Phase 4) ----

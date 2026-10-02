@@ -1,5 +1,4 @@
 //! PR Marmot — a GitHub PR review dashboard as a native desktop app.
-//! Step-0 walking skeleton: one window, one repo, the authored view.
 
 mod app;
 mod assets;
@@ -15,7 +14,6 @@ mod settings;
 mod state;
 mod table;
 mod theme;
-pub mod updates;
 
 use std::sync::Arc;
 
@@ -25,6 +23,7 @@ use gpui::{
 };
 use prmarmot_core::board::{BoardConfig, BoardScope, Mode};
 use prmarmot_core::github::gh_cli::GhCliTransport;
+use prmarmot_local::updates;
 
 use crate::app::RootView;
 use crate::state::{AppState, AttentionPreferences, ConfiguredConnector};
@@ -139,6 +138,9 @@ fn board_config(file: &config::FileConfig) -> BoardConfig {
 }
 
 fn main() {
+    // Before anything else: a Dock-launched app has no terminal, so a panic
+    // leaves a one-line record (never its message) under the state directory.
+    prmarmot_local::panic_log::install(env!("CARGO_PKG_VERSION"));
     // The staged helper is this same executable. Dispatch its fixed protocol
     // before normal CLI parsing or any GPUI/platform initialization.
     match updates::HelperInvocation::parse_cli_args(std::env::args_os().skip(1)) {
@@ -180,12 +182,8 @@ fn main() {
         _ => Mode::Authored,
     });
 
-    let scope = config::resolve_scope(
-        scope_arg,
-        std::env::var("PRMARMOT_REPO").ok(),
-        std::env::var("PRMARMOT_SCOPE").ok().as_deref(),
-        &file,
-    );
+    let env = prmarmot_local::config::EnvOverrides::current();
+    let scope = config::resolve_scope(scope_arg, env.repo, env.scope.as_deref(), &file);
     let config = board_config(&file);
     // How this run gets a token: a token stored by PR Marmot, else `gh`.
     // Re-resolved by the onboarding screen after a sign-in.
@@ -225,12 +223,7 @@ fn main() {
         collapsed: app::collapsed_from(&file),
         details_position: prmarmot_local::config::details_position(&file),
     };
-    let attention_preferences = AttentionPreferences {
-        notifications: file.notifications,
-        notification_sound: file.notification_sound,
-        notify_all_needs_action: file.notify_all_needs_action,
-        dock_badge: file.dock_badge,
-    };
+    let attention_preferences = AttentionPreferences::from_file(&file);
     let window_pref = file.window;
     let onboarding_auth = auth.clone();
 
