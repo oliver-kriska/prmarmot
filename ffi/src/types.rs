@@ -371,6 +371,34 @@ impl From<CommitsSinceReview> for core_board::CommitsSinceReview {
         }
     }
 }
+
+/// A check or status on the latest commit that failed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+pub struct FailedCheck {
+    /// The check run's name or the status's context, as GitHub shows it.
+    pub name: String,
+    /// The run's page, when GitHub gave one.
+    pub url: Option<String>,
+}
+
+impl From<&core_board::FailedCheck> for FailedCheck {
+    fn from(check: &core_board::FailedCheck) -> Self {
+        Self {
+            name: check.name.clone(),
+            url: check.url.clone(),
+        }
+    }
+}
+
+impl From<FailedCheck> for core_board::FailedCheck {
+    fn from(check: FailedCheck) -> Self {
+        Self {
+            name: check.name,
+            url: check.url,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
 pub struct Review {
     /// `None` when the reviewer's account is gone; the review still counts.
@@ -552,6 +580,15 @@ pub struct PullRequest {
     pub reviews: Vec<Review>,
     pub my_review: Option<String>,
     pub unresolved_threads: u32,
+    /// The files the unresolved threads are on, each once, newest first; at
+    /// most 20.
+    #[serde(default)]
+    #[uniffi(default = [])]
+    pub unresolved_paths: Vec<String>,
+    /// The checks on the latest commit that failed, newest first; at most 10.
+    #[serde(default)]
+    #[uniffi(default = [])]
+    pub failed_checks: Vec<FailedCheck>,
     /// The PR has more review threads than the newest 100 that were read, so
     /// `unresolved_threads` may be low; the core Note then says "5+".
     #[serde(default)]
@@ -631,6 +668,8 @@ impl PullRequest {
             my_review: row.my_review.as_ref().map(|r| r.as_str().to_owned()),
             unresolved_threads: row.unresolved as u32,
             unresolved_capped: row.unresolved_capped,
+            unresolved_paths: row.unresolved_paths.clone(),
+            failed_checks: row.failed_checks.iter().map(Into::into).collect(),
             labels: row.labels.clone(),
             bug: row.bug,
             note: row.note.clone(),
@@ -712,6 +751,8 @@ impl PullRequest {
             my_review: self.my_review.map(Into::into),
             unresolved: self.unresolved_threads as usize,
             unresolved_capped: self.unresolved_capped,
+            failed_checks: self.failed_checks.into_iter().map(Into::into).collect(),
+            unresolved_paths: self.unresolved_paths,
             blockers: self
                 .blockers
                 .iter()

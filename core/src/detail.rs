@@ -46,6 +46,21 @@ pub fn checks_text(checks: CheckCounts) -> String {
     .join(" · ")
 }
 
+/// The open threads as a count, and the files they are on when the row knows:
+/// "2 in src/app.rs, README.md"; "5+" when the count is a lower bound.
+pub fn unresolved_text(row: &BoardRow) -> String {
+    let count = if row.unresolved_capped {
+        format!("{}+", row.unresolved)
+    } else {
+        row.unresolved.to_string()
+    };
+    if row.unresolved == 0 || row.unresolved_paths.is_empty() {
+        count
+    } else {
+        format!("{count} in {}", row.unresolved_paths.join(", "))
+    }
+}
+
 /// A review state in plain words ("changes requested"), never GitHub's enum.
 pub fn review_state_words(state: &ReviewVerdict) -> String {
     match state {
@@ -179,18 +194,17 @@ pub fn detail_fields(
         field(
             DetailKind::Facts,
             Some("Unresolved comments"),
-            if row.unresolved_capped {
-                format!("{}+", row.unresolved)
-            } else {
-                row.unresolved.to_string()
-            },
+            unresolved_text(row),
         ),
     ];
     if let Some(checks) = row.checks {
         fields.push(field(
             DetailKind::Checks,
             Some("Checks"),
-            checks_text(checks),
+            match crate::board::failed_checks_text(row) {
+                Some(names) => format!("{} — failed: {names}", checks_text(checks)),
+                None => checks_text(checks),
+            },
         ));
     }
     fields.extend([
@@ -334,7 +348,9 @@ pub fn copy_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Category, CheckCounts, Ci, ReviewState, ReviewSummary, StackInfo};
+    use crate::board::{
+        Category, CheckCounts, Ci, FailedCheck, ReviewState, ReviewSummary, StackInfo,
+    };
     use crate::size::ChangeSize;
 
     fn row() -> BoardRow {
@@ -367,6 +383,8 @@ mod tests {
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),
@@ -440,6 +458,41 @@ mod tests {
             position: Some(2),
         });
         pr
+    }
+
+    #[test]
+    fn the_checks_and_threads_lines_carry_their_evidence() {
+        let mut pr = full_row();
+        pr.checks = Some(CheckCounts {
+            failed: 2,
+            passed: 11,
+            ..CheckCounts::default()
+        });
+        pr.failed_checks = vec![
+            FailedCheck {
+                name: "lint".into(),
+                url: None,
+            },
+            FailedCheck {
+                name: "test (macOS)".into(),
+                url: Some("https://ci.example.test/runs/9".into()),
+            },
+        ];
+        pr.unresolved = 3;
+        pr.unresolved_paths = vec!["src/app.rs".into(), "README.md".into()];
+        let lines = detail_lines(&pr, Mode::Review, now(), 0);
+        assert_eq!(
+            lines[1],
+            "Author: alice · CI: pass · Unresolved comments: 3 in src/app.rs, README.md"
+        );
+        assert_eq!(
+            lines[2],
+            "Checks: 2 failed · 11 passed — failed: lint, test (macOS)"
+        );
+        pr.unresolved_capped = true;
+        assert_eq!(unresolved_text(&pr), "3+ in src/app.rs, README.md");
+        pr.unresolved_paths.clear();
+        assert_eq!(unresolved_text(&pr), "3+");
     }
 
     #[test]

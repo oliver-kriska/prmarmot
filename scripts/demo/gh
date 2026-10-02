@@ -45,9 +45,17 @@ def rollup(state, number):
         "FAILURE": [("FAILURE", 1), ("SUCCESS", passed), ("SKIPPED", 2)],
         "PENDING": [("IN_PROGRESS", 2), ("SUCCESS", passed)],
     }.get(state, [])
+    # The newest contexts themselves, which name the failing check in the Note.
+    nodes = []
+    if state == "FAILURE":
+        nodes.append({"__typename": "CheckRun", "name": "test (macOS)", "conclusion": "FAILURE",
+                      "detailsUrl": f"https://example.com/demo-labs/actions/runs/{number}"})
+    nodes.append({"__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS",
+                  "detailsUrl": f"https://example.com/demo-labs/actions/runs/{number + 1}"})
     return {"state": state, "contexts": {
         "checkRunCountsByState": [{"state": s, "count": c} for s, c in runs],
         "statusContextCountsByState": [],
+        "nodes": nodes,
     }}
 
 
@@ -109,6 +117,8 @@ def pr(number, title, *, author="demo-user", author_type="User", draft=False,
         "reviewRequests": {"totalCount": len(request_nodes), "nodes": request_nodes},
         "reviews": {"nodes": review_nodes},
         "reviewThreads": {"nodes":
+            [{"isResolved": False, "path": path} for path in
+             ("lib/sync/reconcile.ex", "README.md", "lib/sync/cache.ex")[:unresolved]]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": rollup(ci, number)}}]},
         "timelineItems": {"nodes": timeline},
     }

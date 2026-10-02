@@ -771,7 +771,7 @@ pub fn semantic_notice(previous: Option<&Observation>, row: &BoardRow) -> Option
     {
         return notice(
             NoticeKind::ChangesRequested,
-            "Needs you — changes requested",
+            &format!("Needs you — {}", crate::board::changes_requested_text(row)),
             format!("{} #{} · {}", row.repo, row.number, row.title),
         );
     }
@@ -1317,6 +1317,8 @@ mod tests {
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
             review_decision: None,
             review_state: crate::board::ReviewState::Waiting,
             requested: Vec::new(),

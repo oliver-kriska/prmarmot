@@ -451,6 +451,14 @@ pub struct BoardRow {
     /// `NONE`; see [`standing_review`].
     pub my_review: Option<ReviewVerdict>,
     pub unresolved: usize,
+    /// The checks on the latest commit that failed, newest first, each with
+    /// its run page when GitHub gave one. At most [`MAX_FAILED_CHECKS`], from
+    /// the newest 30 contexts; empty when none failed or the token may not
+    /// read checks.
+    pub failed_checks: Vec<FailedCheck>,
+    /// The files the unresolved review threads are on, each once, newest
+    /// thread first. At most [`MAX_UNRESOLVED_PATHS`].
+    pub unresolved_paths: Vec<String>,
     /// The PR has more review threads than the newest 100 that were read, so
     /// `unresolved` counts only those and may be low ("5+").
     pub unresolved_capped: bool,
@@ -476,6 +484,12 @@ pub struct BoardRow {
 /// guardrail from the PRFlow post-mortem).
 pub const MAX_BOARD_ROWS: usize = 60;
 
+/// How many failing checks a row names (`BoardRow::failed_checks`).
+pub const MAX_FAILED_CHECKS: usize = 10;
+/// How many files a row names for its unresolved threads
+/// (`BoardRow::unresolved_paths`).
+pub const MAX_UNRESOLVED_PATHS: usize = 20;
+
 /// How many commits the PR gained since your latest review, for a row whose
 /// head is no longer the commit you reviewed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -484,6 +498,15 @@ pub struct CommitsSinceReview {
     /// The commit you reviewed is older than the newest 20 read, so `count`
     /// is at least this ("20+").
     pub lower_bound: bool,
+}
+
+/// A check or status on the latest commit that failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedCheck {
+    /// The check run's name or the status's context, as GitHub shows it.
+    pub name: String,
+    /// The run's page (a check's `detailsUrl`, a status's `targetUrl`).
+    pub url: Option<String>,
 }
 pub const MAX_EXPANDED_BOARD_ROWS: usize = 120;
 pub const MAX_PAGES_PER_ALIAS: u8 = 5;
@@ -830,10 +853,10 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
         facts.push(CANNOT_REBASE_NOTE.to_owned());
     }
     if row.ci == Ci::Fail {
-        facts.push("CI failing".to_owned());
+        facts.push(ci_failing_text(row, ": "));
     }
     if row.review_decision == Some(ReviewDecision::ChangesRequested) {
-        facts.push("changes requested".to_owned());
+        facts.push(changes_requested_text(row));
     }
     if row.unresolved > 0 {
         facts.push(unresolved_comments(row.unresolved, row.unresolved_capped));
@@ -1013,6 +1036,8 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         reviews: latest_reviews_excluding(pr, me, &cfg.bots),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
+        failed_checks: derive_failed_checks(pr),
+        unresolved_paths: derive_unresolved_paths(pr),
         unresolved_capped,
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
@@ -1173,6 +1198,96 @@ pub fn commits_since_review_text(row: &BoardRow) -> Option<String> {
         format!("{}{plus} new {noun} since your review", since.count)
     })
 }
+
+/// The latest commit's failing checks and statuses, by the rule the counts
+/// use: a check run whose conclusion is not a pass, a wait, a cancel, a skip,
+/// neutral or stale failed; a status that is not success, pending or
+/// expected failed. Each name once, in GitHub's order (newest first).
+fn derive_failed_checks(pr: &RawPr) -> Vec<FailedCheck> {
+    let Some(contexts) = latest_rollup(pr)
+        .filter(|rollup| !rollup.hidden)
+        .and_then(|rollup| rollup.contexts.as_ref())
+        .and_then(|contexts| contexts.nodes.as_ref())
+    else {
+        return Vec::new();
+    };
+    let mut failed: Vec<FailedCheck> = Vec::new();
+    for context in contexts {
+        let (name, url, is_failure) = match context.typename.as_deref() {
+            Some("CheckRun") => (
+                context.name.as_deref(),
+                context.details_url.as_deref(),
+                check_run_failed(context.conclusion.as_deref()),
+            ),
+            Some("StatusContext") => (
+                context.context.as_deref(),
+                context.target_url.as_deref(),
+                status_failed(context.state.as_deref()),
+            ),
+            _ => continue,
+        };
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        if is_failure && !failed.iter().any(|known| known.name == name) {
+            failed.push(FailedCheck {
+                name: name.to_owned(),
+                url: url.filter(|url| !url.is_empty()).map(str::to_owned),
+            });
+            if failed.len() == MAX_FAILED_CHECKS {
+                break;
+            }
+        }
+    }
+    failed
+}
+
+/// [`CheckCounts::from_contexts`]'s rule for one check run's conclusion. A
+/// run still going has no conclusion.
+fn check_run_failed(conclusion: Option<&str>) -> bool {
+    !matches!(
+        conclusion,
+        None | Some(
+            "SUCCESS"
+                | "PENDING"
+                | "QUEUED"
+                | "IN_PROGRESS"
+                | "WAITING"
+                | "CANCELLED"
+                | "SKIPPED"
+                | "NEUTRAL"
+                | "COMPLETED"
+                | "STALE"
+        )
+    )
+}
+
+/// [`CheckCounts::from_contexts`]'s rule for one commit status's state.
+fn status_failed(state: Option<&str>) -> bool {
+    !matches!(state, None | Some("SUCCESS" | "PENDING" | "EXPECTED"))
+}
+
+/// The files the unresolved threads are on, each once, in GitHub's order
+/// (newest thread first within the window read).
+fn derive_unresolved_paths(pr: &RawPr) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for thread in pr.review_threads.nodes.iter().rev() {
+        if thread.is_resolved {
+            continue;
+        }
+        let Some(path) = thread.path.as_deref().filter(|path| !path.is_empty()) else {
+            continue;
+        };
+        if !paths.iter().any(|known| known == path) {
+            paths.push(path.to_owned());
+            if paths.len() == MAX_UNRESOLVED_PATHS {
+                break;
+            }
+        }
+    }
+    paths
+}
+
 /// How the latest commit's checks stand, counted from GitHub's per-state
 /// counts of check runs and commit statuses together. The CI column says one
 /// word; the Details panel says these numbers.
@@ -1430,10 +1545,56 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
     blockers
 }
 
+/// The failing checks' names, joined for a Note or a Details line:
+/// "build, lint"; `None` when the row names none.
+pub fn failed_checks_text(row: &BoardRow) -> Option<String> {
+    (!row.failed_checks.is_empty()).then(|| {
+        row.failed_checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// Who asked for changes: the reviewers whose standing review is a change
+/// request, in review order. Empty when the request came from a review the
+/// window did not read.
+pub fn changes_requested_by(row: &BoardRow) -> Vec<&str> {
+    row.reviews
+        .iter()
+        .filter(|review| review.state == ReviewVerdict::ChangesRequested)
+        .filter_map(|review| review.login.as_deref())
+        .collect()
+}
+
+/// "changes requested", naming who asked when the row knows: "changes
+/// requested by bob".
+pub fn changes_requested_text(row: &BoardRow) -> String {
+    let by = changes_requested_by(row);
+    if by.is_empty() {
+        "changes requested".to_owned()
+    } else {
+        format!("changes requested by {}", by.join(", "))
+    }
+}
+
+/// "CI failing", naming the checks when the row knows: "CI failing — build,
+/// lint". `sep` joins the two.
+fn ci_failing_text(row: &BoardRow, sep: &str) -> String {
+    match failed_checks_text(row) {
+        Some(names) => format!("CI failing{sep}{names}"),
+        None => "CI failing".to_owned(),
+    }
+}
+
 /// The exact SKILL.md note fragment for one blocker — the prototype's wording
 /// and emoji, verbatim. The joined fragments reproduce the legacy `note`
-/// byte-for-byte (pinned by the golden tests).
-fn blocker_note(blocker: &Blocker, unresolved_capped: bool) -> String {
+/// byte-for-byte (pinned by the golden tests). The evidence the prototype
+/// never had — the failing checks' names, who asked for changes — follows the
+/// fragment when the row knows it; the fixtures know none, so the goldens
+/// hold.
+fn blocker_note(blocker: &Blocker, row: &BoardRow) -> String {
     match blocker {
         Blocker::NoReviewers { suggested } => {
             if suggested.is_empty() {
@@ -1444,10 +1605,10 @@ fn blocker_note(blocker: &Blocker, unresolved_capped: bool) -> String {
         }
         Blocker::MergeConflict => "🔴 merge conflict — rebase".to_string(),
         Blocker::CannotRebase => format!("🔴 {CANNOT_REBASE_NOTE} — rebase locally"),
-        Blocker::CiFailing => "❌ CI failing".to_string(),
-        Blocker::ChangesRequested => "✋ changes requested".to_string(),
+        Blocker::CiFailing => format!("❌ {}", ci_failing_text(row, " — ")),
+        Blocker::ChangesRequested => format!("✋ {}", changes_requested_text(row)),
         Blocker::UnresolvedComments(n) => {
-            format!("🟡 {}", unresolved_comments(*n, unresolved_capped))
+            format!("🟡 {}", unresolved_comments(*n, row.unresolved_capped))
         }
     }
 }
@@ -1561,7 +1722,7 @@ fn authored_note(row: &BoardRow) -> String {
         Category::Action => row
             .blockers
             .iter()
-            .map(|blocker| blocker_note(blocker, row.unresolved_capped))
+            .map(|blocker| blocker_note(blocker, row))
             .collect::<Vec<_>>()
             .join(" · "),
         Category::Await => match row.review_state {
@@ -1596,7 +1757,10 @@ fn review_note(row: &BoardRow, me: &str) -> String {
     let note = match row.category {
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
-                "⚠️ CI red — maybe wait for green".to_string()
+                match failed_checks_text(row) {
+                    Some(names) => format!("⚠️ CI red: {names} — maybe wait for green"),
+                    None => "⚠️ CI red — maybe wait for green".to_string(),
+                }
             } else if row.conflict {
                 "⚠️ has conflicts".to_string()
             } else if row.category == Category::Available {

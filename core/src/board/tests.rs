@@ -640,6 +640,107 @@ fn kitchen_sink_row_lists_every_blocker_in_prototype_order() {
 }
 
 #[test]
+fn a_note_names_the_failing_checks_who_asked_for_changes_and_the_threads_files() {
+    let evidence = |mut v: serde_json::Value| {
+        v["reviewDecision"] = json!("CHANGES_REQUESTED");
+        v["reviews"]["nodes"] = json!([
+            {"author": {"login": "bob"}, "state": "CHANGES_REQUESTED", "submittedAt": "2026-07-21T10:00:00Z"},
+            {"author": {"login": "github-actions"}, "state": "CHANGES_REQUESTED", "submittedAt": "2026-07-21T11:00:00Z"},
+        ]);
+        v["reviewThreads"]["nodes"] = json!([
+            {"isResolved": true, "path": "old.rs"},
+            {"isResolved": false, "path": "src/app.rs"},
+            {"isResolved": false, "path": "README.md"},
+            {"isResolved": false, "path": "src/app.rs"},
+            {"isResolved": false},
+        ]);
+        v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {
+            "state": "FAILURE",
+            "contexts": {
+                "checkRunCountsByState": [{"state": "FAILURE", "count": 2}, {"state": "SUCCESS", "count": 3}],
+                "statusContextCountsByState": [{"state": "FAILURE", "count": 1}],
+                "nodes": [
+                    {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE", "detailsUrl": "https://ci.example.test/runs/2"},
+                    {"__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS", "detailsUrl": "https://ci.example.test/runs/1"},
+                    {"__typename": "CheckRun", "name": "slow", "conclusion": null},
+                    {"__typename": "CheckRun", "name": "optional", "conclusion": "CANCELLED"},
+                    {"__typename": "CheckRun", "name": "lint", "conclusion": "TIMED_OUT"},
+                    {"__typename": "StatusContext", "context": "ci/vendor: build", "state": "ERROR", "targetUrl": ""},
+                    {"__typename": "StatusContext", "context": "coverage", "state": "SUCCESS"},
+                    {"__typename": "Something", "name": "ignored", "conclusion": "FAILURE"},
+                ]
+            }
+        }}}]);
+        v
+    };
+    let row = derive_one(evidence(base(5)), Mode::Authored);
+    assert_eq!(
+        row.failed_checks,
+        vec![
+            FailedCheck {
+                name: "lint".into(),
+                url: Some("https://ci.example.test/runs/2".into())
+            },
+            FailedCheck {
+                name: "ci/vendor: build".into(),
+                url: None
+            },
+        ],
+        "each failing name once, a blank url is none"
+    );
+    // The newest thread first, each file once, a thread with no path skipped.
+    assert_eq!(row.unresolved_paths, ["src/app.rs", "README.md"]);
+    assert_eq!(row.unresolved, 4);
+    assert_eq!(changes_requested_by(&row), ["bob"], "bots never count");
+    assert_eq!(
+        row.note,
+        "❌ CI failing — lint, ci/vendor: build · ✋ changes requested by bob · \
+         🟡 4 unresolved comments"
+    );
+    // The review queue and someone else's PR say the same things their way.
+    let row = derive_one(evidence(base(5)), Mode::Review);
+    assert_eq!(
+        row.note,
+        "⚠️ CI red: lint, ci/vendor: build — maybe wait for green"
+    );
+    let mut theirs = evidence(base(6));
+    theirs["author"] = json!({"login": "carol"});
+    let row = derive_one(theirs, Mode::AllOpen);
+    assert_eq!(
+        row.note,
+        "CI failing: lint, ci/vendor: build · changes requested by bob · 4 unresolved comments"
+    );
+
+    // Without the evidence (prototype fixtures), the prototype's words.
+    let mut plain = base(7);
+    plain["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]);
+    plain["reviewDecision"] = json!("CHANGES_REQUESTED");
+    let row = derive_one(plain, Mode::Authored);
+    assert!(row.failed_checks.is_empty() && row.unresolved_paths.is_empty());
+    assert_eq!(
+        row.note,
+        "⚠️ no reviewers — assign alice + bob · ❌ CI failing · ✋ changes requested"
+    );
+}
+
+#[test]
+fn failing_checks_and_thread_files_are_bounded() {
+    let mut v = base(8);
+    v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {"nodes": (0..30).map(|i| json!({"__typename": "CheckRun", "name": format!("check {i}"), "conclusion": "FAILURE"})).collect::<Vec<_>>()}
+    }}}]);
+    v["reviewThreads"]["nodes"] = json!((0..60)
+        .map(|i| json!({"isResolved": false, "path": format!("file{i}.rs")}))
+        .collect::<Vec<_>>());
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.failed_checks.len(), MAX_FAILED_CHECKS);
+    assert_eq!(row.failed_checks[0].name, "check 0");
+    assert_eq!(row.unresolved_paths.len(), MAX_UNRESOLVED_PATHS);
+    assert_eq!(row.unresolved_paths[0], "file59.rs", "newest thread first");
+}
+
+#[test]
 fn await_rows_have_no_blockers() {
     let mut v = base(2);
     v["reviews"]["nodes"] = json!([

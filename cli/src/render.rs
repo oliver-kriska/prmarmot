@@ -149,6 +149,11 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         })).collect::<Vec<_>>(),
         "my_review": row.my_review,
         "unresolved_threads": row.unresolved,
+        "unresolved_paths": row.unresolved_paths,
+        "failed_checks": row.failed_checks.iter().map(|check| json!({
+            "name": check.name,
+            "url": check.url,
+        })).collect::<Vec<_>>(),
         "unresolved_threads_capped": row.unresolved_capped,
         "labels": row.labels,
         "issue": row.issue.as_ref().map(|key| json!({ "key": key, "url": row.issue_url })),
@@ -1096,6 +1101,50 @@ mod tests {
             .iter()
             .filter(|pr| pr["number"] != number)
             .all(|pr| pr["merge_queue"].is_null()));
+    }
+
+    #[test]
+    fn json_names_the_failing_checks_and_the_threads_files() {
+        use crate::schema_check::{assert_conforms, Schema};
+        use prmarmot_core::board::FailedCheck;
+        let mut view = sample_view(Mode::Authored);
+        view.rows[0].failed_checks = vec![
+            FailedCheck {
+                name: "lint".into(),
+                url: Some("https://ci.example.test/runs/2".into()),
+            },
+            FailedCheck {
+                name: "ci/vendor: build".into(),
+                url: None,
+            },
+        ];
+        view.rows[0].unresolved_paths = vec!["src/app.rs".into(), "README.md".into()];
+        let number = view.rows[0].number;
+        let value = board_json(&view);
+        assert_conforms(Schema::Board, &value);
+        let prs: Vec<&serde_json::Value> = value["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section["prs"].as_array().unwrap())
+            .collect();
+        let pr = prs.iter().find(|pr| pr["number"] == number).unwrap();
+        assert_eq!(
+            pr["failed_checks"],
+            serde_json::json!([
+                {"name": "lint", "url": "https://ci.example.test/runs/2"},
+                {"name": "ci/vendor: build", "url": null},
+            ])
+        );
+        assert_eq!(
+            pr["unresolved_paths"],
+            serde_json::json!(["src/app.rs", "README.md"])
+        );
+        assert!(prs
+            .iter()
+            .filter(|pr| pr["number"] != number)
+            .all(|pr| pr["failed_checks"].as_array().unwrap().is_empty()
+                && pr["unresolved_paths"].as_array().unwrap().is_empty()));
     }
     #[test]
     fn json_matches_the_published_schema() {

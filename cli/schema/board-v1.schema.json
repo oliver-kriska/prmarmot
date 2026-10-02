@@ -273,6 +273,26 @@
           "type": "boolean",
           "description": "Waited `filters.stale_after_days` or longer at `generated_at` (events: at `at`)."
         },
+        "unresolved_paths": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string" },
+          "description": "The files the unresolved review threads are on, each once, newest thread first; at most 20. Empty when no thread is open or GitHub did not say."
+        },
+        "failed_checks": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["name", "url"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "description": "The check run's name or the commit status's context, as GitHub shows it." },
+              "url": { "type": ["string", "null"], "format": "uri", "description": "The run's page, when GitHub gave one." }
+            }
+          },
+          "description": "The checks on the latest commit that failed, newest first, from the newest 30 contexts; at most 10. Empty when CI is not failing or the token cannot read checks."
+        },
         "agent": {
           "type": "boolean",
           "description": "Opened by a coding agent or another bot: GitHub's `Bot` account type, or an author config `agent_authors` names."

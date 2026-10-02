@@ -89,6 +89,8 @@ pub fn global_available_search_string(who: &str) -> String {
 /// statuses let a cancelled check stop reading as a failure
 /// (`crate::board::derive_ci`); they cost nothing extra (2 points for 30 rows
 /// either way, measured 2026-09-30). The newest 30 contexts' names and run
+/// URLs, and each thread's file path, are plain fields under windows already
+/// paid for: still 2 points and the same wall time (measured 2026-10-02).
 macro_rules! pr_fields {
     () => {
         r#"id url repository { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } updatedAt headRefOid
@@ -102,6 +104,8 @@ macro_rules! pr_fields {
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
   reviews(last:60){ nodes{ author{login} state submittedAt } }
+  reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path } }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:30){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } nodes{ __typename ... on CheckRun{ name conclusion detailsUrl } ... on StatusContext{ context state targetUrl } } } } } } }
   history: commits(last:20){ totalCount nodes{ commit{ oid } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
     };
@@ -514,10 +518,17 @@ pub struct ReviewCommit {
 pub struct HistoryNode {
     pub commit: ReviewCommit,
 }
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadNode {
     pub is_resolved: bool,
+    /// The code the thread was on has since changed.
+    #[serde(default)]
+    pub is_outdated: bool,
+    /// The file the thread is on. Absent from prototype fixtures.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -546,6 +557,31 @@ pub struct RollupContexts {
     /// Commit statuses by `StatusState` (`SUCCESS`, `ERROR`, `PENDING`…).
     #[serde(default)]
     pub status_context_counts_by_state: Option<Vec<StateCount>>,
+    /// The newest contexts themselves. Absent from prototype fixtures.
+    #[serde(default)]
+    pub nodes: Option<Vec<RawContext>>,
+}
+
+/// One check run or commit status on the head commit: a `CheckRun` has a
+/// `name`, a `conclusion` and a `details_url`; a `StatusContext` has a
+/// `context`, a `state` and a `target_url`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawContext {
+    #[serde(default, rename = "__typename")]
+    pub typename: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub details_url: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub target_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -198,6 +198,13 @@ values in the code. New features get the next free number in their area.
   all). The count ends Details' "Your review" line and the "Review again" notification, and the CLI's JSON carries
   `commits_since_review` (count and whether it is a lower bound). One more point per 30 rows, measured.
   _unreleased_
+- **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
+  (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
+  ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'
+  names and its Unresolved comments line with the files the open threads are on ("3 in src/app.rs, README.md").
+  The CLI's JSON carries `failed_checks` (name and run URL, at most 10, from the newest 30 contexts) and
+  `unresolved_paths` (at most 20) on every PR, and the iPad gets the same through ffi. All from plain fields
+  under windows the query already pays for: no extra cost, measured. _unreleased_
 - **F-note-17** An agent's PR that nobody has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
   me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review, a conflict,

@@ -78,12 +78,14 @@ fn is_exceptional(blocker: &Blocker) -> bool {
 }
 
 /// The blocker as the emphasised primary phrase (+ optional muted remedy).
-fn blocker_primary(blocker: &Blocker, unresolved_capped: bool) -> (String, Option<String>) {
+fn blocker_primary(blocker: &Blocker, row: &BoardRow) -> (String, Option<String>) {
+    let unresolved_capped = row.unresolved_capped;
     match blocker {
         Blocker::MergeConflict => ("merge conflict".into(), Some("rebase".into())),
         Blocker::CannotRebase => (CANNOT_REBASE_NOTE.into(), Some("rebase locally".into())),
-        Blocker::CiFailing => ("CI failing".into(), None),
-        Blocker::ChangesRequested => ("changes requested".into(), None),
+        // The failing checks' names take the muted remedy slot: what to look at.
+        Blocker::CiFailing => ("CI failing".into(), crate::board::failed_checks_text(row)),
+        Blocker::ChangesRequested => (crate::board::changes_requested_text(row), None),
         Blocker::UnresolvedComments(n) if unresolved_capped => {
             (format!("resolve {n}+ comments"), None)
         }
@@ -160,7 +162,7 @@ fn action_presentation(row: &BoardRow, tooltip: String) -> NotePresentation {
     } else {
         Tone::Warning
     };
-    let (primary, remedy) = blocker_primary(primary_blocker, row.unresolved_capped);
+    let (primary, remedy) = blocker_primary(primary_blocker, row);
     let context = rest
         .iter()
         .map(|b| blocker_context(b, row.unresolved_capped))
@@ -497,6 +499,8 @@ mod tests {
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
             review_decision: None,
             review_state: ReviewState::Waiting,
             requested: Vec::new(),

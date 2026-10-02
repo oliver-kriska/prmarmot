@@ -488,6 +488,28 @@ pub fn agent_toggle_text(on: bool, count: u32) -> String {
 pub fn commits_since_review_text(pr: PullRequest) -> Option<String> {
     prmarmot_core::board::commits_since_review_text(&pr.into_row())
 }
+
+/// "CI failing"'s evidence: the failing checks' names joined ("build,
+/// lint"), or `nil` when the row names none.
+#[uniffi::export]
+pub fn failed_checks_text(pr: PullRequest) -> Option<String> {
+    prmarmot_core::board::failed_checks_text(&pr.into_row())
+}
+
+/// "changes requested", naming who asked when the row knows ("changes
+/// requested by bob").
+#[uniffi::export]
+pub fn changes_requested_text(pr: PullRequest) -> String {
+    prmarmot_core::board::changes_requested_text(&pr.into_row())
+}
+
+/// The open threads as a count and the files they are on ("2 in src/app.rs,
+/// README.md"), as the Details line says it.
+#[uniffi::export]
+pub fn unresolved_text(pr: PullRequest) -> String {
+    core_detail::unresolved_text(&pr.into_row())
+}
+
 /// The Note's state for an agent-authored PR nobody has reviewed and nothing
 /// blocks, for a front end that wants to draw it apart.
 #[uniffi::export]

@@ -2456,6 +2456,8 @@ mod tests {
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
             review_decision: None,
             // As the derivation leaves any waiting PR in My PRs: a reviewer
             // is asked. One with nobody asked is Available to review.

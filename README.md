@@ -424,6 +424,11 @@ Every feature, with its limits and the version it shipped in, is listed in
   review** list the longest wait first. When only a team was asked and nobody
   has reviewed, the Note says "team requested, nobody responded"; with nobody
   asked at all, your PR's Note says "no reviewers".
+- **Evidence:** "CI failing" names the failing checks ("CI failing — lint,
+  test (macOS)") and "changes requested" names who asked ("changes requested
+  by bob"), in the Note and the notification. Details' Checks line ends with
+  the failed checks and its Unresolved comments line with the files the open
+  threads are on. The CLI's JSON carries `failed_checks` with each run's URL
   and `unresolved_paths`. "New commits since your review" counts them ("3 new
   commits since your review", "20+" past the newest 20 read).
 - **Sections:** a section has one name in every view. In **Involving me**

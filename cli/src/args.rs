@@ -29,6 +29,7 @@ Usage:
   prmarmot-cli watch --pr OWNER/NAME#N   Follow one pull request until it merges or closes
   prmarmot-cli watch --pr OWNER/NAME#N --until ci-pass [--timeout 30m]
                                          Wait for a condition instead of polling in a loop
+                                         evidence behind it, reviews, checks, and wait
   prmarmot-cli auth login [--with-token] Sign in to GitHub without the `gh` CLI
   prmarmot-cli auth status               Show which account and token this machine uses
   prmarmot-cli auth logout               Forget the stored token

@@ -423,6 +423,8 @@ mod tests {
             cannot_rebase: false,
             rebase_only: false,
             unresolved_capped: false,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
             review_decision: None,
             review_state: ReviewState::None,
             requested: Vec::new(),
