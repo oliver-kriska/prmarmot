@@ -113,7 +113,7 @@ jobs:
           (cd target/xcframework && zip -qry PRMarmotCore-Sources.zip Sources)
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PRMarmotCore-xcframework
           path: |
