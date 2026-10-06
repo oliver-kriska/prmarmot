@@ -23,12 +23,20 @@ struct NotificationPermit(Arc<AtomicUsize>);
 
 impl NotificationPermit {
     fn acquire(count: &Arc<AtomicUsize>) -> Option<Self> {
-        count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                (value < MAX_NOTIFICATION_WAITERS).then_some(value + 1)
-            })
-            .ok()
-            .map(|_| Self(count.clone()))
+        // A plain compare-and-swap loop: `fetch_update` is deprecated from
+        // Rust 1.99 and its replacement does not exist on the oldest
+        // toolchain the app builds with.
+        let mut held = count.load(Ordering::Relaxed);
+        loop {
+            if held >= MAX_NOTIFICATION_WAITERS {
+                return None;
+            }
+            match count.compare_exchange_weak(held, held + 1, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return Some(Self(count.clone())),
+                Err(now) => held = now,
+            }
+        }
     }
 }
 
