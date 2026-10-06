@@ -22,7 +22,7 @@ values in the code. New features get the next free number in their area.
   assignment. Your own PRs never appear, and it goes by review requests, not issue assignees. _since v0.1.0;
   Available to review since v0.3.0_ An empty Review queue says what it looked for. In one repository it offers
   **Show all repositories**, and while GitHub has more to load it offers **Load more**, because the next page can
-  hold PRs the first did not. _since v0.15.0_
+  hold PRs the first did not. _since v0.15.1_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: Approved, Needs action, Awaiting review, Drafts.
   - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_
@@ -66,13 +66,13 @@ values in the code. New features get the next free number in their area.
   them as a list, and the menu offers the four copy formats under the heading "Pull requests (N)", **Watch**,
   **Unwatch**, **Snooze…** (one choice for all; "Waiting on" is not offered), and **Cancel snooze**. `Esc` returns to
   one row. The selection survives a refresh; a PR that leaves the board leaves it. Details shows the row the caret
-  is on. _since v0.15.0_
+  is on. _since v0.15.1_
 - **F-board-9** Right-click a row for **Open on GitHub**, **Show details**, copy actions (URL, number,
   `owner/name#N` reference, title, all details), **Watch** / **Unwatch**, **Snooze…**, and **Cancel snooze**. The
   binoculars icon in the PR cell toggles watch. _since v0.3.0; watch and snooze since v0.6.0_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
-  - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.0_
+  - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.1_
   - reviewers and reviews (your own review in the Review queue);
   - when the wait for a reviewer started;
   - stack layer and base branch;
@@ -80,10 +80,10 @@ values in the code. New features get the next free number in their area.
 
   It makes no extra request, and `Esc` closes it. _since v0.3.0_ It sits below the table or beside it
   (F-board-16). _since v0.13.0_ Each PR's Details open at the top, with no scroll position or text selection carried
-  over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.0_
+  over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.1_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
-  request. _since v0.15.0_
+  request. _since v0.15.1_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
@@ -197,26 +197,26 @@ values in the code. New features get the next free number in their area.
   or "20+" when the commit you reviewed is older than the newest 20 read (a rebase that rewrote them counts them
   all). The count ends Details' "Your review" line and the "Review again" notification, and the CLI's JSON carries
   `commits_since_review` (count and whether it is a lower bound). One more point per 30 rows, measured.
-  _since v0.15.0_
+  _since v0.15.1_
 - **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
   (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
   ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'
   names and its Unresolved comments line with the files the open threads are on ("3 in src/app.rs, README.md").
   The CLI's JSON carries `failed_checks` (name and run URL, at most 10, from the newest 30 contexts) and
   `unresolved_paths` (at most 20) on every PR, and the iPad gets the same through ffi. All from plain fields
-  under windows the query already pays for: no extra cost, measured. _since v0.15.0_
+  under windows the query already pays for: no extra cost, measured. _since v0.15.1_
 - **F-note-17** An agent's PR that no person has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
   me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review from a `Bot`
   account (a CI integration, another agent's reviewer) does not count as a person's look, and a plain comment is not
   a review; each review carries `bot` (the CLI's JSON and the iPad's ffi record too) so the Reviews column can tell.
   A person's review, a conflict, failing CI, a change request or an unresolved comment is the fact as before.
-  Review authors' account type comes with the reviews the query already reads: no extra cost, measured. _since v0.15.0_
+  Review authors' account type comes with the reviews the query already reads: no extra cost, measured. _since v0.15.1_
 - **F-note-16** A PR in its repository's merge queue says so instead of "mergeable": "approved — in merge queue,
   position 2" while it waits or the queue runs its checks, "approved — merging" once the queue has it, and
   "approved — merge queue couldn't merge it" when the queue gave up. GitHub merges a queued PR in its turn, so
   nothing asks you to press merge. The CLI's JSON carries `merge_queue` with the state and position, null for a
-  PR not in a queue. _since v0.15.0_
+  PR not in a queue. _since v0.15.1_
 - **F-note-15** A cancelled check doesn't make CI fail. GitHub's combined check status reads failing when any check
   was cancelled, even one no rule requires, so PR Marmot counts the latest commit's checks by state: a failed,
   timed-out, action-required or start-up-failure check, a failing commit status, or a state PR Marmot doesn't
@@ -239,7 +239,7 @@ values in the code. New features get the next free number in their area.
   match. _since v0.12.0_
 - **F-search-3** `is:stale` keeps PRs that have waited `stale_after_days` or longer for a reviewer. _since v0.8.0_
   `is:agent` keeps PRs a coding agent or bot opened, and `is:human` the ones a person opened; `stale`, `agent`, and
-  `human` are the `is:` values. _since v0.15.0_
+  `human` are the `is:` values. _since v0.15.1_
 - **F-search-4** Clicking a label, author, or repository in the table or in Details adds it as a chip. _since
   v0.8.0_
 - **F-search-5** A chip's × removes it, `Backspace` in an empty box removes the last chip, the × at the right
@@ -262,11 +262,11 @@ values in the code. New features get the next free number in their area.
 
   _since v0.13.0_
   - **Agents** adds or removes the `is:agent` chip (F-search-3), as if typed, and counts the loaded PRs a coding
-    agent or bot opened. _since v0.15.0_
+    agent or bot opened. _since v0.15.1_
 - **F-search-9** A PR counts as agent-authored when GitHub says its author is a `Bot` account (Copilot, Claude,
   Dependabot and the like), or when its author matches `agent_authors` in config.toml: whole logins or `*`
   patterns (`copilot*`, `*[bot]`), ignoring case, for a person's account that an agent opens PRs from. The CLI's
-  JSON carries `agent` on every PR, and PR Marmot for iPad gets the same rule and settings field. _since v0.15.0_
+  JSON carries `agent` on every PR, and PR Marmot for iPad gets the same rule and settings field. _since v0.15.1_
 
 ## Change tracking
 
@@ -298,7 +298,7 @@ values in the code. New features get the next free number in their area.
 
   A conditional snooze wakes only when PR Marmot sees the PR, and missing data never wakes one. Snoozing again
   replaces a snooze, and **Cancel snooze** ends it. Up to 200 snoozes are kept; a 201st drops the oldest. _since
-  v0.6.0; the Snoozed count since v0.8.0_ A snooze ends when PR Marmot sees the PR merged or closed. _since v0.15.0_
+  v0.6.0; the Snoozed count since v0.8.0_ A snooze ends when PR Marmot sees the PR merged or closed. _since v0.15.1_
 - **F-track-5** Desktop notifications for these changes:
   - merge conflict, changes requested, review again after new commits;
   - CI passed (with "and is approved" when it is);
@@ -311,14 +311,14 @@ values in the code. New features get the next free number in their area.
   arrive only while the app runs. _since v0.6.0_ Clicking one for any PR the board isn't showing opens it on GitHub.
   _since v0.9.1_ A watched PR's merged, closed, or unavailable notification names the PR (`owner/name #N · title`).
   Notifications nobody clicked no longer stop new ones after the 32nd. A click, and the answer to the permission
-  prompt, act the moment they arrive instead of on the app's next 5-second tick. _since v0.15.0_
+  prompt, act the moment they arrive instead of on the app's next 5-second tick. _since v0.15.1_
 - **F-track-6** The Dock badge counts, across both views, your PRs that need action plus review requests. It can
   be turned off. _since v0.6.0 · macOS only_
 - **F-track-7** Watches, snoozes, and change history are stored apart from preferences under
   `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), separately for each GitHub host and account. Writes are
   bounded, batched, and atomic. A corrupt file, or one written by a newer version, is kept and reported rather than
   overwritten. _since v0.6.0_ They are written as compact JSON; pretty-printed files from earlier
-  versions still read. _since v0.15.0_
+  versions still read. _since v0.15.1_
 
 ## Sharing
 
@@ -343,7 +343,7 @@ values in the code. New features get the next free number in their area.
   repositories, read in 10 pages of 100, plus configured, pinned, and current ones. If discovery fails, those three
   still show, and **Repos** retries. Organization SSO and GitHub permissions decide what's visible. _since v0.3.0_
   Discovery starts once the first board has loaded, or when you open the picker, so it never competes with the
-  board's first request. _since v0.15.0_
+  board's first request. _since v0.15.1_
 - **F-repo-4** **Pin** adds a repository shortcut to the toolbar, and **Pinned** removes it. Up to 12 pins are kept
   in order. Pins never fetch in the background. _since v0.4.0_
 - **F-repo-5** A repository that doesn't exist, or that the account can't see, gets its own error instead of an
@@ -380,7 +380,7 @@ values in the code. New features get the next free number in their area.
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_ A keychain or token file that can't be read or written is reported as that, with the
-  system's reason, instead of "GitHub could not be reached". _since v0.15.0_
+  system's reason, instead of "GitHub could not be reached". _since v0.15.1_
 - **F-auth-7** Settings shows the host and the signed-in account. **Disconnect** removes a stored token from this
   machine; revoking the grant at GitHub is a separate step. _since v0.9.0_
 - **F-auth-8** Settings and `prmarmot-cli auth status` name the sign-in in use, including `PRMARMOT_TOKEN`, and
@@ -410,7 +410,7 @@ values in the code. New features get the next free number in their area.
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else
   until a spent budget resets, rather than always the one-minute floor. _since v0.12.1_ Both pauses say when the next
-  try is and count down to it ("GitHub API budget low (42 left) — retrying in 3m"). _since v0.15.0_
+  try is and count down to it ("GitHub API budget low (42 left) — retrying in 3m"). _since v0.15.1_
 - **F-refresh-6** Each PR's data is capped: 20 labels, 15 review requests, 60 reviews, 100 review threads (so the
   unresolved count stops at 100), and the latest commit's CI rollup. _since v0.1.0_ The reviews and threads read are
   the newest ones, and a PR with more than 100 threads shows its unresolved count as a minimum ("5+ unresolved
@@ -418,10 +418,10 @@ values in the code. New features get the next free number in their area.
 - **F-refresh-7** If the first load fails, **Retry** tries again. A watched PR you can no longer see is reported as
   unavailable, and the refresh still succeeds. _since v0.5.0; unavailable PRs since v0.7.0_ Through the GitHub CLI,
   an HTTP error GitHub explains in its response body (bad credentials, a rate limit, a timed-out query) gets its own
-  message and handling instead of "unexpected GitHub response". _since v0.15.0_
+  message and handling instead of "unexpected GitHub response". _since v0.15.1_
 - **F-refresh-8** An idle window repaints at most once a minute, with no animated spinner, so the GPU stays idle.
   _since v0.9.0_ Scrollbars still show while you scroll and hide when idle, but without the fade, which drew about
-  80 frames after every scroll or arrow key. _since v0.15.0_
+  80 frames after every scroll or arrow key. _since v0.15.1_
 - **F-refresh-9** GitHub stops a request after about 10 seconds, and a page of 60 PRs spread over many
   repositories can take longer. When GitHub gives up, PR Marmot asks again at once for 30 PRs, and that view keeps
   loading 30 at a time, Load more included, until you quit or change the repository. `prmarmot-cli watch` does the
@@ -430,7 +430,7 @@ values in the code. New features get the next free number in their area.
   cut-off when it arrives as an HTTP 502 or 504 with a body, and a view that timed out at both sizes, or whose All
   open filter changed, stays on 30-row pages. One-shot `prmarmot-cli` runs remember a view that needed small pages
   for an hour (`small-pages.json` beside the attention files), so the next run doesn't pay the timeout first.
-  _since v0.15.0_
+  _since v0.15.1_
 
 ## Settings, theme, shortcuts
 
@@ -457,7 +457,7 @@ values in the code. New features get the next free number in their area.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_ A file it
   can't read is left alone too, and so is a key of the wrong kind (`window = 900`), which no longer stops the app
   when it saves. Each write goes through a temporary file and a rename, so a crash never leaves half a config, and
-  a symlinked config is still written through to its target. _since v0.15.0_
+  a symlinked config is still written through to its target. _since v0.15.1_
 - **F-settings-3** Settings are applied in this order: command-line options, then environment variables
   (`PRMARMOT_REPO`, `PRMARMOT_SCOPE`, `PRMARMOT_REFRESH_SECS`, `PRMARMOT_THEME`, `PRMARMOT_DEFAULT_REVIEWERS`,
   `PRMARMOT_ISSUE_PATTERN` with `PRMARMOT_ISSUE_URL_TEMPLATE`), then the file. _since v0.1.0_
@@ -468,11 +468,11 @@ values in the code. New features get the next free number in their area.
 - **F-settings-6** Keyboard shortcuts work from any dashboard control, but never while you type in search, the
   repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_ Choosing a
   repository in the picker gives the keyboard back to the board, and the footer names `Space` for Details.
-  _since v0.15.0_
+  _since v0.15.1_
 - **F-settings-7** Quit from the app menu or with `⌘Q` / `Ctrl+Q`, which works everywhere, even in text fields.
   Plain `q` quits when no text field or dialog is active. _since v0.5.0_ Closing the window (the red button, `⌘W`)
   quits too; before, the app kept running with no window and no refresh until Quit from the Dock menu.
-  _since v0.15.0_
+  _since v0.15.1_
 - **F-settings-8** **Section order** in Settings puts the sections in your own order: one list for every view,
   each section moved with its up and down buttons, and **Reset to default**. The list says which views show each
   section; each view shows the ones it has, in that order. Snoozed stays last and stacks stay inside their
@@ -480,7 +480,7 @@ values in the code. New features get the next free number in their area.
   with the JSON section keys (`section_order = ["available", "await"]`); sections left out follow in their
   default order. `prmarmot-cli` prints its views in the same order. _since v0.12.0_ The up and down buttons show
   their arrows; from v0.12.0 to v0.14.0 the icon files were not in the app and the buttons were blank.
-  _since v0.15.0_
+  _since v0.15.1_
 
 ## Updates and install
 
@@ -488,7 +488,7 @@ values in the code. New features get the next free number in their area.
   published checksum, the signature, the notarization ticket, and Gatekeeper acceptance before installing. _since
   v0.6.0 · macOS on Apple silicon_ It also checks that the app is signed by PR Marmot's own Apple team, since
   Gatekeeper accepts any notarized developer, and it moves the installed app aside rather than deleting it, so a
-  failed install leaves the previous version in place. _since v0.15.0_
+  failed install leaves the previous version in place. _since v0.15.1_
 - **F-install-2** Homebrew: `brew install --cask oliver-kriska/tap/prmarmot`. The cask also links `prmarmot-cli` and
   its shell completions. _since v0.6.0; the CLI since v0.7.0, completions since v0.8.0 · macOS_
 - **F-install-3** Every install path uses one `/Applications/prmarmot.app`, and the installer removes an older
@@ -537,13 +537,13 @@ values in the code. New features get the next free number in their area.
   _since v0.7.0_
 - **F-cli-4** `--stale` keeps PRs that have waited too long. `--sort smallest` or `--sort wait` orders the pickup
   sections, and Notes end with the wait and the size band. _since v0.8.0_ `--agent` keeps only PRs a coding agent or
-  bot opened and `--no-agent` only a person's (F-search-9); `--json` says which in `filters.agent`. _since v0.15.0_
+  bot opened and `--no-agent` only a person's (F-search-9); `--json` says which in `filters.agent`. _since v0.15.1_
 - **F-cli-5** `--filter "<query>"` runs the desktop search grammar over the loaded PRs. _since v0.9.0_
 - **F-cli-6** Output formats: a width-aware table on a terminal, Markdown when piped, `--format markdown`, and
   `--json`. The table follows `COLUMNS`, and `--no-color`, `NO_COLOR`, or `TERM=dumb` turn colour off. _since v0.7.0_
   The table and Markdown take each cell's words from the app's table: no checks show as "—", a PR nobody was asked
   to review as "Not requested", and an empty Review queue says what it looked for. `--json` is unchanged.
-  _since v0.15.0_
+  _since v0.15.1_
 - **F-cli-7** `--json` follows the versioned `prmarmot-cli/board@1` contract.
   - Sections have stable keys.
   - Each PR carries its categorization facts, pickup age, size, and attention state.
@@ -606,7 +606,7 @@ values in the code. New features get the next free number in their area.
   checks, threads, reviewers, reviews, your review, the wait, size, labels, issue, stack), and what PR Marmot
   marks it as (watched, snoozed, changed, stale). Plain lines on a terminal, Markdown when piped, and `--json`
   prints `pr@1` (`cli/schema/pr-v1.schema.json`): the `board@1` PR object plus `status` — open, merged, closed, or
-  inaccessible, which exits 1. One small request after the id lookup, as `watch --pr` does. _since v0.15.0_
+  inaccessible, which exits 1. One small request after the id lookup, as `watch --pr` does. _since v0.15.1_
 
 - **F-cli-18** `prmarmot-cli report [--since 1d]` prints a standup: PRs involving you that merged since the moment
   (yours, or by whom), PRs you opened since it and where each stands now (its section, merged, or closed), your
@@ -617,7 +617,7 @@ values in the code. New features get the next free number in their area.
   the rest; `--json` prints `report@1` (`cli/schema/report-v1.schema.json`), whose `blocked` and `waiting` entries
   are `board@1` PR objects. One plain two-alias search (1 point measured, 100 rows per list, `truncated` past that)
   plus the My PRs fetch, whose first page is all the report reads: `open_truncated` and a footer say when your open
-  PRs filled more than it. _since v0.15.0_
+  PRs filled more than it. _since v0.15.1_
 
 ## Platform notes
 
@@ -638,7 +638,7 @@ values in the code. New features get the next free number in their area.
 - **F-platform-8** If the app ever panics, it writes one line to `$XDG_STATE_HOME/prmarmot/panics.log`
   (default `~/.local/state/prmarmot/panics.log`): the time, the version, the thread, and the source location, never
   the panic's message, since that can carry a PR title or an error body. The file stays under 64 KiB; the oldest
-  lines go first. A Dock-launched app has no terminal, so without this a panic leaves no trace. _since v0.15.0_
+  lines go first. A Dock-launched app has no terminal, so without this a panic leaves no trace. _since v0.15.1_
 
 ## Not in the app, by design
 

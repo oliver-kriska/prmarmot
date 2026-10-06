@@ -43,6 +43,10 @@ protect_breaking_commits = false
 filter_commits = false
 # Only vX.Y.Z tags delimit releases.
 tag_pattern = "v[0-9]*"
+# A tag whose release build failed before anything was published is not a
+# release: its commits belong to the version that shipped them. v0.15.0
+# failed on a compiler deprecation (2026-10-06) and shipped as v0.15.1.
+ignore_tags = "^v0\\.15\\.0$"
 topo_order = false
 sort_commits = "newest"
 # First match wins. The <!-- N --> prefixes force group ordering, then get
