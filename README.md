@@ -431,6 +431,12 @@ Every feature, with its limits and the version it shipped in, is listed in
   threads are on. The CLI's JSON carries `failed_checks` with each run's URL
   and `unresolved_paths`. "New commits since your review" counts them ("3 new
   commits since your review", "20+" past the newest 20 read).
+- **Merge queue:** a PR in its repository's merge queue says so instead of
+  "mergeable": "approved — in merge queue, position 2" while it waits,
+  "approved — merging" once the queue has it, and "approved — merge queue
+  couldn't merge it" when the queue gave up. GitHub merges a queued PR in
+  its turn, so nothing asks you to press merge. The CLI's JSON carries
+  `merge_queue` with the state and position.
 - **Sections:** a section has one name in every view. In **Involving me**
   and **All open**, someone else's PR that nobody was asked to review and
   nobody has reviewed is under **Available to review**, as in the Review
