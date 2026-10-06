@@ -1,10 +1,16 @@
-# Single source of truth for the Rust toolchain. rustup reads this file directly
-# (so do mise and asdf-rust) — no separate .tool-versions is needed for Rust.
+# Single source of truth for the Rust toolchain. rustup and cargo read this file
+# directly (so do mise and asdf-rust), and every CI workflow installs from it
+# with `rustup toolchain install` — no version is named anywhere else, and no
+# separate .tool-versions is needed for Rust.
 #
-# `channel = "stable"` tracks the latest stable (dependency manifests need >= 1.92).
-# To make CI match a local build exactly, pin an explicit version here
-# (e.g. channel = "1.97.1") and change ci.yml's `dtolnay/rust-toolchain@stable`
-# to `@1.97.1` to match.
+# The version is exact on purpose. With `channel = "stable"` this machine and CI
+# each resolved "stable" on their own day: a release build failed on a compiler
+# two versions newer than the one the gate had run on (v0.15.0, 2026-10-06).
+# To move to a new Rust: change the line below, run `make verify` and
+# `make check`, and commit that alone. Dependency manifests need >= 1.92.
+#
+# core/, local/ and cli/ also promise `rust-version = "1.85"`; CI's `msrv` job
+# checks that with RUSTUP_TOOLCHAIN=1.85, which is what overrides this file.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]

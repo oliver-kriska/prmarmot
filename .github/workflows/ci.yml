@@ -22,10 +22,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust (stable + rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # The version and components rust-toolchain.toml pins.
+      - name: Install Rust
+        run: rustup toolchain install
       # Whole-workspace format check — no compile, so it covers the GPUI binary
       # too without needing the Metal Toolchain.
       - run: cargo fmt --all --check
@@ -36,10 +35,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust (stable + clippy)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components rust-toolchain.toml pins.
+      - name: Install Rust
+        run: rustup toolchain install
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -66,10 +64,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust (stable + clippy)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components rust-toolchain.toml pins.
+      - name: Install Rust
+        run: rustup toolchain install
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -87,12 +84,19 @@ jobs:
     name: MSRV (core, local, CLI on Rust 1.85)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Keep in sync with `rust-version` in core/, local/, and cli/Cargo.toml.
+    # The GPUI app needs a newer toolchain and is not part of this promise.
+    # The variable is what makes this job use 1.85: rust-toolchain.toml
+    # overrides a default toolchain, and until 2026-10-06 this job compiled
+    # with the pinned stable while its name said 1.85.
+    env:
+      RUSTUP_TOOLCHAIN: "1.85"
     steps:
       - uses: actions/checkout@v7
-      # Keep in sync with `rust-version` in core/, local/, and cli/Cargo.toml.
-      # The GPUI app needs a newer toolchain and is not part of this promise.
       - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+        run: rustup toolchain install 1.85 --profile minimal
+      - name: Show the compiler this job checks with
+        run: rustc --version | grep -F 'rustc 1.85.'
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:

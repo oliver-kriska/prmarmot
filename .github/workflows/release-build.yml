@@ -33,10 +33,10 @@ jobs:
       - name: Require an Apple-silicon runner
         run: test "$(uname -m)" = arm64
 
+      # The version and components rust-toolchain.toml pins: the compiler
+      # the local gate ran on, not whatever stable is today.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+        run: rustup toolchain install
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

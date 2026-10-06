@@ -27,10 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust (stable + Apple targets)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      # The version rust-toolchain.toml pins, plus the Apple targets.
+      - name: Install Rust and the Apple targets
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -113,7 +114,7 @@ jobs:
           (cd target/xcframework && zip -qry PRMarmotCore-Sources.zip Sources)
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PRMarmotCore-xcframework
           path: |

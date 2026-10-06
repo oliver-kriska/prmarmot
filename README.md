@@ -173,7 +173,8 @@ launch confirms the app's one-time storage migration; see
 
 ### Build from source
 
-Requires Git, latest stable Rust (dependency minimum 1.92, not tested), and the
+Requires Git, Rust through rustup (it installs the version `rust-toolchain.toml`
+pins; dependency minimum 1.92, not tested), and the
 platform dependencies required by GPUI. macOS additionally needs full Xcode and its Metal Toolchain. Linux
 needs a working Vulkan stack plus fontconfig, xkbcommon, and the normal X11 or
 Wayland development/runtime libraries.
