@@ -87,7 +87,9 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
   Sections that wait on a reviewer list the longest wait first.
 - **`agent`:** true when a coding agent or bot opened the PR (GitHub's `Bot`
   account type, or an author the config's `agent_authors` names). An agent's
-  PR nobody has reviewed and nothing blocks reads "no human has looked yet".
+  PR no person has reviewed and nothing blocks reads "no human has looked
+  yet": a review whose `bot` is true (a `Bot` account's) does not count, and
+  a plain comment is not a review.
 - **`size`:** `band` (`small`: at most 100 changed lines and 10 files;
   `large`: more than 400 lines or 30 files; otherwise `medium`),
   `additions`, `deletions`, and `changed_files`. It is null when GitHub

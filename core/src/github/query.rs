@@ -103,7 +103,7 @@ macro_rules! pr_fields {
   labels(first:20){ nodes{ name } }
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
-  reviews(last:60){ nodes{ author{login} state submittedAt } }
+  reviews(last:60){ nodes{ author{ __typename login } state submittedAt } }
   reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:30){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } nodes{ __typename ... on CheckRun{ name conclusion detailsUrl } ... on StatusContext{ context state targetUrl } } } } } } }
   history: commits(last:20){ totalCount nodes{ commit{ oid } } }
@@ -451,7 +451,7 @@ impl<T> Default for Nodes<T> {
 pub struct Login {
     pub login: Option<String>,
     /// `User`, `Bot`, `Organization`, `Mannequin` or `EnterpriseUserAccount`;
-    /// only asked for on the PR author, so absent elsewhere.
+    /// asked for on the PR author and on review authors, absent elsewhere.
     #[serde(default, rename = "__typename")]
     pub typename: Option<String>,
 }

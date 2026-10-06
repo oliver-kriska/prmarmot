@@ -158,6 +158,9 @@ pub struct ReviewSummary {
     pub login: Option<String>,
     pub state: ReviewVerdict,
     pub submitted_at: Option<String>,
+    /// The reviewer is a GitHub `Bot` account (a CI integration, a coding
+    /// agent's reviewer), so this review is not a person's look at the PR.
+    pub bot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -881,7 +884,7 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     };
     // An agent's PR with nothing against it and no review yet: say that no
     // person has looked, which is the one fact that decides who picks it up.
-    let state = if facts.is_empty() && row.agent && row.reviews.is_empty() {
+    let state = if facts.is_empty() && row.agent && !row.reviewed_by_a_person() {
         NO_HUMAN_LOOKED_NOTE.to_owned()
     } else {
         state
@@ -892,9 +895,18 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     };
 }
 
-/// The Note's state for an agent-authored PR that nobody has reviewed and
-/// nothing blocks.
+/// The Note's state for an agent-authored PR that no person has reviewed and
+/// nothing blocks. A review from a `Bot` account does not count, and a plain
+/// comment is not a review.
 pub const NO_HUMAN_LOOKED_NOTE: &str = "no human has looked yet";
+
+impl BoardRow {
+    /// Someone other than a `Bot` account has reviewed this PR: approved,
+    /// commented through a review, or requested changes.
+    pub fn reviewed_by_a_person(&self) -> bool {
+        self.reviews.iter().any(|review| !review.bot)
+    }
+}
 
 /// Category, blockers, and Note for one of your own PRs, from row facts only
 /// (so a carried-forward fact can re-derive them).
@@ -1445,10 +1457,19 @@ fn latest_reviews_excluding(pr: &RawPr, me: &str, bots: &[String]) -> Vec<Review
         .filter_map(|(login, reviews)| {
             // The standing review's own time, so a comment after an approval
             // is not reported as a new approval.
+            // One author, so any of their reviews says what kind of account
+            // it is.
+            let bot = reviews.iter().any(|review| {
+                review
+                    .author
+                    .as_ref()
+                    .is_some_and(|author| author.typename.as_deref() == Some("Bot"))
+            });
             standing_review(&reviews).map(|review| ReviewSummary {
                 login,
                 state: review.state.clone(),
                 submitted_at: review.submitted_at.clone(),
+                bot,
             })
         })
         .collect()
@@ -1791,7 +1812,7 @@ fn review_note(row: &BoardRow, me: &str) -> String {
     // An agent's PR nobody has reviewed yet: the one fact that decides who
     // picks it up, after what the queue says about it.
     let note = if row.agent
-        && row.reviews.is_empty()
+        && !row.reviewed_by_a_person()
         && matches!(row.category, Category::Todo | Category::Available)
         && row.ci != Ci::Fail
         && !row.conflict

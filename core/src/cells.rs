@@ -639,6 +639,7 @@ mod tests {
             login: Some("alice".into()),
             state: "APPROVED".into(),
             submitted_at: None,
+            bot: false,
         }];
         r.review_state = ReviewState::Approved;
         let ReviewCell::Reviewed {
@@ -664,6 +665,7 @@ mod tests {
             login: None,
             state: "DISMISSED".into(),
             submitted_at: None,
+            bot: false,
         }];
         let ReviewCell::Reviewed { marks, .. } = review_cell(&r) else {
             panic!("expected a reviewed cell");

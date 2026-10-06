@@ -495,9 +495,10 @@ Every feature, with its limits and the version it shipped in, is listed in
   - `is:agent` keeps PRs a coding agent or bot opened, `is:human` the ones a
     person opened. GitHub's `Bot` accounts count (Copilot, Claude, Dependabot
     and the like); `agent_authors` in config.toml adds logins or `*` patterns
-    for an account an agent opens PRs from. An agent's PR that nobody has
-    reviewed reads "no human has looked yet". The **Agents** button beside
-    **Stale** toggles the chip.
+    for an account an agent opens PRs from. An agent's PR that no person has
+    reviewed reads "no human has looked yet" (a `Bot` account's review does
+    not count, and a plain comment is not a review). The **Agents** button
+    beside **Stale** toggles the chip.
   - Click a label (in the table or in Details), an author, or a repository to
     add it. **+n** lists the labels that didn't fit.
   - A chip's × removes it, and Backspace in an empty box removes the last one.

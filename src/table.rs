@@ -3105,6 +3105,7 @@ mod tests {
             login: None,
             state: "APPROVED".into(),
             submitted_at: None,
+            bot: false,
         }];
         r.stack = Some(prmarmot_core::board::StackInfo {
             number: 50,
@@ -3150,6 +3151,7 @@ mod tests {
             login: Some(login.into()),
             state: state.into(),
             submitted_at: None,
+            bot: false,
         };
         r.reviews = vec![
             review("alex", "APPROVED"),

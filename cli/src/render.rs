@@ -154,6 +154,7 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
             "login": review.login,
             "state": review.state,
             "submitted_at": review.submitted_at,
+            "bot": review.bot,
         })).collect::<Vec<_>>(),
         "my_review": row.my_review,
         "unresolved_threads": row.unresolved,

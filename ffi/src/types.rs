@@ -405,6 +405,10 @@ pub struct Review {
     pub login: Option<String>,
     pub state: String,
     pub submitted_at: Option<String>,
+    /// The reviewer is a GitHub `Bot` account, so this is not a person's
+    /// look at the PR.
+    #[uniffi(default = false)]
+    pub bot: bool,
 }
 
 /// The linked ticket found by the configured issue-link rule.
@@ -663,6 +667,7 @@ impl PullRequest {
                     login: review.login.clone(),
                     state: review.state.as_str().to_owned(),
                     submitted_at: review.submitted_at.clone(),
+                    bot: review.bot,
                 })
                 .collect(),
             my_review: row.my_review.as_ref().map(|r| r.as_str().to_owned()),
@@ -746,6 +751,7 @@ impl PullRequest {
                     login: review.login,
                     state: review.state.into(),
                     submitted_at: review.submitted_at,
+                    bot: review.bot,
                 })
                 .collect(),
             my_review: self.my_review.map(Into::into),

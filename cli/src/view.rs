@@ -530,6 +530,7 @@ pub mod tests {
                 login: Some("carol".into()),
                 state: "COMMENTED".into(),
                 submitted_at: Some("2026-09-10T10:00:00Z".into()),
+                bot: false,
             }],
             my_review: None,
             unresolved: 0,

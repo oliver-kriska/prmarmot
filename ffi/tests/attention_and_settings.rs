@@ -315,6 +315,7 @@ fn waiting_on_a_person_wakes_only_on_a_newer_review_from_them() {
         login: Some("alice".into()),
         state: "COMMENTED".into(),
         submitted_at: Some("2026-07-20T09:00:00Z".into()),
+        bot: false,
     }];
     store.snooze(
         pr.clone(),
@@ -330,6 +331,7 @@ fn waiting_on_a_person_wakes_only_on_a_newer_review_from_them() {
         login: Some("bob".into()),
         state: "APPROVED".into(),
         submitted_at: Some("2026-07-27T09:00:00Z".into()),
+        bot: false,
     });
     assert!(store.wake_due(vec![other], NOW + HOUR).is_empty());
 
@@ -338,6 +340,7 @@ fn waiting_on_a_person_wakes_only_on_a_newer_review_from_them() {
         login: Some("alice".into()),
         state: "APPROVED".into(),
         submitted_at: Some("2026-07-27T09:00:00Z".into()),
+        bot: false,
     });
     assert_eq!(
         store.wake_due(vec![answered], NOW + HOUR),

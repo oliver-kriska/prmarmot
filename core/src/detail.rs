@@ -429,11 +429,13 @@ mod tests {
                 login: Some("bob".into()),
                 state: "CHANGES_REQUESTED".into(),
                 submitted_at: None,
+                bot: false,
             },
             ReviewSummary {
                 login: None,
                 state: "APPROVED".into(),
                 submitted_at: None,
+                bot: false,
             },
         ];
         pr.my_review = Some("COMMENTED".into());

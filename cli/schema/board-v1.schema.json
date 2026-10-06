@@ -207,11 +207,12 @@
           "description": "Each other reviewer's standing review: the latest, except that a later comment doesn't cancel an approval or change request.",
           "items": {
             "type": "object",
-            "required": ["login", "state", "submitted_at"],
+            "required": ["login", "state", "submitted_at", "bot"],
             "properties": {
               "login": { "type": ["string", "null"] },
               "state": { "$ref": "#/$defs/review_state" },
-              "submitted_at": { "type": ["string", "null"], "format": "date-time" }
+              "submitted_at": { "type": ["string", "null"], "format": "date-time" },
+              "bot": { "type": "boolean", "description": "The reviewer is a GitHub Bot account (a CI integration or an agent's reviewer), not a person." }
             }
           }
         },

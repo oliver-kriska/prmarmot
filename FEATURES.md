@@ -205,10 +205,13 @@ values in the code. New features get the next free number in their area.
   The CLI's JSON carries `failed_checks` (name and run URL, at most 10, from the newest 30 contexts) and
   `unresolved_paths` (at most 20) on every PR, and the iPad gets the same through ffi. All from plain fields
   under windows the query already pays for: no extra cost, measured. _unreleased_
-- **F-note-17** An agent's PR that nobody has reviewed says "no human has looked yet": after the Review queue's
+- **F-note-17** An agent's PR that no person has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
-  me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review, a conflict,
-  failing CI, a change request or an unresolved comment is the fact as before. _unreleased_
+  me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review from a `Bot`
+  account (a CI integration, another agent's reviewer) does not count as a person's look, and a plain comment is not
+  a review; each review carries `bot` (the CLI's JSON and the iPad's ffi record too) so the Reviews column can tell.
+  A person's review, a conflict, failing CI, a change request or an unresolved comment is the fact as before.
+  Review authors' account type comes with the reviews the query already reads: no extra cost, measured. _unreleased_
 - **F-note-16** A PR in its repository's merge queue says so instead of "mergeable": "approved — in merge queue,
   position 2" while it waits or the queue runs its checks, "approved — merging" once the queue has it, and
   "approved — merge queue couldn't merge it" when the queue gave up. GitHub merges a queued PR in its turn, so

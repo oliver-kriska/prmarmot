@@ -591,6 +591,7 @@ mod tests {
             login: Some("alice".into()),
             state: "APPROVED".into(),
             submitted_at: None,
+            bot: false,
         }];
         approved.requested = vec!["bob".into()];
         assert_eq!(

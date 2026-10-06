@@ -938,12 +938,14 @@ mod tests {
             login: Some("carol".into()),
             state: "APPROVED".into(),
             submitted_at: Some("2026-09-11T11:00:00Z".into()),
+            bot: false,
         });
         assert!(!person.should_wake(Some(&unrelated), Utc::now()));
         unrelated.reviews.push(ReviewSummary {
             login: Some("bob".into()),
             state: "COMMENTED".into(),
             submitted_at: Some("2026-09-11T11:00:00Z".into()),
+            bot: false,
         });
         assert!(person.should_wake(Some(&unrelated), Utc::now()));
     }

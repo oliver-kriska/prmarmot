@@ -481,6 +481,32 @@ fn an_agent_s_unreviewed_pr_says_no_human_has_looked_yet() {
         derive_one(reviewed, Mode::Review).note,
         "🔵 needs your review"
     );
+    // A review from a Bot account (a CI integration, another agent) is not a
+    // person's look: the note stays, and the review is flagged for the
+    // Reviews column.
+    let mut bot_reviewed = v.clone();
+    bot_reviewed["reviews"] = json!({"nodes": [
+        {"author": {"login": "copilot-pull-request-reviewer", "__typename": "Bot"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"},
+    ]});
+    let row = derive_one(bot_reviewed.clone(), Mode::Review);
+    assert_eq!(row.note, "🔵 needs your review · no human has looked yet");
+    assert_eq!(row.reviews.len(), 1);
+    assert!(row.reviews[0].bot);
+    assert!(!row.reviewed_by_a_person());
+    assert_eq!(
+        derive_one(bot_reviewed, Mode::AllOpen).note,
+        "no human has looked yet"
+    );
+    // A person's review beside the bot's clears it.
+    let mut both = v.clone();
+    both["reviews"] = json!({"nodes": [
+        {"author": {"login": "copilot-pull-request-reviewer", "__typename": "Bot"}, "state": "COMMENTED", "submittedAt": "2026-07-21T10:00:00Z"},
+        {"author": {"login": "alice", "__typename": "User"}, "state": "COMMENTED", "submittedAt": "2026-07-21T11:00:00Z"},
+    ]});
+    let row = derive_one(both, Mode::AllOpen);
+    assert!(row.reviewed_by_a_person());
+    assert_eq!(row.reviews.iter().filter(|r| !r.bot).count(), 1);
+    assert_eq!(row.note, "review comments received");
     v["mergeable"] = json!("CONFLICTING");
     assert_eq!(derive_one(v.clone(), Mode::AllOpen).note, "merge conflict");
     assert_eq!(derive_one(v, Mode::Review).note, "⚠️ has conflicts");
@@ -802,6 +828,7 @@ fn latest_review_per_author_wins() {
             login: Some("eve".into()),
             state: "APPROVED".into(),
             submitted_at: Some("2026-07-22T09:00:00Z".into()),
+            bot: false,
         }]
     );
     assert_eq!(row.review_state, ReviewState::Approved);
