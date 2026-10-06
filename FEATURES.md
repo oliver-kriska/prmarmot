@@ -609,12 +609,15 @@ values in the code. New features get the next free number in their area.
   inaccessible, which exits 1. One small request after the id lookup, as `watch --pr` does. _unreleased_
 
 - **F-cli-18** `prmarmot-cli report [--since 1d]` prints a standup: PRs involving you that merged since the moment
-  (yours, or by whom), PRs you opened since it and where each stands now (its section, merged, or closed), and your
-  open PRs that still need you with the Note. `--since` takes `12h`, `3d`, `1w`, or a date (that day's local
+  (yours, or by whom), PRs you opened since it and where each stands now (its section, merged, or closed), your
+  open PRs that still need you with the Note, and your open PRs in Awaiting review with how long each has waited
+  ("waiting 4d · stale") and what the board says. `--since` takes `12h`, `3d`, `1w`, or a date (that day's local
   midnight); the default is one day, and the title shows the moment in local time. Markdown when piped (ready to
-  paste) and plain lines on a terminal list at most 10 PRs under Still need you and count the rest; `--json`
-  prints `report@1` (`cli/schema/report-v1.schema.json`), whose `blocked` entries are `board@1` PR objects. One
-  plain two-alias search (about 2 points, 100 rows per list, `truncated` past that) plus the My PRs fetch. _unreleased_
+  paste) and plain lines on a terminal list at most 10 PRs under Still need you and under Awaiting review and count
+  the rest; `--json` prints `report@1` (`cli/schema/report-v1.schema.json`), whose `blocked` and `waiting` entries
+  are `board@1` PR objects. One plain two-alias search (1 point measured, 100 rows per list, `truncated` past that)
+  plus the My PRs fetch, whose first page is all the report reads: `open_truncated` and a footer say when your open
+  PRs filled more than it. _unreleased_
 
 ## Platform notes
 

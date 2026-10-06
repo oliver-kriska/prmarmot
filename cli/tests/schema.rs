@@ -280,6 +280,12 @@ fn a_report_matches_the_report_schema_in_both_scopes() {
         .iter()
         .all(|pr| pr["category"] == "action"));
     assert_eq!(report["truncated"], false);
+    assert_eq!(report["open_truncated"], false);
+    assert!(report["waiting"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|pr| pr["category"] == "await"));
 
     let (code, markdown) = sandbox.run(&["report", "--repo", "demo-labs/atlas"]);
     assert_eq!(code, Some(0), "{markdown}");

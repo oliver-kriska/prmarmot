@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/oliver-kriska/prmarmot/main/cli/schema/report-v1.schema.json",
   "title": "prmarmot-cli report@1",
-  "description": "What `prmarmot-cli report --since … --json` prints: the pull requests involving you that merged since the moment, the ones you opened since it, and your open pull requests that still need you, as the board classifies them. Within report@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
+  "description": "What `prmarmot-cli report --since … --json` prints: the pull requests involving you that merged since the moment, the ones you opened since it, and your open pull requests that still need you or wait on a reviewer, as the board classifies them. Within report@1 fields are only added, never renamed or removed, so ignore fields you don't know.",
   "type": "object",
-  "required": ["schema", "generated_at", "viewer", "since", "scope", "truncated", "merged", "opened", "blocked", "rate_limit"],
+  "required": ["schema", "generated_at", "viewer", "since", "scope", "truncated", "open_truncated", "merged", "opened", "blocked", "waiting", "rate_limit"],
   "properties": {
     "schema": { "const": "prmarmot-cli/report@1" },
     "generated_at": { "type": "string", "format": "date-time" },
@@ -13,7 +13,11 @@
     "scope": { "$ref": "board-v1.schema.json#/$defs/scope" },
     "truncated": {
       "type": "boolean",
-      "description": "True when a search matched more than the 100 rows a list holds, or the board fetch was cut short."
+      "description": "True when a search matched more than the 100 rows its list holds: `merged` or `opened` is the first 100."
+    },
+    "open_truncated": {
+      "type": "boolean",
+      "description": "True when your open pull requests filled more than the one page read: `blocked`, `waiting`, and the status of an open PR in `opened` come from that page only (`prmarmot-cli mine` reads every page)."
     },
     "merged": {
       "type": "array",
@@ -28,6 +32,11 @@
     "blocked": {
       "type": "array",
       "description": "Your open pull requests in Needs action right now, as `board@1` prints them, with the app's attention marks.",
+      "items": { "$ref": "board-v1.schema.json#/$defs/pr" }
+    },
+    "waiting": {
+      "type": "array",
+      "description": "Your open pull requests in Awaiting review right now: waiting on a reviewer or on a merge, as `board@1` prints them, with the app's attention marks; `waiting_since` and `stale` say how long.",
       "items": { "$ref": "board-v1.schema.json#/$defs/pr" }
     },
     "rate_limit": { "$ref": "board-v1.schema.json#/$defs/rate_limit" }

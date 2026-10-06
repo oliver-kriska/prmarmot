@@ -416,9 +416,15 @@ pub struct ReportView {
     pub opened: Vec<prmarmot_core::report::ReportPr>,
     /// Your open PRs in Needs action, as the board classifies them, with marks.
     pub blocked: Vec<(BoardRow, Marks)>,
+    /// Your open PRs in Awaiting review: waiting on someone else, with marks.
+    pub waiting: Vec<(BoardRow, Marks)>,
     /// Every open PR the board fetch returned, for the opened list's status.
     pub open_rows: Vec<BoardRow>,
+    /// A search matched more than the 100 rows its list holds.
     pub truncated: bool,
+    /// Your open PRs filled more than the one page read, so `blocked`,
+    /// `waiting` and the opened list's statuses come from that page only.
+    pub open_truncated: bool,
     pub rate: Option<RateLimitInfo>,
 }
 
@@ -434,17 +440,21 @@ pub fn report_view(
     now: DateTime<Utc>,
 ) -> ReportView {
     let mut snapshots = attention.snapshots.clone();
-    let blocked = board
-        .rows
-        .iter()
-        .filter(|row| row.category == prmarmot_core::board::Category::Action)
-        .map(|row| {
-            let mut marks = marks_for(row, attention, &mut snapshots, now);
-            marks.stale = is_stale(row, now, stale_after_days);
-            (row.clone(), marks)
-        })
-        .collect();
-    let truncated = report.truncated() || board.truncated;
+    let mut in_category = |category: prmarmot_core::board::Category| -> Vec<(BoardRow, Marks)> {
+        board
+            .rows
+            .iter()
+            .filter(|row| row.category == category)
+            .map(|row| {
+                let mut marks = marks_for(row, attention, &mut snapshots, now);
+                marks.stale = is_stale(row, now, stale_after_days);
+                (row.clone(), marks)
+            })
+            .collect()
+    };
+    let blocked = in_category(prmarmot_core::board::Category::Action);
+    let waiting = in_category(prmarmot_core::board::Category::Await);
+    let truncated = report.truncated();
     ReportView {
         since,
         scope,
@@ -453,8 +463,10 @@ pub fn report_view(
         merged: report.merged,
         opened: report.opened,
         blocked,
+        waiting,
         open_rows: board.rows,
         truncated,
+        open_truncated: board.truncated,
         rate: report.rate.or(board.rate),
     }
 }

@@ -171,13 +171,18 @@ prmarmot-cli report --since 1w --repo owner/name
 
 A standup in one call: `merged` (PRs involving the user merged since the
 moment, each with `yours` and `merged_at`), `opened` (PRs the user opened
-since it, with `state` open / merged / closed), and `blocked` (the user's
-open PRs in Needs action right now, as `board@1` PR objects with their
-Note). Without `--json` it prints Markdown ready to paste into a standup
-thread: three headed lists with linked references, the last cut at 10 PRs
-with the rest counted (JSON holds them all). `--since` defaults to one
-day; `--all-repos` or `--repo` scope it like the views. `truncated` is true
-when a search matched more than the 100 rows a list holds.
+since it, with `state` open / merged / closed), `blocked` (the user's open
+PRs in Needs action right now, as `board@1` PR objects with their Note), and
+`waiting` (the user's open PRs in Awaiting review, with `waiting_since` and
+`stale`). Without `--json` it prints Markdown ready to paste into a standup
+thread: four headed lists with linked references, the last two cut at 10 PRs
+with the rest counted (JSON holds them all). `--since` defaults to one day;
+`--all-repos` or `--repo` scope it like the views. `truncated` is true when
+a search matched more than the 100 rows a list holds. `blocked`, `waiting`,
+and the section an open PR in `opened` is placed in come from the first
+page of the user's open PRs (60 rows); `open_truncated` is true when there
+were more, and an open PR off that page reads just "open". `prmarmot-cli
+mine` reads every page.
 
 ## Watch: wait for something to happen
 

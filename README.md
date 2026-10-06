@@ -577,7 +577,7 @@ prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in o
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
 prmarmot-cli pr acme/api#42            # one PR in full: Note, evidence, reviews, checks, wait
-prmarmot-cli report --since 1d         # standup: merged, opened, still needs you
+prmarmot-cli report --since 1d         # standup: merged, opened, still needs you, awaiting review
 prmarmot-cli watch --pr acme/api#42    # follow one PR until it merges or closes
 prmarmot-cli watch --pr acme/api#42 --until ci-pass --timeout 30m   # wait for green CI
 prmarmot-cli auth login                # sign in without the GitHub CLI

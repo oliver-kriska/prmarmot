@@ -3,10 +3,10 @@
 //! core layout, and each cell's words and tone from core's `cells`, the same
 //! source the app's table and the iPad draw from.
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use prmarmot_core::board::TrackedPrStatus;
 use prmarmot_core::board::{
-    strip_note_glyphs, Blocker, BoardRow, BoardScope, Ci, Mode, QueueProvenance,
+    strip_note_glyphs, Blocker, BoardRow, BoardScope, Category, Ci, Mode, QueueProvenance,
 };
 use prmarmot_core::cells;
 use prmarmot_core::detail::detail_lines;
@@ -378,9 +378,11 @@ pub fn report_json(view: &ReportView) -> Value {
         "since": view.since.to_rfc3339(),
         "scope": scope_json(&view.scope),
         "truncated": view.truncated,
+        "open_truncated": view.open_truncated,
         "merged": view.merged.iter().map(|pr| report_pr_json(pr, &view.viewer)).collect::<Vec<_>>(),
         "opened": view.opened.iter().map(|pr| report_pr_json(pr, &view.viewer)).collect::<Vec<_>>(),
         "blocked": view.blocked.iter().map(|(row, marks)| pr_json(row, marks)).collect::<Vec<_>>(),
+        "waiting": view.waiting.iter().map(|(row, marks)| pr_json(row, marks)).collect::<Vec<_>>(),
         "rate_limit": rate_info_json(view.rate.as_ref()),
     })
 }
@@ -425,27 +427,56 @@ fn blocked_detail(row: &BoardRow, marks: &Marks) -> String {
     if detail.is_empty() {
         detail = "needs action".to_owned();
     }
+    marks_detail(&mut detail, marks);
+    detail
+}
+
+/// What a waiting PR's line says: how long it has waited for a reviewer,
+/// then what the board says about it.
+fn waiting_detail(row: &BoardRow, marks: &Marks, now: DateTime<Utc>) -> String {
+    let note = strip_note_glyphs(&row.note);
+    let mut detail = match waiting_secs(row, now) {
+        Some(secs) if marks.stale => format!("waiting {} · stale", wait_label(secs)),
+        Some(secs) => format!("waiting {}", wait_label(secs)),
+        None => String::new(),
+    };
+    if !note.is_empty() && note != "awaiting review" {
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
+        detail.push_str(&note);
+    }
+    if detail.is_empty() {
+        detail = "awaiting review".to_owned();
+    }
+    marks_detail(&mut detail, marks);
+    detail
+}
+
+fn marks_detail(detail: &mut String, marks: &Marks) {
     if marks.changed {
         detail.push_str(" · changed since you looked");
     }
     if marks.snoozed.is_some() {
         detail.push_str(" · snoozed");
     }
-    detail
 }
 
 /// One section's lines: (reference, title, detail, url).
 type ReportLine = (String, String, String, String);
 
-/// A standup names what needs you, it does not list a backlog: past this
-/// many, the Markdown and text say how many more there are (JSON has all).
+/// A standup names what needs you and what you wait on, it does not list a
+/// backlog: past this many in Still need you or Awaiting review, the
+/// Markdown and text say how many more there are (JSON has all).
 pub const MAX_REPORT_BLOCKED: usize = 10;
 
-/// A section: its heading, the lines shown, and how many were left out.
+/// A section: its heading, the lines shown, and how many were left out of
+/// which board section.
 struct ReportSection {
     heading: String,
     lines: Vec<ReportLine>,
     more: usize,
+    more_in: &'static str,
 }
 
 fn report_sections(view: &ReportView) -> Vec<ReportSection> {
@@ -486,28 +517,55 @@ fn report_sections(view: &ReportView) -> Vec<ReportSection> {
             )
         })
         .collect();
-    let left_out = view.blocked.len() - blocked.len();
+    let blocked_left_out = view.blocked.len() - blocked.len();
+    let waiting: Vec<ReportLine> = view
+        .waiting
+        .iter()
+        .take(MAX_REPORT_BLOCKED)
+        .map(|(row, marks)| {
+            (
+                format!("{}#{}", row.repo, row.number),
+                row.title.clone(),
+                waiting_detail(row, marks, view.generated_at),
+                row.url.clone(),
+            )
+        })
+        .collect();
+    let waiting_left_out = view.waiting.len() - waiting.len();
     vec![
         ReportSection {
             heading: format!("Merged ({})", merged.len()),
             lines: merged,
             more: 0,
+            more_in: "",
         },
         ReportSection {
             heading: format!("Opened ({})", opened.len()),
             lines: opened,
             more: 0,
+            more_in: "",
         },
         ReportSection {
             heading: format!("Still need you ({})", view.blocked.len()),
             lines: blocked,
-            more: left_out,
+            more: blocked_left_out,
+            more_in: group_label(Mode::Authored, Category::Action, true),
+        },
+        ReportSection {
+            heading: format!(
+                "{} ({})",
+                group_label(Mode::Authored, Category::Await, true),
+                view.waiting.len()
+            ),
+            lines: waiting,
+            more: waiting_left_out,
+            more_in: group_label(Mode::Authored, Category::Await, true),
         },
     ]
 }
 
-fn more_line(more: usize) -> String {
-    format!("and {more} more in Needs action (`prmarmot-cli mine` lists them all)")
+fn more_line(more: usize, more_in: &str) -> String {
+    format!("and {more} more in {more_in} (`prmarmot-cli mine` lists them all)")
 }
 
 /// The moment in the reader's own time, as the app's dates are.
@@ -526,10 +584,18 @@ pub fn report_title(view: &ReportView) -> String {
     )
 }
 
-fn report_footer(view: &ReportView) -> Option<String> {
-    view.truncated.then(|| {
-        "More than a page matched; this report shows the first 100 of each list.".to_owned()
-    })
+/// What the report could not read in full, one sentence each.
+fn report_footers(view: &ReportView) -> Vec<&'static str> {
+    let mut footers = Vec::new();
+    if view.truncated {
+        footers.push("More than a page matched; Merged and Opened show the first 100 each.");
+    }
+    if view.open_truncated {
+        footers.push(
+            "Your open PRs filled more than a page; Still need you and Awaiting review come from the first page (`prmarmot-cli mine` lists them all).",
+        );
+    }
+    footers
 }
 
 /// `prmarmot-cli report` piped, or `--format markdown`: ready to paste into
@@ -549,10 +615,13 @@ pub fn report_markdown(view: &ReportView) -> String {
             ));
         }
         if section.more > 0 {
-            out.push_str(&format!("- …{}\n", more_line(section.more)));
+            out.push_str(&format!(
+                "- …{}\n",
+                more_line(section.more, section.more_in)
+            ));
         }
     }
-    if let Some(footer) = report_footer(view) {
+    for footer in report_footers(view) {
         out.push_str(&format!("\n_{footer}_\n"));
     }
     out
@@ -570,10 +639,13 @@ pub fn report_text(view: &ReportView, paint: Paint) -> String {
             out.push_str(&format!("  {reference}  {title} — {detail}\n    {url}\n"));
         }
         if section.more > 0 {
-            out.push_str(&format!("  …{}\n", more_line(section.more)));
+            out.push_str(&format!(
+                "  …{}\n",
+                more_line(section.more, section.more_in)
+            ));
         }
     }
-    if let Some(footer) = report_footer(view) {
+    for footer in report_footers(view) {
         out.push_str(&format!("\n{footer}\n"));
     }
     out
@@ -1588,7 +1660,8 @@ mod tests {
         blocked.ci = Ci::Fail;
         blocked.blockers = vec![Blocker::CiFailing];
         blocked.note = "🔴 CI failing".into();
-        let waiting = row(11, Category::Await);
+        let mut waiting = row(11, Category::Await);
+        waiting.waiting_since = Some("2026-10-01T12:00:00Z".into());
         let report = ReportFetch {
             merged: vec![
                 ReportPr {
@@ -1677,12 +1750,26 @@ mod tests {
             "{markdown}"
         );
         assert!(markdown.contains("— CI failing\n"), "{markdown}");
+        // Awaiting review: the wait, then what the board says, from the same page.
+        assert_eq!(value["open_truncated"], false);
+        assert_eq!(value["waiting"].as_array().unwrap().len(), 1);
+        assert_eq!(value["waiting"][0]["number"], 11);
+        assert!(
+            markdown.contains("## Awaiting review (1)\n\n- [acme/widgets#11]"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("— waiting 1d · waiting on bob\n"),
+            "{markdown}"
+        );
+        // Only the searches overflowed, so only they are said to.
         assert!(
             markdown.ends_with(
-                "_More than a page matched; this report shows the first 100 of each list._\n"
+                "_More than a page matched; Merged and Opened show the first 100 each._\n"
             ),
             "{markdown}"
         );
+        assert!(!markdown.contains("Your open PRs filled"), "{markdown}");
 
         let text = report_text(&view, Paint::new(false));
         assert!(text.contains("\nMerged (2)\n  acme/widgets#7  Ship | it — yours, merged 2026-10-01\n    https://github.com/acme/widgets/pull/7\n"), "{text}");
@@ -1693,11 +1780,18 @@ mod tests {
         use prmarmot_core::board::BoardFetch;
         use prmarmot_core::report::ReportFetch;
         let attention = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
-        let rows: Vec<BoardRow> = (1..=MAX_REPORT_BLOCKED as u64 + 3)
+        let mut rows: Vec<BoardRow> = (1..=MAX_REPORT_BLOCKED as u64 + 3)
             .map(|number| row(number, Category::Action))
             .collect();
+        rows.extend((101..=MAX_REPORT_BLOCKED as u64 + 102).map(|number| {
+            let mut waiting = row(number, Category::Await);
+            waiting.waiting_since = Some("2026-09-28T12:00:00Z".into());
+            waiting.note = "awaiting review".into();
+            waiting
+        }));
         let board = BoardFetch {
             rows,
+            truncated: true,
             ..fetch_of(Vec::new())
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
@@ -1717,10 +1811,38 @@ mod tests {
         assert!(!markdown.contains("- [acme/widgets#11]"), "{markdown}");
         assert!(
             markdown
-                .ends_with("- …and 3 more in Needs action (`prmarmot-cli mine` lists them all)\n"),
+                .contains("- …and 3 more in Needs action (`prmarmot-cli mine` lists them all)\n"),
             "{markdown}"
         );
-        assert_eq!(report_json(&view)["blocked"].as_array().unwrap().len(), 13);
+        assert!(markdown.contains("## Awaiting review (12)\n"), "{markdown}");
+        // Four days waited at the default three-day threshold: stale, said so.
+        assert!(
+            markdown.contains("- [acme/widgets#101](https://github.com/acme/widgets/pull/101) Change number 101 — waiting 4d · stale\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("- [acme/widgets#111]"), "{markdown}");
+        assert!(
+            markdown.contains(
+                "- …and 2 more in Awaiting review (`prmarmot-cli mine` lists them all)\n"
+            ),
+            "{markdown}"
+        );
+        // The board had more pages, and no search overflowed.
+        assert!(
+            markdown.ends_with("_Your open PRs filled more than a page; Still need you and Awaiting review come from the first page (`prmarmot-cli mine` lists them all)._\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("More than a page matched"), "{markdown}");
+        let value = report_json(&view);
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["open_truncated"], true);
+        assert_eq!(value["blocked"].as_array().unwrap().len(), 13);
+        assert_eq!(value["waiting"].as_array().unwrap().len(), 12);
+        let text = report_text(&view, Paint::new(false));
+        assert!(
+            text.contains("\nAwaiting review (12)\n  acme/widgets#101  Change number 101 — waiting 4d · stale\n"),
+            "{text}"
+        );
     }
 
     #[test]
