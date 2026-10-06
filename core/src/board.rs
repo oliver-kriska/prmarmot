@@ -482,6 +482,59 @@ pub struct BoardRow {
     pub note: String,
 }
 
+impl Default for BoardRow {
+    /// An open PR with nothing against it and nothing known about it: no
+    /// reviews, no checks, no labels, in Awaiting review. The starting point
+    /// for fixtures and builders; `derive_row` fills every field itself.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            repo: String::new(),
+            updated_at: None,
+            head_oid: None,
+            reviewed_oid: None,
+            reviewed_at: None,
+            commits_since_review: None,
+            number: 0,
+            url: String::new(),
+            title: String::new(),
+            issue: None,
+            issue_url: None,
+            author: None,
+            agent: false,
+            stack: None,
+            queue_provenance: None,
+            draft: false,
+            category: Category::Await,
+            bug: false,
+            labels: Vec::new(),
+            ci: Ci::None,
+            conflict: false,
+            mergeable_unknown: false,
+            merge_state: None,
+            merge_queue: None,
+            cannot_rebase: false,
+            rebase_only: false,
+            review_decision: None,
+            review_state: ReviewState::None,
+            requested: Vec::new(),
+            requested_teams: Vec::new(),
+            reviews: Vec::new(),
+            my_review: None,
+            unresolved: 0,
+            failed_checks: Vec::new(),
+            unresolved_paths: Vec::new(),
+            unresolved_capped: false,
+            blockers: Vec::new(),
+            created_at: String::new(),
+            waiting_since: None,
+            size: None,
+            checks: None,
+            note: String::new(),
+        }
+    }
+}
+
 /// Defensive bound on the board size. The query already caps at `first:60`;
 /// this keeps the bound explicit at the data boundary (bounded-everything
 /// guardrail from the PRFlow post-mortem).

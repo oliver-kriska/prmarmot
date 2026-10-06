@@ -850,41 +850,15 @@ mod tests {
         BoardRow {
             id: format!("PR_{category:?}_{yours}"),
             repo: "acme/widgets".into(),
-            updated_at: None,
-            head_oid: None,
-            reviewed_oid: None,
-            reviewed_at: None,
-            commits_since_review: None,
             number: 1,
             url: "https://github.com/acme/widgets/pull/1".into(),
             title: "Change".into(),
-            issue: None,
-            issue_url: None,
             author: Some(if yours { "me" } else { "bob" }.into()),
-            agent: false,
-            stack: None,
-            queue_provenance: None,
             draft: category == Category::Draft,
             category,
-            bug: false,
-            labels: Vec::new(),
             ci: Ci::Pass,
             conflict: !yours,
-            mergeable_unknown: false,
-            merge_state: None,
-            merge_queue: None,
-            cannot_rebase: false,
-            rebase_only: false,
-            unresolved_capped: false,
-            failed_checks: Vec::new(),
-            unresolved_paths: Vec::new(),
-            review_decision: None,
             review_state: ReviewState::Waiting,
-            requested: Vec::new(),
-            requested_teams: Vec::new(),
-            reviews: Vec::new(),
-            my_review: None,
-            unresolved: 0,
             // Your own PR under Needs action says why; someone else's carries
             // the fact (a conflict) and no blockers.
             blockers: if yours && category == Category::Action {
@@ -893,10 +867,7 @@ mod tests {
                 Vec::new()
             },
             created_at: "2026-09-01T10:00:00Z".into(),
-            waiting_since: None,
-            size: None,
-            checks: None,
-            note: String::new(),
+            ..Default::default()
         }
     }
 
