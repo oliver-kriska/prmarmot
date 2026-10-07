@@ -1,8 +1,31 @@
-//! Fetching a view: the one GraphQL operation per refresh, the retry at
+//! Fetching a view: the one GraphQL operation per refresh (two, in order, for
+//! the Review queue across all repositories), the retry at
 //! [`SMALL_PAGE_SIZE`] rows when GitHub gives up, followed PRs, and Load more
 //! folded into the rows already loaded.
 
 use super::*;
+
+/// One request, sent again unchanged when GitHub gave up on it at
+/// [`SMALL_PAGE_SIZE`] rows. Measured 2026-10-06: a request that takes 4–5 s
+/// ten times runs into GitHub's cut-off the eleventh, so the small page's
+/// size is not what failed, and the same request is worth one more try. A
+/// full page is not resent: the small page is its retry. One retry, never
+/// more — a request GitHub gives up on still costs points and counts toward
+/// its secondary limit.
+fn send_with_ids(
+    transport: &dyn GithubTransport,
+    query: &str,
+    variables: &[(&str, &str)],
+    ids: &[String],
+    first: u8,
+) -> Result<serde_json::Value, GhError> {
+    match transport.graphql_with_ids(query, variables, ids) {
+        Err(error) if error.is_query_timeout() && first == SMALL_PAGE_SIZE => {
+            transport.graphql_with_ids(query, variables, ids)
+        }
+        sent => sent,
+    }
+}
 
 /// One bounded `nodes(ids:)` request for specific PRs, in any repository: what
 /// became of PRs that left a view, or one PR followed on its own.
@@ -168,8 +191,10 @@ pub fn fetch_all_open(
 
 /// One page-one operation, and when GitHub gives up on a full page (see
 /// [`GhError::is_query_timeout`]) the same operation once more with
-/// [`SMALL_PAGE_SIZE`] rows. Still one request per refresh when GitHub
-/// answers; two when it did not, and then the view remembers.
+/// [`SMALL_PAGE_SIZE`] rows, itself sent twice if need be
+/// ([`send_with_ids`]). Still one request per refresh when GitHub answers
+/// (two for the Review queue across all repositories); more when it did not,
+/// and then the view remembers.
 #[allow(clippy::too_many_arguments)]
 fn fetch_scoped(
     transport: &dyn GithubTransport,
@@ -250,7 +275,7 @@ fn fetch_scoped_sized(
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
             .collect();
-        let mut body = transport.graphql_with_ids(query, &variables, tracked.rows)?;
+        let mut body = send_with_ids(transport, query, &variables, tracked.rows, first)?;
         if let Some(error) = scope_repository_error(&body, repo) {
             return Err(error);
         }
@@ -320,15 +345,51 @@ fn fetch_scoped_sized(
         Mode::Review => {
             let requested_search = scope_search_string(scope, mode, me, cfg);
             let available_search = scope_available_search_string(scope, me);
-            let (body, access) = request(
-                &initial_operation(REVIEW_SEARCH_QUERY)?,
-                &with_scope_variables(vec![
-                    ("requested", requested_search),
-                    ("available", available_search),
-                    ("who", me.to_owned()),
-                ]),
-            )?;
-            let parsed = parse_review_response(&body)?;
+            let (body, access, parsed) = if scope.is_all() {
+                // Across all repositories the two searches go as two
+                // requests, in order: with every field a PR carries, both in
+                // one request ran at 85–100 % of GitHub's cut-off and failed
+                // one run in three, each alone at about half of it (measured
+                // 2026-10-06; Oliver, 2026-10-07). Followed PRs ride on the
+                // first. A half GitHub gives up on fails the refresh, as one
+                // request did: the view keeps what it had, with the reason.
+                let (body, access) = request(
+                    &initial_operation(REVIEW_REQUESTED_QUERY)?,
+                    &[("requested", requested_search), ("who", me.to_owned())],
+                )?;
+                let (requested, requested_page, rate) = parse_alias_response(&body, "requested")?;
+                let mut second = send_with_ids(
+                    transport,
+                    &with_page_size(REVIEW_AVAILABLE_QUERY, first),
+                    &[("available", &available_search), ("who", me)],
+                    &[],
+                    first,
+                )?;
+                let access = access.plus(tolerate_access_errors(&mut second));
+                let (available, available_page, later_rate) =
+                    parse_alias_response(&second, "available")?;
+                let parsed = ReviewSearchResult {
+                    requested,
+                    available,
+                    // The later request's budget is the current one.
+                    rate: later_rate.or(rate),
+                    truncated: requested_page.has_next_page || available_page.has_next_page,
+                    requested_page,
+                    available_page,
+                };
+                (body, access, parsed)
+            } else {
+                let (body, access) = request(
+                    &initial_operation(REVIEW_SEARCH_QUERY)?,
+                    &with_scope_variables(vec![
+                        ("requested", requested_search),
+                        ("available", available_search),
+                        ("who", me.to_owned()),
+                    ]),
+                )?;
+                let parsed = parse_review_response(&body)?;
+                (body, access, parsed)
+            };
             let mut seen = HashSet::new();
             let mut rows = Vec::new();
 
@@ -499,9 +560,12 @@ fn fetch_more_sized(
             }
             let search = scope_search_string(scope, mode, me, cfg);
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let mut body = transport.graphql(
+            let mut body = send_with_ids(
+                transport,
                 &with_page_size(PR_SEARCH_PAGE_QUERY, first),
                 &[("q", &search), ("after", &cursor), ("who", me)],
+                &[],
+                first,
             )?;
             next.access = next.access.plus(tolerate_access_errors(&mut body));
             let (prs, rate) = parse_search_response(&body)?;
@@ -522,9 +586,12 @@ fn fetch_more_sized(
                 return Ok(next);
             }
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
-            let mut body = transport.graphql(
+            let mut body = send_with_ids(
+                transport,
                 &with_page_size(PR_SEARCH_PAGE_QUERY, first),
                 &[("q", &search), ("after", &cursor), ("who", me)],
+                &[],
+                first,
             )?;
             next.access = next.access.plus(tolerate_access_errors(&mut body));
             let (prs, rate) = parse_search_response(&body)?;
@@ -548,7 +615,8 @@ fn fetch_more_sized(
             if requested && available {
                 let rc = next.pagination.requested.end_cursor.clone().unwrap();
                 let ac = next.pagination.available.end_cursor.clone().unwrap();
-                let mut body = transport.graphql(
+                let mut body = send_with_ids(
+                    transport,
                     &with_page_size(REVIEW_BOTH_PAGE_QUERY, first),
                     &[
                         ("requested", &requested_search),
@@ -557,6 +625,8 @@ fn fetch_more_sized(
                         ("availableAfter", &ac),
                         ("who", me),
                     ],
+                    &[],
+                    first,
                 )?;
                 next.access = next.access.plus(tolerate_access_errors(&mut body));
                 let parsed = parse_review_response(&body)?;
@@ -581,9 +651,12 @@ fn fetch_more_sized(
                         next.pagination.available.end_cursor.clone().unwrap(),
                     )
                 };
-                let mut body = transport.graphql(
+                let mut body = send_with_ids(
+                    transport,
                     &with_page_size(query, first),
                     &[(alias, search), ("after", &cursor), ("who", me)],
+                    &[],
+                    first,
                 )?;
                 next.access = next.access.plus(tolerate_access_errors(&mut body));
                 let (prs, page, rate) = parse_alias_response(&body, alias)?;

@@ -550,10 +550,13 @@ fn github_saying_no_reaches_swift_as_the_right_error() {
         NOW,
     ))
     .unwrap_err();
+    // GitHub's cut-off, in core's words: the sentence the desktop and the CLI
+    // show, so Swift has nothing to retype.
     assert!(
-        matches!(&error, FfiError::Network { message } if message.contains("having trouble (502)")),
+        matches!(&error, FfiError::Network { message } if *message == prmarmot_ffi::query_timeout_text()),
         "{error:?}"
     );
+    assert!(prmarmot_ffi::query_timeout_text().starts_with("GitHub gave up on this request"));
 }
 
 #[test]

@@ -346,6 +346,17 @@ pub fn device_request_declined_text() -> &'static str {
     "The request was declined at GitHub."
 }
 
+/// What every front end says when GitHub gave up on a request before it
+/// finished ([`crate::github::GhError::is_query_timeout`]): the status line,
+/// the CLI's stderr and the iPad's error all read this instead of the
+/// transport's bare `gh: HTTP 502`. It names GitHub's cut-off, not a page
+/// size: by the time this shows, the smaller page and the second try
+/// (`crate::board::fetch`) have been asked and refused too.
+pub fn query_timeout_text() -> &'static str {
+    "GitHub gave up on this request before it finished — it stops answering after about 10 \
+     seconds. Try again in a moment."
+}
+
 /// What the token was not allowed to read on this board, in one line, or
 /// `None` when it read everything. The rows still show; this says why some of
 /// their CI reads "hidden" and what would show it.

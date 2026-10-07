@@ -635,7 +635,8 @@ def graphql(args):
         if "$tracked" in query:
             data["tracked"] = tracked
         return {"data": data}
-    if "requested:" in query or "requested: search" in query:
+    # The all-repositories Review queue asks for each alias in its own request.
+    if "requested: search" in query or "available: search" in query:
         data = {"rateLimit": rate(5)}
         if "$requested" in query:
             data["requested"] = page(scoped(REQUESTED))

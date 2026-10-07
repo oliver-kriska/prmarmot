@@ -59,6 +59,11 @@ pub enum GhError {
 
 impl fmt::Display for GhError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // GitHub's cut-off reads the same from every transport: the sentence
+        // is core's, not `gh`'s "HTTP 502" nor a GraphQL error's prose.
+        if self.is_query_timeout() {
+            return write!(f, "{}", crate::status::query_timeout_text());
+        }
         match self {
             GhError::NotInstalled => write!(
                 f,

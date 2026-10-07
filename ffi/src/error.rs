@@ -53,6 +53,14 @@ pub enum FfiError {
 
 impl From<GhError> for FfiError {
     fn from(error: GhError) -> Self {
+        // GitHub's cut-off arrives as an HTTP 502/504 or a GraphQL error;
+        // either way the iPad shows core's sentence (`query_timeout_text`),
+        // the one the desktop and the CLI show.
+        if error.is_query_timeout() {
+            return Self::Network {
+                message: error.to_string(),
+            };
+        }
         match error {
             GhError::NotAuthenticated => Self::NotAuthenticated,
             // `gh` is a desktop concept. On iPad there is no CLI to install,

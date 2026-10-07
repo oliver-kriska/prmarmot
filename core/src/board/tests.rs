@@ -91,7 +91,9 @@ impl GithubTransport for SequenceTransport {
     }
 }
 
-struct GlobalReviewTransport;
+/// The all-repositories Review queue: the requested search, then the
+/// available one, each its own request.
+struct GlobalReviewTransport(Mutex<Vec<String>>);
 
 impl GithubTransport for GlobalReviewTransport {
     fn graphql(
@@ -99,18 +101,30 @@ impl GithubTransport for GlobalReviewTransport {
         query: &str,
         variables: &[(&str, &str)],
     ) -> Result<serde_json::Value, GhError> {
-        assert_eq!(query, REVIEW_SEARCH_QUERY);
-        assert!(variables.contains(&(
-            "requested",
-            "is:pr is:open review-requested:me -author:me sort:updated-desc"
-        )));
-        assert!(variables.contains(&(
-            "available",
-            "is:pr is:open involves:me -author:me sort:updated-desc"
-        )));
+        let mut asked = self.0.lock().unwrap();
+        asked.push(query.to_owned());
+        let (alias, search) = match asked.len() {
+            1 => {
+                assert_eq!(query, REVIEW_REQUESTED_QUERY);
+                (
+                    "requested",
+                    "is:pr is:open review-requested:me -author:me sort:updated-desc",
+                )
+            }
+            2 => {
+                assert_eq!(query, REVIEW_AVAILABLE_QUERY);
+                (
+                    "available",
+                    "is:pr is:open involves:me -author:me -review-requested:me sort:updated-desc",
+                )
+            }
+            n => panic!("a third request ({n})"),
+        };
+        assert!(variables.contains(&(alias, search)), "{variables:?}");
+        assert!(variables.contains(&("who", "me")));
+        assert_eq!(variables.len(), 2);
         Ok(json!({"data": {
-            "requested": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
-            "available": {"pageInfo":{"hasNextPage":false}, "nodes":[]},
+            alias: {"pageInfo":{"hasNextPage":false}, "nodes":[]},
             "rateLimit": null
         }}))
     }
@@ -1361,8 +1375,9 @@ fn expanded_review_queue_surfaces_alias_truncation() {
 
 #[test]
 fn global_review_keeps_available_candidates_involvement_scoped() {
+    let transport = GlobalReviewTransport(Mutex::new(Vec::new()));
     let fetched = fetch_board_scoped(
-        &GlobalReviewTransport,
+        &transport,
         Mode::Review,
         &BoardScope::AllRepositories,
         "me",
@@ -1371,6 +1386,11 @@ fn global_review_keeps_available_candidates_involvement_scoped() {
     .unwrap();
     assert!(fetched.rows.is_empty());
     assert!(!fetched.truncated);
+    assert_eq!(
+        transport.0.lock().unwrap().len(),
+        2,
+        "the requested search, then the available one"
+    );
 }
 
 #[test]
@@ -2522,7 +2542,8 @@ fn only_github_giving_up_asks_again() {
         assert!(fetched.is_err(), "{error:?}");
         assert!(transport.0.lock().unwrap().is_empty());
     }
-    // A small page that also fails reports that failure; no third try.
+    // A small page that also fails is sent once more unchanged; a second
+    // refusal is the failure, with core's sentence. No fourth try.
     let transport = SequenceTransport::new(vec![
         Err(GhError::Http {
             status: 502,
@@ -2532,10 +2553,174 @@ fn only_github_giving_up_asks_again() {
             "Something went wrong while executing your query. This may be the result of a timeout"
                 .into(),
         ])),
+        Err(GhError::Http {
+            status: 504,
+            message: "gh: HTTP 504".into(),
+        }),
     ]);
     let error = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap_err();
     assert!(error.is_query_timeout());
+    assert_eq!(error.to_string(), crate::status::query_timeout_text());
     assert!(transport.0.lock().unwrap().is_empty());
+}
+
+/// The all-repositories Review queue: two requests in order, followed PRs on
+/// the first, the second's rows deduplicated against the first's, and a
+/// small page GitHub gives up on sent once more before the refresh fails.
+struct SplitReviewQueue {
+    asked: Mutex<Vec<(String, Vec<String>)>>,
+    /// How many times the available request still fails before answering.
+    available_failures: Mutex<u8>,
+}
+
+impl GithubTransport for SplitReviewQueue {
+    fn graphql(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+    ) -> Result<serde_json::Value, GhError> {
+        self.graphql_with_ids(query, variables, &[])
+    }
+
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        _variables: &[(&str, &str)],
+        ids: &[String],
+    ) -> Result<serde_json::Value, GhError> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((query.to_owned(), ids.to_vec()));
+        if query.contains(&format!("first:{PAGE_SIZE}")) {
+            return Err(GhError::Http {
+                status: 502,
+                message: "gh: HTTP 502".into(),
+            });
+        }
+        if query.contains("available: search") {
+            let mut failures = self.available_failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(GhError::Http {
+                    status: 504,
+                    message: "gh: HTTP 504".into(),
+                });
+            }
+            // One PR the requested search returned too, and one nobody is
+            // asked to review.
+            let mut duplicate = base(1);
+            duplicate["author"] = json!({"login": "alice"});
+            duplicate["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+            let mut fresh = base(2);
+            fresh["author"] = json!({"login": "alice"});
+            fresh["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+            return Ok(json!({"data": {
+                "available": {"pageInfo": {"hasNextPage": false}, "nodes": [duplicate, fresh]},
+                "rateLimit": {"limit": 5000, "cost": 2, "remaining": 4990, "resetAt": "2026-10-07T13:00:00Z"}
+            }}));
+        }
+        assert!(query.contains("requested: search"));
+        let mut requested = base(1);
+        requested["author"] = json!({"login": "alice"});
+        requested["reviewRequests"] =
+            json!({"totalCount": 1, "nodes": [{"requestedReviewer": {"login": "me"}}]});
+        let mut followed = base(7);
+        followed["id"] = json!(ids.first().cloned().unwrap_or_default());
+        Ok(json!({"data": {
+            "requested": {"pageInfo": {"hasNextPage": false}, "nodes": [requested]},
+            "tracked": ids.iter().map(|_| followed.clone()).collect::<Vec<_>>(),
+            "rateLimit": {"limit": 5000, "cost": 3, "remaining": 4993, "resetAt": "2026-10-07T13:00:00Z"}
+        }}))
+    }
+}
+
+#[test]
+fn the_all_repositories_review_queue_is_two_requests_and_a_small_one_is_resent_once() {
+    let rows = vec!["PR_followed".to_owned()];
+    let transport = SplitReviewQueue {
+        asked: Mutex::new(Vec::new()),
+        available_failures: Mutex::new(1),
+    };
+    let fetched = fetch_board_scoped_with_tracked(
+        &transport,
+        Mode::Review,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+        Tracked {
+            rows: &rows,
+            status: &[],
+        },
+        false,
+    )
+    .unwrap();
+    let asked = std::mem::take(&mut *transport.asked.lock().unwrap());
+    let shapes: Vec<(&str, usize)> = asked
+        .iter()
+        .map(|(query, ids)| {
+            let alias = if query.contains("requested: search") {
+                "requested"
+            } else {
+                "available"
+            };
+            let size = if query.contains("first:60") { 60 } else { 30 };
+            assert!(query.contains("first:"));
+            assert_eq!(
+                ids.len(),
+                usize::from(alias == "requested"),
+                "followed PRs ride on the requested request only"
+            );
+            (alias, size)
+        })
+        .collect();
+    assert_eq!(
+        shapes,
+        vec![
+            ("requested", 60),
+            ("requested", 30),
+            ("available", 30),
+            ("available", 30),
+        ],
+        "the full page fails, the small one answers; the available half fails once and is resent"
+    );
+    assert!(fetched.pagination.small_pages());
+    let numbers: Vec<u64> = fetched.rows.iter().map(|row| row.number).collect();
+    assert_eq!(numbers, vec![1, 2], "PR 1 once, from the requested search");
+    assert!(matches!(
+        fetched.rows[0].queue_provenance,
+        Some(QueueProvenance::Requested)
+    ));
+    assert!(matches!(
+        fetched.rows[1].queue_provenance,
+        Some(QueueProvenance::Available)
+    ));
+    assert_eq!(fetched.tracked.len(), 1);
+    assert_eq!(
+        fetched.rate.map(|rate| rate.remaining),
+        Some(4990),
+        "the later request's budget"
+    );
+    assert!(!fetched.truncated);
+
+    // Refused twice, the available half fails the refresh with core's
+    // sentence; the requested half's answer is not shown on its own.
+    let transport = SplitReviewQueue {
+        asked: Mutex::new(Vec::new()),
+        available_failures: Mutex::new(2),
+    };
+    let error = fetch_board_scoped_with_tracked(
+        &transport,
+        Mode::Review,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+        Tracked::default(),
+        true,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), crate::status::query_timeout_text());
+    assert_eq!(transport.asked.lock().unwrap().len(), 3);
 }
 
 #[test]

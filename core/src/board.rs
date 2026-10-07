@@ -19,9 +19,10 @@ use crate::github::query::{
     parse_alias_response, parse_pull_request_id, parse_review_response, parse_search_response,
     parse_tracked_response, pull_request_id_query, requested_ids, scope_repository_error,
     search_string, with_page_size, with_requested_ids, with_scope_repository, with_tracked_nodes,
-    with_tracked_status_nodes, RawPr, ReviewNode, RollupContexts, StateCount, PAGE_SIZE,
-    PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY, REVIEW_BOTH_PAGE_QUERY,
-    REVIEW_REQUESTED_PAGE_QUERY, REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY,
+    with_tracked_status_nodes, RawPr, ReviewNode, ReviewSearchResult, RollupContexts, StateCount,
+    PAGE_SIZE, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY,
+    REVIEW_AVAILABLE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
+    REVIEW_REQUESTED_QUERY, REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY,
     TRACKED_STATUS_QUERY,
 };
 use crate::github::rate_limit::RateLimitInfo;

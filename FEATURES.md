@@ -401,7 +401,11 @@ values in the code. New features get the next free number in their area.
   - Nothing is fetched separately for each PR.
 
   _since v0.1.0_ All open returns up to 60 PRs plus the ids of up to 100 that request your review, and costs about
-  4 points. _since v0.12.0_
+  4 points. _since v0.12.0_ The Review queue's second search leaves out the PRs that request your review, which the
+  first search already returns, so no PR is fetched twice and Load more no longer offers pages that add nothing
+  (measured: 26 of 39 candidates were duplicates). Across all repositories the Review queue sends its two searches
+  as two requests, one after the other: both in one request ran at 85–100 % of GitHub's 10-second cut-off and
+  failed one run in three; each alone takes about half of it. Followed PRs ride on the first. _unreleased_
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
   page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
@@ -430,7 +434,11 @@ values in the code. New features get the next free number in their area.
   cut-off when it arrives as an HTTP 502 or 504 with a body, and a view that timed out at both sizes, or whose All
   open filter changed, stays on 30-row pages. One-shot `prmarmot-cli` runs remember a view that needed small pages
   for an hour (`small-pages.json` beside the attention files), so the next run doesn't pay the timeout first.
-  _since v0.15.1_
+  _since v0.15.1_ A 30-row request GitHub gives up on is sent once more unchanged before the refresh fails: a
+  request that normally takes 4–5 seconds still ran into the cut-off once in ten, so its size is not what failed.
+  One retry only. When a refresh does fail this way, the status line, `prmarmot-cli`'s error and the iPad all say
+  the same sentence — "GitHub gave up on this request before it finished — it stops answering after about 10
+  seconds. Try again in a moment." — instead of `gh: HTTP 502`. _unreleased_
 
 ## Settings, theme, shortcuts
 

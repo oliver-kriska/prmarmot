@@ -1050,3 +1050,12 @@ pub fn stack_layer_hover(
 ) -> String {
     core_cells::stack_layer_hover(number, position, size, &base_ref)
 }
+
+/// What to show when GitHub gave up on a request before it finished: core's
+/// sentence, the one the desktop and the CLI show. A fetch that failed this
+/// way already carries it as its `Network` message; this is for a screen
+/// that explains the state on its own.
+#[uniffi::export]
+pub fn query_timeout_text() -> String {
+    prmarmot_core::status::query_timeout_text().to_owned()
+}

@@ -35,9 +35,13 @@ pub fn all_open_search_string(repo: &str, qualifiers: &str) -> String {
 
 /// Broad review-queue candidates. GitHub search has no working
 /// `no:review-requested` qualifier, so callers filter `reviewRequests.totalCount`
-/// after fetching these alongside the requested-review alias.
+/// after fetching these alongside the requested-review alias. The PRs that
+/// alias returns are excluded here (`-review-requested:`): they would only be
+/// fetched in full a second time and then dropped by that filter, and their
+/// extra pages made Load more promise rows it could not add (measured
+/// 2026-10-06: 26 of 39 candidates were duplicates, 9 rows survived).
 pub fn available_search_string(repo: &str, who: &str) -> String {
-    format!("repo:{repo} is:pr is:open -author:{who}")
+    format!("repo:{repo} is:pr is:open -author:{who} -review-requested:{who}")
 }
 
 /// All-repositories queue searches. The resolved login is used deliberately:
@@ -67,9 +71,11 @@ pub fn global_authored_search_string(who: &str) -> String {
 }
 
 /// Global available-review candidates must remain involvement-scoped. A bare
-/// `-author:` query would pull arbitrary public PRs from across GitHub.
+/// `-author:` query would pull arbitrary public PRs from across GitHub. As in
+/// [`available_search_string`], the PRs requesting your review are left to
+/// the requested alias.
 pub fn global_available_search_string(who: &str) -> String {
-    format!("is:pr is:open involves:{who} -author:{who} sort:updated-desc")
+    format!("is:pr is:open involves:{who} -author:{who} -review-requested:{who} sort:updated-desc")
 }
 
 /// The fields every board query selects for one PR, in one place so the
@@ -186,6 +192,33 @@ pub const REVIEW_SEARCH_QUERY: &str = concat!(
     pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
   }
+  available: search(query:$available, type:ISSUE, first:60){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#,
+    review_queue_fragment!()
+);
+
+/// Page one of the requested alias on its own, for the all-repositories
+/// Review queue, which sends its two searches as two requests: with every
+/// field above, both in one request took 8.7–10.4 s against GitHub's ~10 s
+/// cut-off, each alone 4–5 s (measured 2026-10-06, 56 full PRs).
+pub const REVIEW_REQUESTED_QUERY: &str = concat!(
+    r#"query($requested:String!,$who:String!){
+  requested: search(query:$requested, type:ISSUE, first:60){
+    pageInfo{ hasNextPage endCursor }
+    nodes{ ...ReviewQueuePr }
+  }
+  rateLimit { limit cost remaining resetAt }
+}"#,
+    review_queue_fragment!()
+);
+
+/// Page one of the available alias on its own; see [`REVIEW_REQUESTED_QUERY`].
+pub const REVIEW_AVAILABLE_QUERY: &str = concat!(
+    r#"query($available:String!,$who:String!){
   available: search(query:$available, type:ISSUE, first:60){
     pageInfo{ hasNextPage endCursor }
     nodes{ ...ReviewQueuePr }
@@ -892,7 +925,7 @@ mod tests {
         );
         assert_eq!(
             global_available_search_string("octocat"),
-            "is:pr is:open involves:octocat -author:octocat sort:updated-desc"
+            "is:pr is:open involves:octocat -author:octocat -review-requested:octocat sort:updated-desc"
         );
         assert!(!global_available_search_string("octocat").starts_with("-author:"));
     }
