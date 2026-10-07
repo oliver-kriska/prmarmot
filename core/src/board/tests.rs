@@ -2724,6 +2724,32 @@ fn the_all_repositories_review_queue_is_two_requests_and_a_small_one_is_resent_o
 }
 
 #[test]
+fn a_bots_comment_does_not_answer_a_team_request() {
+    let mut v = base(9);
+    v["reviewRequests"] = json!({
+        "totalCount": 1,
+        "nodes": [{"requestedReviewer": {"__typename": "Team", "slug": "platform"}}]
+    });
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "Bot", "login": "copilot-pull-request-reviewer"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    let row = derive_one(v.clone(), Mode::Authored);
+    assert_eq!(row.review_state, ReviewState::Waiting);
+    assert!(
+        row.note.contains("team requested, nobody responded"),
+        "{}",
+        row.note
+    );
+    // A person's comment is a response.
+    v["reviews"]["nodes"][0]["author"] = json!({"__typename": "User", "login": "bob"});
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.review_state, ReviewState::Commented);
+    assert!(!row.note.contains("nobody responded"), "{}", row.note);
+}
+
+#[test]
 fn more_threads_than_the_window_make_the_count_a_lower_bound() {
     let mut v = base(4);
     v["reviewThreads"] = json!({

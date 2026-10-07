@@ -212,6 +212,9 @@ values in the code. New features get the next free number in their area.
   a review; each review carries `bot` (the CLI's JSON and the iPad's ffi record too) so the Reviews column can tell.
   A person's review, a conflict, failing CI, a change request or an unresolved comment is the fact as before.
   Review authors' account type comes with the reviews the query already reads: no extra cost, measured. _since v0.15.1_
+  The same rule reaches your own PRs: a bot's comments are not a reviewer's response, so a PR whose only review is
+  Copilot's still reads "awaiting review" — "team requested, nobody responded" when only a team was asked — until a
+  person comments; a bot's approval or change request is a verdict and counts like anyone's. _unreleased_
 - **F-note-16** A PR in its repository's merge queue says so instead of "mergeable": "approved — in merge queue,
   position 2" while it waits or the queue runs its checks, "approved — merging" once the queue has it, and
   "approved — merge queue couldn't merge it" when the queue gave up. GitHub merges a queued PR in its turn, so

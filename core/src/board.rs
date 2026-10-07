@@ -1122,10 +1122,13 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
                 .iter()
                 .filter(|r| r.state == ReviewVerdict::Approved)
                 .count();
+            // A bot's comments are not a reviewer's response: the PR still
+            // waits for the person asked. Its approval or change request is
+            // a verdict and counts like anyone's.
             let cmt = row
                 .reviews
                 .iter()
-                .any(|r| r.state == ReviewVerdict::Commented);
+                .any(|r| r.state == ReviewVerdict::Commented && !r.bot);
             let chg = row
                 .reviews
                 .iter()
@@ -1445,12 +1448,13 @@ fn requested_teams(pr: &RawPr) -> Vec<String> {
         .collect()
 }
 
-/// Everyone requested is a team, and nobody has reviewed: a request that
-/// names no person can sit unnoticed.
+/// Everyone requested is a team, and no person has reviewed: a request that
+/// names no person can sit unnoticed. A bot's review (Copilot's, a linter's)
+/// is not a teammate picking the request up, so it does not end the wait.
 fn only_teams_asked(row: &BoardRow) -> bool {
     !row.requested.is_empty()
         && row.requested.len() == row.requested_teams.len()
-        && row.reviews.is_empty()
+        && !row.reviewed_by_a_person()
 }
 
 fn requested_reviewers(pr: &RawPr) -> Vec<String> {
