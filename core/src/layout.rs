@@ -475,13 +475,13 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
                 .into()
         }
         (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Await)) if mixed => {
-            "Reviewers are asked or have commented, nothing blocks it, and nobody has approved \
-             it yet: its author is waiting on them."
+            "Reviewers are asked or have commented and nobody has approved it yet, or a merge \
+             conflict waits on its author: nothing here is yours to do."
                 .into()
         }
         (Mode::Authored, SectionKind::Category(Category::Await)) => {
             "Reviewers are asked or have commented, nothing blocks it, and nobody has approved \
-             it yet: you are waiting on them."
+             it yet, or you answered every open comment: you are waiting on them."
                 .into()
         }
         (Mode::Review | Mode::AllOpen, SectionKind::Category(Category::Todo)) => {

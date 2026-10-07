@@ -398,6 +398,20 @@ impl Default for BoardConfig {
     }
 }
 
+/// Whose turn the unresolved review threads are on, from a second, bounded
+/// request ([`crate::github::query::TURNS_QUERY`]) after the page: `None`
+/// until it answered, so a row the request did not cover keeps the plain
+/// rule (every unresolved thread is your move).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Turns {
+    /// Unresolved threads whose last comment is yours: your reply cleared
+    /// your turn on them; they wait on the reviewer.
+    pub replied: usize,
+    /// Unresolved threads you opened whose last comment is someone else's:
+    /// the author's reply returned them to you.
+    pub returned: usize,
+}
+
 /// One row of the dashboard. `review_state` is authored-mode only (`None` in
 /// the review queue); everything else is set in both modes.
 #[derive(Debug, Clone)]
@@ -466,6 +480,8 @@ pub struct BoardRow {
     /// The PR has more review threads than the newest 100 that were read, so
     /// `unresolved` counts only those and may be low ("5+").
     pub unresolved_capped: bool,
+    /// Whose turn the unresolved threads are on; see [`Turns`].
+    pub turns: Option<Turns>,
     /// Structured blockers behind the action `note`, most-blocking-first
     /// (authored mode only; empty for await/review rows). The UI reorders and
     /// colors these; the `note` string is generated from exactly this list.
@@ -526,6 +542,7 @@ impl Default for BoardRow {
             failed_checks: Vec::new(),
             unresolved_paths: Vec::new(),
             unresolved_capped: false,
+            turns: None,
             blockers: Vec::new(),
             created_at: String::new(),
             waiting_since: None,
@@ -902,13 +919,20 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
         };
         return;
     }
+    // A conflict on someone else's PR is its author's job alone: it waits on
+    // them, and does not put the PR under Needs action for you (Oliver,
+    // 2026-10-07 — most of a busy repository's "changed" marks were
+    // teammates' PRs going into conflict after a base push). Failing CI,
+    // requested changes and open threads stay facts: a reviewer may be
+    // wanted on them.
+    let authors_alone = if row.conflict {
+        Some("merge conflict".to_owned())
+    } else if row.blocks_on_rebase() {
+        Some(CANNOT_REBASE_NOTE.to_owned())
+    } else {
+        None
+    };
     let mut facts = Vec::new();
-    if row.conflict {
-        facts.push("merge conflict".to_owned());
-    }
-    if row.blocks_on_rebase() {
-        facts.push(CANNOT_REBASE_NOTE.to_owned());
-    }
     if row.ci == Ci::Fail {
         facts.push(ci_failing_text(row, ": "));
     }
@@ -923,7 +947,13 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     } else {
         Category::Action
     };
-    let state = if facts.is_empty() {
+    let state = if let Some(conflict) = authors_alone {
+        if facts.is_empty() {
+            format!("{conflict} — waits on its author")
+        } else {
+            format!("{conflict} · {}", facts.join(" · "))
+        }
+    } else if facts.is_empty() {
         match row.review_state {
             ReviewState::Approved => "approved".to_owned(),
             ReviewState::Commented => "review comments received".to_owned(),
@@ -938,7 +968,12 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     };
     // An agent's PR with nothing against it and no review yet: say that no
     // person has looked, which is the one fact that decides who picks it up.
-    let state = if facts.is_empty() && row.agent && !row.reviewed_by_a_person() {
+    let state = if facts.is_empty()
+        && !row.conflict
+        && !row.blocks_on_rebase()
+        && row.agent
+        && !row.reviewed_by_a_person()
+    {
         NO_HUMAN_LOOKED_NOTE.to_owned()
     } else {
         state
@@ -960,6 +995,22 @@ impl BoardRow {
     pub fn reviewed_by_a_person(&self) -> bool {
         self.reviews.iter().any(|review| !review.bot)
     }
+
+    /// The unresolved threads that are your move as the author: all of them
+    /// until [`Turns`] answered, then those whose last comment is not yours.
+    pub fn awaiting_you(&self) -> usize {
+        self.unresolved.saturating_sub(self.replied())
+    }
+
+    /// Unresolved threads you answered last ([`Turns::replied`]).
+    pub fn replied(&self) -> usize {
+        self.turns.map_or(0, |turns| turns.replied)
+    }
+
+    /// Unresolved threads of yours the author answered ([`Turns::returned`]).
+    pub fn returned(&self) -> usize {
+        self.turns.map_or(0, |turns| turns.returned)
+    }
 }
 
 /// Category, blockers, and Note for one of your own PRs, from row facts only
@@ -971,7 +1022,7 @@ fn classify_authored(row: &mut BoardRow, cfg: &BoardConfig) {
         || row.conflict
         || row.blocks_on_rebase()
         || row.review_decision == Some(ReviewDecision::ChangesRequested)
-        || row.unresolved > 0
+        || row.awaiting_you() > 0
         || row.review_state == ReviewState::None
     {
         Category::Action
@@ -1015,6 +1066,56 @@ pub fn carry_forward_conflicts(
         adjusted += 1;
     }
     adjusted
+}
+
+/// "replied to 2 comments — waiting for the reviewer": the author's side of
+/// the ownership rule, after every open thread got their answer.
+fn replied_text(n: usize) -> String {
+    format!(
+        "replied to {n} comment{} — waiting for the reviewer",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// "the author replied to 2 of your comments — your turn": the reviewer's
+/// side, when a thread you opened got the author's answer.
+fn returned_text(n: usize) -> String {
+    if n == 1 {
+        "the author replied to your comment — your turn".to_owned()
+    } else {
+        format!("the author replied to {n} of your comments — your turn")
+    }
+}
+
+/// Whether a row's unresolved threads are worth a turns request: your own
+/// PR with open threads (your reply may have cleared your turn), or one you
+/// reviewed in the Review queue (the author's reply may have returned it).
+pub fn wants_turns(row: &BoardRow, mode: Mode, me: &str) -> bool {
+    row.turns.is_none()
+        && row.unresolved > 0
+        && match mode {
+            Mode::Authored | Mode::AllOpen => row.author.as_deref() == Some(me),
+            Mode::Review => row.category == Category::Done,
+        }
+}
+
+/// Apply whose turn the threads are on ([`Turns`]) to a row: your own PR is
+/// classified again with the threads you answered taken off your count; a
+/// PR you reviewed whose threads the author answered comes back to
+/// "Requested from you" with a Note that says so. Rows the request did not
+/// cover are left as they are.
+pub fn apply_turns(row: &mut BoardRow, turns: Turns, mode: Mode, me: &str, cfg: &BoardConfig) {
+    row.turns = Some(turns);
+    match mode {
+        Mode::Authored | Mode::AllOpen if row.author.as_deref() == Some(me) => {
+            classify_authored(row, cfg);
+        }
+        Mode::Review if row.category == Category::Done && turns.returned > 0 => {
+            row.category = Category::Todo;
+            row.note = format!("🔵 {}", returned_text(turns.returned));
+        }
+        _ => {}
+    }
 }
 
 fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
@@ -1105,6 +1206,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         failed_checks: derive_failed_checks(pr),
         unresolved_paths: derive_unresolved_paths(pr),
         unresolved_capped,
+        turns: None,
         blockers: Vec::new(),
         created_at: pr.created_at.clone(),
         waiting_since: None,
@@ -1618,8 +1720,9 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
     if row.review_decision == Some(ReviewDecision::ChangesRequested) {
         blockers.push(Blocker::ChangesRequested);
     }
-    if row.unresolved > 0 {
-        blockers.push(Blocker::UnresolvedComments(row.unresolved));
+    // Threads you answered last are the reviewer's move, not yours.
+    if row.awaiting_you() > 0 {
+        blockers.push(Blocker::UnresolvedComments(row.awaiting_you()));
     }
     blockers
 }
@@ -1806,6 +1909,10 @@ fn authored_note(row: &BoardRow) -> String {
             .join(" · "),
         Category::Await => match row.review_state {
             ReviewState::Approved => approved_note(row),
+            // Your reply cleared your turn on every open thread: the
+            // reviewer's move now, and the Note says so instead of counting
+            // the threads against you.
+            _ if row.replied() > 0 => format!("✅ {}", replied_text(row.replied())),
             ReviewState::Commented => "🟢 commented — awaiting approval".to_string(),
             ReviewState::Waiting if only_teams_asked(row) => {
                 "✅ awaiting review — team requested, nobody responded".to_string()

@@ -636,7 +636,9 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more
-  threads than the newest 100 that were read), `labels`, `issue`, `stack`,
+  threads than the newest 100 that were read, `replied_threads` for the ones
+  you answered last, and `returned_threads` for the ones you opened on someone
+  else's PR that they answered), `labels`, `issue`, `stack`,
   typed `blockers`, and the
   plain-text `note`. `waiting_since` is the pickup age's start (null when the
   PR isn't waiting for a reviewer) and `stale` says whether it has waited

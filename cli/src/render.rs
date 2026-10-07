@@ -164,6 +164,8 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
             "url": check.url,
         })).collect::<Vec<_>>(),
         "unresolved_threads_capped": row.unresolved_capped,
+        "replied_threads": row.replied(),
+        "returned_threads": row.returned(),
         "labels": row.labels,
         "issue": row.issue.as_ref().map(|key| json!({ "key": key, "url": row.issue_url })),
         "stack": row.stack.as_ref().map(|stack| json!({

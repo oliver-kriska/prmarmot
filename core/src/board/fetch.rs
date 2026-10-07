@@ -4,6 +4,7 @@
 //! folded into the rows already loaded.
 
 use super::*;
+use crate::github::query::{check_graphql_errors, parse_rate, MAX_TURN_IDS, TURNS_QUERY};
 
 /// One request, sent again unchanged when GitHub gave up on it at
 /// [`SMALL_PAGE_SIZE`] rows. Measured 2026-10-06: a request that takes 4–5 s
@@ -150,7 +151,7 @@ pub fn fetch_view(
     } else {
         &unfiltered
     };
-    fetch_scoped(
+    let mut fetched = fetch_scoped(
         transport,
         mode,
         scope,
@@ -159,7 +160,93 @@ pub fn fetch_view(
         tracked,
         filter,
         small_pages,
-    )
+    )?;
+    settle_turns(transport, mode, me, cfg, &mut fetched);
+    Ok(fetched)
+}
+
+/// The ownership rule's second request ([`TURNS_QUERY`]): whose turn the
+/// unresolved threads are on, for the rows it can move
+/// ([`wants_turns`]), at most [`MAX_TURN_IDS`] of them, nearest the top
+/// first. A refusal leaves the rows on the plain rule — the board is
+/// already there, and this only refines it — so nothing here fails a
+/// refresh; the budget it reports is the latest.
+fn settle_turns(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    me: &str,
+    cfg: &BoardConfig,
+    fetched: &mut BoardFetch,
+) {
+    let ids: Vec<String> = fetched
+        .rows
+        .iter()
+        .filter(|row| wants_turns(row, mode, me))
+        .map(|row| row.id.clone())
+        .take(MAX_TURN_IDS)
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(body) = transport.graphql_with_ids(TURNS_QUERY, &[], &ids) else {
+        return;
+    };
+    if check_graphql_errors(&body).is_err() {
+        return;
+    }
+    if let Some(rate) = parse_rate(&body) {
+        fetched.rate = Some(rate);
+    }
+    let Some(nodes) = body
+        .pointer("/data/turns")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    for node in nodes.iter().filter(|node| !node.is_null()) {
+        let Some(id) = node.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let turns = turns_of(node, me);
+        if let Some(row) = fetched.rows.iter_mut().find(|row| row.id == id) {
+            apply_turns(row, turns, mode, me, cfg);
+        }
+    }
+}
+
+/// Count a PR's unresolved threads by who spoke last: yours when your
+/// comment is the latest, returned when you opened the thread and someone
+/// else answered last.
+fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
+    let author = |thread: &serde_json::Value, edge: &str| -> Option<String> {
+        thread
+            .pointer(&format!("/{edge}/nodes/0/author/login"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let mut turns = Turns::default();
+    for thread in node
+        .pointer("/reviewThreads/nodes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if thread
+            .get("isResolved")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let latest = author(thread, "latest");
+        let opened = author(thread, "opened");
+        if latest.as_deref() == Some(me) {
+            turns.replied += 1;
+        } else if opened.as_deref() == Some(me) && latest.is_some() {
+            turns.returned += 1;
+        }
+    }
+    turns
 }
 
 /// All open for one repository, with `filter`'s labels and authors matched by
@@ -177,7 +264,7 @@ pub fn fetch_all_open(
     tracked: Tracked<'_>,
     small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
-    fetch_scoped(
+    let mut fetched = fetch_scoped(
         transport,
         Mode::AllOpen,
         &BoardScope::Repository(repo.to_owned()),
@@ -186,7 +273,9 @@ pub fn fetch_all_open(
         tracked,
         filter,
         small_pages,
-    )
+    )?;
+    settle_turns(transport, Mode::AllOpen, me, cfg, &mut fetched);
+    Ok(fetched)
 }
 
 /// One page-one operation, and when GitHub gives up on a full page (see
@@ -530,16 +619,19 @@ pub fn fetch_more_board_scoped(
     current: &BoardFetch,
 ) -> Result<BoardFetch, GhError> {
     let first = current.pagination.page_size();
-    match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
+    let mut fetched = match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
         // Same fallback as page one: the cursor stays valid at any page size.
         Err(error) if error.is_query_timeout() && !current.pagination.small_pages => {
             let mut fetched =
                 fetch_more_sized(transport, mode, scope, me, cfg, current, SMALL_PAGE_SIZE)?;
             fetched.pagination.small_pages = true;
-            Ok(fetched)
+            fetched
         }
-        fetched => fetched,
-    }
+        fetched => fetched?,
+    };
+    // The rows already settled keep their turns; only the page's new rows ask.
+    settle_turns(transport, mode, me, cfg, &mut fetched);
+    Ok(fetched)
 }
 
 fn fetch_more_sized(

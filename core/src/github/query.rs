@@ -319,6 +319,21 @@ fn is_node_id(id: &str) -> bool {
 /// so it costs a point however many ids it carries (at most 100).
 pub const TRACKED_STATUS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  tracked: nodes(ids:$tracked){ ... on PullRequest { id state merged } }\n}";
 
+/// Whose turn each unresolved review thread is on, for the ownership rule
+/// "your reply clears your turn, the author's reply returns it"
+/// (`crate::board::Turns`): the thread's first and last comment authors,
+/// under the same 100-thread window the board reads. A nested connection
+/// under every search row would cost 16× the points (2 → 32 per 30 rows,
+/// measured 2026-10-02), so this is a second, bounded request for only the
+/// rows the rule can move — at most [`MAX_TURN_IDS`] — at 2 points a PR and
+/// under a second for eleven (measured 2026-10-07; Oliver's ruling the same
+/// day: try it). Any transport's batched-id variable is `$tracked`.
+pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  turns: nodes(ids:$tracked){ ... on PullRequest { id reviewThreads(last:100){ nodes{ isResolved opened: comments(first:1){ nodes{ author{ login } } } latest: comments(last:1){ nodes{ author{ login } } } } } } }\n}";
+
+/// The most PRs one turns request asks about: 60 points at the measured
+/// 2 a PR, against a 5,000-point hour.
+pub const MAX_TURN_IDS: usize = 30;
+
 /// Only the rate budget; [`with_tracked_nodes`] adds the tracked PRs. For
 /// following specific PRs without running a board search.
 pub const TRACKED_ONLY_QUERY: &str =

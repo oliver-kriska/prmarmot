@@ -1,4 +1,5 @@
 use super::*;
+use crate::github::query::MAX_TURN_IDS;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -522,7 +523,10 @@ fn an_agent_s_unreviewed_pr_says_no_human_has_looked_yet() {
     assert_eq!(row.reviews.iter().filter(|r| !r.bot).count(), 1);
     assert_eq!(row.note, "review comments received");
     v["mergeable"] = json!("CONFLICTING");
-    assert_eq!(derive_one(v.clone(), Mode::AllOpen).note, "merge conflict");
+    assert_eq!(
+        derive_one(v.clone(), Mode::AllOpen).note,
+        "merge conflict — waits on its author"
+    );
     assert_eq!(derive_one(v, Mode::Review).note, "⚠️ has conflicts");
 }
 
@@ -570,15 +574,19 @@ fn a_branch_github_cannot_rebase_is_named_and_blocks_only_where_rebase_is_the_on
     let conflicted = derive_one(conflicted, Mode::Authored);
     assert_eq!(conflicted.blockers, vec![Blocker::MergeConflict]);
 
-    // Someone else's PR in a rebase-only repository says it as a fact.
+    // Someone else's PR in a rebase-only repository says it as a fact that
+    // waits on them, not under Needs action for you.
     let mut theirs = with_methods(approved(3), false, false, true);
     theirs["author"] = json!({"login": "alice"});
     theirs["canBeRebased"] = json!(false);
     let theirs = derive_involving_rows(&[pr(theirs)], "acme/widgets", "me", &cfg())
         .pop()
         .unwrap();
-    assert_eq!(theirs.category, Category::Action);
-    assert_eq!(theirs.note, "alice's PR · can't rebase");
+    assert_eq!(theirs.category, Category::Await);
+    assert_eq!(
+        theirs.note,
+        "alice's PR · can't rebase — waits on its author"
+    );
 }
 
 #[test]
@@ -2146,8 +2154,13 @@ fn all_open_rows_read_as_yours_as_asked_of_you_or_in_the_authors_name() {
         "unless the review queue's search says a team of yours was asked"
     );
     assert_eq!(
-        team.note, "merge conflict",
+        team.note, "merge conflict — waits on its author",
         "the Author column already says whose it is"
+    );
+    assert_eq!(
+        team.category,
+        Category::Await,
+        "someone else's conflict is theirs to fix, not yours to act on"
     );
     assert!(
         team.blockers.is_empty(),
@@ -2821,4 +2834,262 @@ fn what_became_of_tracked_prs_is_one_request_without_rows() {
         .unwrap()
         .tracked
         .is_empty());
+}
+
+// ---- whose turn the open threads are on -----------------------------------
+
+fn own_pr_with_threads(number: u64, unresolved: usize) -> serde_json::Value {
+    let mut v = base(number);
+    v["id"] = json!(format!("PR_{number}"));
+    v["reviewRequests"] =
+        json!({"totalCount": 1, "nodes": [{"requestedReviewer": {"login": "bob"}}]});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "User", "login": "bob"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    v["reviewThreads"] = json!({
+        "totalCount": unresolved,
+        "nodes": (0..unresolved).map(|_| json!({"isResolved": false})).collect::<Vec<_>>()
+    });
+    v
+}
+
+#[test]
+fn answering_every_open_comment_on_your_pr_hands_the_turn_back() {
+    let mut row = derive_one(own_pr_with_threads(1, 2), Mode::Authored);
+    assert_eq!(row.category, Category::Action);
+    assert!(wants_turns(&row, Mode::Authored, "me"));
+    apply_turns(
+        &mut row,
+        Turns {
+            replied: 2,
+            returned: 0,
+        },
+        Mode::Authored,
+        "me",
+        &cfg(),
+    );
+    assert_eq!(row.category, Category::Await, "{}", row.note);
+    assert_eq!(
+        row.note,
+        "✅ replied to 2 comments — waiting for the reviewer"
+    );
+    assert_eq!(row.awaiting_you(), 0);
+    assert!(row.blockers.is_empty(), "{:?}", row.blockers);
+    assert_eq!(row.unresolved, 2, "the GitHub count stays what it was");
+    assert!(!wants_turns(&row, Mode::Authored, "me"), "asked once");
+}
+
+#[test]
+fn answering_some_comments_leaves_the_rest_on_you() {
+    let mut row = derive_one(own_pr_with_threads(2, 3), Mode::Authored);
+    apply_turns(
+        &mut row,
+        Turns {
+            replied: 1,
+            returned: 0,
+        },
+        Mode::Authored,
+        "me",
+        &cfg(),
+    );
+    assert_eq!(row.category, Category::Action);
+    assert_eq!(row.awaiting_you(), 2);
+    assert_eq!(row.blockers, vec![Blocker::UnresolvedComments(2)]);
+    assert!(row.note.contains("2 unresolved comments"), "{}", row.note);
+}
+
+#[test]
+fn the_authors_reply_returns_a_reviewed_pr_to_you() {
+    let mut v = own_pr_with_threads(3, 1);
+    v["author"] = json!({"login": "alice"});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "User", "login": "me"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    v["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let mut row = derive_one(v, Mode::Review);
+    assert_eq!(row.category, Category::Done, "{}", row.note);
+    assert!(wants_turns(&row, Mode::Review, "me"));
+    // Nothing came back yet: the row stays where it was.
+    let mut untouched = row.clone();
+    apply_turns(&mut untouched, Turns::default(), Mode::Review, "me", &cfg());
+    assert_eq!(untouched.category, Category::Done);
+    apply_turns(
+        &mut row,
+        Turns {
+            replied: 0,
+            returned: 1,
+        },
+        Mode::Review,
+        "me",
+        &cfg(),
+    );
+    assert_eq!(row.category, Category::Todo);
+    assert_eq!(
+        row.note,
+        "🔵 the author replied to your comment — your turn"
+    );
+}
+
+#[test]
+fn a_teammates_conflict_waits_on_its_author_not_on_you() {
+    let mut v = base(4);
+    v["author"] = json!({"login": "alice"});
+    v["mergeable"] = "CONFLICTING".into();
+    v["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let row = derive_one(v.clone(), Mode::AllOpen);
+    assert_eq!(row.category, Category::Await, "{}", row.note);
+    assert_eq!(row.note, "merge conflict — waits on its author");
+    // A fact a reviewer may be wanted on keeps it under Needs action, with
+    // the conflict named first.
+    v["commits"] = json!({"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]});
+    let row = derive_one(v, Mode::AllOpen);
+    assert_eq!(row.category, Category::Action, "{}", row.note);
+    assert!(
+        row.note.starts_with("merge conflict · CI failing"),
+        "{}",
+        row.note
+    );
+    // Your own conflict is still yours.
+    let mut mine = base(5);
+    mine["mergeable"] = "CONFLICTING".into();
+    let row = derive_one(mine, Mode::AllOpen);
+    assert_eq!(row.category, Category::Action, "{}", row.note);
+}
+
+/// Answers the board search, then the turns request: records the ids it was
+/// asked about and marks the first PR's threads as answered by the viewer.
+struct TurnsTransport {
+    turns_ids: Mutex<Vec<Vec<String>>>,
+    refuse_turns: bool,
+    rows: usize,
+}
+
+impl GithubTransport for TurnsTransport {
+    fn graphql(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+    ) -> Result<serde_json::Value, GhError> {
+        self.graphql_with_ids(query, variables, &[])
+    }
+
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        _variables: &[(&str, &str)],
+        ids: &[String],
+    ) -> Result<serde_json::Value, GhError> {
+        if query.contains("turns: nodes(ids:") {
+            self.turns_ids.lock().unwrap().push(ids.to_vec());
+            if self.refuse_turns {
+                return Err(GhError::Http {
+                    status: 502,
+                    message: "gh: HTTP 502".into(),
+                });
+            }
+            let answered = |by: &str| {
+                json!({"isResolved": false,
+                       "opened": {"nodes": [{"author": {"login": "bob"}}]},
+                       "latest": {"nodes": [{"author": {"login": by}}]}})
+            };
+            let turns: Vec<_> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let threads = if i == 0 {
+                        vec![answered("me"), answered("me")]
+                    } else {
+                        vec![answered("bob"), answered("me")]
+                    };
+                    json!({"id": id, "reviewThreads": {"nodes": threads}})
+                })
+                .collect();
+            return Ok(json!({"data": {
+                "turns": turns,
+                "rateLimit": {"limit": 5000, "cost": ids.len(), "remaining": 4900, "resetAt": "2026-10-07T13:00:00Z"}
+            }}));
+        }
+        assert!(ids.is_empty(), "the board search carries no turns ids");
+        let nodes: Vec<_> = (1..=self.rows as u64)
+            .map(|n| own_pr_with_threads(n, 2))
+            .collect();
+        Ok(json!({"data": {
+            "search": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+            "rateLimit": {"limit": 5000, "cost": 1, "remaining": 4999, "resetAt": "2026-10-07T13:00:00Z"}
+        }}))
+    }
+}
+
+#[test]
+fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
+    let transport = TurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        refuse_turns: false,
+        rows: MAX_TURN_IDS + 5,
+    };
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
+    assert_eq!(asked.len(), 1, "one request, after the board");
+    assert_eq!(asked[0].len(), MAX_TURN_IDS, "capped");
+    let in_board_order: Vec<String> = fetched
+        .rows
+        .iter()
+        .map(|row| row.id.clone())
+        .take(MAX_TURN_IDS)
+        .collect();
+    assert_eq!(asked[0], in_board_order, "the first rows of the board ask");
+    let first = fetched.rows.first().unwrap();
+    assert_eq!(first.category, Category::Await, "{}", first.note);
+    assert_eq!(first.replied(), 2);
+    let second = &fetched.rows[1];
+    assert_eq!(second.category, Category::Action);
+    assert_eq!(second.awaiting_you(), 1);
+    let beyond = fetched.rows.last().unwrap();
+    assert!(!asked[0].contains(&beyond.id));
+    assert_eq!(
+        beyond.turns, None,
+        "past the cap: left as GitHub counted it"
+    );
+    assert_eq!(beyond.category, Category::Action);
+    assert_eq!(
+        fetched.rate.unwrap().cost as usize,
+        MAX_TURN_IDS,
+        "the budget shown is the latest request's"
+    );
+}
+
+#[test]
+fn a_refused_turns_request_leaves_the_board_as_github_counted_it() {
+    let transport = TurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        refuse_turns: true,
+        rows: 2,
+    };
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    assert_eq!(transport.turns_ids.lock().unwrap().len(), 1);
+    assert!(fetched.rows.iter().all(|row| row.turns.is_none()));
+    assert!(fetched
+        .rows
+        .iter()
+        .all(|row| row.category == Category::Action));
+    assert_eq!(
+        fetched.rate.unwrap().cost,
+        1,
+        "the board's own budget stays"
+    );
+}
+
+#[test]
+fn nothing_to_ask_sends_no_turns_request() {
+    let transport = TurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        refuse_turns: false,
+        rows: 0,
+    };
+    fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    assert!(transport.turns_ids.lock().unwrap().is_empty());
 }

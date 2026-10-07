@@ -198,6 +198,20 @@ values in the code. New features get the next free number in their area.
   all). The count ends Details' "Your review" line and the "Review again" notification, and the CLI's JSON carries
   `commits_since_review` (count and whether it is a lower bound). One more point per 30 rows, measured.
   _since v0.15.1_
+- **F-note-20** Whose turn an open comment is on. Your reply clears your turn: an unresolved thread on your own PR
+  whose newest comment is yours no longer counts against you, so a PR where you answered every comment moves from
+  Needs action to Awaiting review with "replied to 3 comments — waiting for the reviewer", and one where you
+  answered some keeps the rest ("2 unresolved comments"). The author's reply returns it: a PR you reviewed whose
+  author answered one of your threads comes back to Requested from you with "the author replied to 2 of your
+  comments — your turn". GitHub's own count stays as it was; `replied_threads` and `returned_threads` sit beside
+  `unresolved_threads` in the CLI's JSON and the iPad's ffi record. The answer comes from one more request after
+  the board, for at most 30 of its PRs with open threads (two points each, 0.7–1.0 s for 9, measured); a refused
+  answer leaves the board as GitHub counted it. _unreleased_
+- **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
+  "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
+  it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
+  reviewer may be wanted on, so with those it is still Needs action and the conflict leads: "merge conflict · CI
+  failing". Your own conflict is yours as before. _unreleased_
 - **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
   (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
   ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'

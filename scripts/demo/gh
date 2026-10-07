@@ -665,6 +665,20 @@ def graphql(args):
                     "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"],
                                 "message": f"Could not resolve to a PullRequest with the number of {number}."}]}
         return {"data": {"repository": {"pullRequest": {"id": found["id"]}}}}
+    # The turns follow-up: who spoke last on each unresolved thread. Every demo
+    # thread was opened and last answered by a reviewer, so nothing changes hands.
+    if "turns: nodes(ids:" in query:
+        def turns(node):
+            if node is None:
+                return None
+            threads = node["reviewThreads"]["nodes"]
+            return {"id": node["id"], "reviewThreads": {"nodes": [
+                {"isResolved": thread["isResolved"],
+                 "opened": {"nodes": [{"author": {"login": "alex"}}]},
+                 "latest": {"nodes": [{"author": {"login": "alex"}}]}}
+                for thread in threads]}}
+        return {"data": {"rateLimit": rate(len(tracked) or 1),
+                         "turns": [turns(node) for node in tracked]}}
     if "$tracked" in query and "search" not in query:
         return {"data": {"rateLimit": rate(1), "tracked": tracked}}
     raise ValueError("unrecognized GraphQL operation")

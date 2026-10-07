@@ -168,15 +168,29 @@ fn a_board_arrives_through_a_foreign_transport() {
         .iter()
         .any(|row| row.wait_label.is_some() && row.waiting_secs.is_some()));
 
-    // One request, with the token and a real GraphQL body.
+    // The search, with the token and a real GraphQL body, then the turns
+    // follow-up for the fixture's own PRs with open threads.
     let requests = transport.requests();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].url, "https://api.github.com/graphql");
     assert_eq!(requests[0].token, "ghu_offline");
     assert_eq!(requests[0].user_agent, "prmarmot-ffi-test/0");
     let body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
     assert!(body["query"].as_str().unwrap().contains("search"));
     assert_eq!(body["variables"]["who"], "me");
+    let turns: serde_json::Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert!(turns["query"]
+        .as_str()
+        .unwrap()
+        .contains("turns: nodes(ids:"));
+    let asked = turns["variables"]["tracked"].as_array().unwrap().len();
+    let with_threads = board
+        .rows
+        .iter()
+        .filter(|row| row.unresolved_threads > 0)
+        .count();
+    assert_eq!(asked, with_threads, "{turns}");
+    assert!(asked > 0, "the fixture has PRs with open threads");
 }
 
 /// The authored fixture as a fine-grained token sees it: GitHub refuses the
@@ -590,7 +604,9 @@ fn paged_body() -> String {
 }
 
 /// Answers with `paged_body`, and when `hold` says so, only once the test
-/// lets it: the request is sent, then waits.
+/// lets it: the request is sent, then waits. Only the board search is held;
+/// the turns follow-up that trails every page answers at once, so one
+/// release still stands for one fetch.
 struct Held {
     body: String,
     hold: std::sync::atomic::AtomicBool,
@@ -600,7 +616,14 @@ struct Held {
 
 #[async_trait::async_trait]
 impl GithubTransport for Held {
-    async fn send(&self, _request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+    async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+        if request.body.contains("turns: nodes(ids:") {
+            return Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: r#"{"data":{"turns":[]}}"#.to_owned(),
+            });
+        }
         if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
             self.sent.send(()).await.unwrap();
             self.release.recv().await.unwrap();
@@ -986,6 +1009,14 @@ struct GivesUpOnFullPages {
 #[async_trait::async_trait]
 impl GithubTransport for GivesUpOnFullPages {
     async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+        // The turns follow-up after a page is neither size.
+        if request.body.contains("turns: nodes(ids:") {
+            return Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: r#"{"data":{"turns":[]}}"#.to_owned(),
+            });
+        }
         let full = request.body.contains("type:ISSUE, first:60");
         self.pages
             .lock()

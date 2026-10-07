@@ -598,6 +598,16 @@ pub struct PullRequest {
     #[serde(default)]
     #[uniffi(default = false)]
     pub unresolved_capped: bool,
+    /// Unresolved threads where your own comment is the newest, so they are
+    /// not on your plate; `unresolved_threads` minus this is what waits on you.
+    #[serde(default)]
+    #[uniffi(default = 0)]
+    pub replied_threads: u32,
+    /// Unresolved threads you opened on someone else's PR where the newest
+    /// comment is theirs: they answered, and it is your turn again.
+    #[serde(default)]
+    #[uniffi(default = 0)]
+    pub returned_threads: u32,
     pub labels: Vec<String>,
     pub bug: bool,
     pub note: String,
@@ -673,6 +683,8 @@ impl PullRequest {
             my_review: row.my_review.as_ref().map(|r| r.as_str().to_owned()),
             unresolved_threads: row.unresolved as u32,
             unresolved_capped: row.unresolved_capped,
+            replied_threads: row.replied() as u32,
+            returned_threads: row.returned() as u32,
             unresolved_paths: row.unresolved_paths.clone(),
             failed_checks: row.failed_checks.iter().map(Into::into).collect(),
             labels: row.labels.clone(),
@@ -757,6 +769,12 @@ impl PullRequest {
             my_review: self.my_review.map(Into::into),
             unresolved: self.unresolved_threads as usize,
             unresolved_capped: self.unresolved_capped,
+            turns: (self.replied_threads > 0 || self.returned_threads > 0).then_some(
+                core_board::Turns {
+                    replied: self.replied_threads as usize,
+                    returned: self.returned_threads as usize,
+                },
+            ),
             failed_checks: self.failed_checks.into_iter().map(Into::into).collect(),
             unresolved_paths: self.unresolved_paths,
             blockers: self

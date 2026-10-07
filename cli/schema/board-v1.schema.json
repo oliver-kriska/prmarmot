@@ -144,6 +144,8 @@
         "my_review",
         "unresolved_threads",
         "unresolved_threads_capped",
+        "replied_threads",
+        "returned_threads",
         "labels",
         "issue",
         "stack",
@@ -224,6 +226,16 @@
         "unresolved_threads_capped": {
           "type": "boolean",
           "description": "The PR has more review threads than the newest 100 that were read, so unresolved_threads counts only those and may be low."
+        },
+        "replied_threads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unresolved threads where the newest comment is yours: you answered, so they are not counted against you. unresolved_threads minus this is what waits on you."
+        },
+        "returned_threads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unresolved threads you opened on someone else's PR where the newest comment is theirs: they answered, and it is your turn again."
         },
         "labels": { "type": "array", "items": { "type": "string" } },
         "issue": {

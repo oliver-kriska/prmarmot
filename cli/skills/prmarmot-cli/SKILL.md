@@ -67,7 +67,10 @@ is larger than `count + filters.filtered_out`, not every PR was checked.
   `review_decision`, `requested_reviewers`, `reviews[]`, `my_review`,
   `unresolved_threads`, `labels`, `issue`, `stack`. `unresolved_threads_capped`
   is true when the PR has more threads than the newest 100 that were read, so
-  the count is a minimum.
+  the count is a minimum. `replied_threads` are the unresolved threads whose
+  newest comment is the user's own (answered, not on their plate), and
+  `returned_threads` the threads they opened on someone else's PR that the
+  author has since answered (their turn again).
 - **Reviews:** `reviews[]` has each other reviewer's standing review and
   `my_review` the user's own (`NONE` if none). A standing review is the latest,
   except that a later comment does not cancel an approval or change request.
