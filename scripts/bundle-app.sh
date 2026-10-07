@@ -157,8 +157,14 @@ if command -v brew >/dev/null 2>&1 && brew list --cask prmarmot >/dev/null 2>&1;
 fi
 step "Installing to $INSTALL_DIR/prmarmot.app"
 mkdir -p "$INSTALL_DIR"
+# Copy first, swap second: the installed app is only removed once its
+# replacement is complete, so a copy that fails leaves the old app in place
+# rather than none (a staged bundle once went missing between the two steps).
+INCOMING="$INSTALL_DIR/.prmarmot.app.incoming"
+rm -rf "$INCOMING"
+ditto "$APP" "$INCOMING"
 rm -rf "$INSTALL_DIR/prmarmot.app"
-ditto "$APP" "$INSTALL_DIR/prmarmot.app"
+mv "$INCOMING" "$INSTALL_DIR/prmarmot.app"
 INSTALLED_APP="$(cd "$INSTALL_DIR" && pwd -P)/prmarmot.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 

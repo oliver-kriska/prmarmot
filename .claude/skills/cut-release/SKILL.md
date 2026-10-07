@@ -29,6 +29,10 @@ after the user approves the version at the gate.
   `--dir` — say so rather than working around it.
 - **Release only from an up-to-date `main`** (`git status -sb` clean, equal to
   `origin/main`). The tag must point at a pushed commit.
+- **CI compiles with the Rust `rust-toolchain.toml` pins**, the same one
+  `make verify` uses locally, so a green `make verify` means the release build
+  compiles too. A Rust bump is its own commit before the release commit, never
+  part of it (v0.15.0 burned on a floating stable's new `-D warnings`).
 - **`git fetch --tags` first.** Tags made on GitHub exist only remotely until
   fetched; released versions are never reused or replaced — a broken release is
   fixed with a new patch version.

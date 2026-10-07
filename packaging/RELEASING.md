@@ -95,6 +95,12 @@ Publishing has no manual-dispatch path. It happens only when an exact
 in `Cargo.toml` or the workflow stops. Obtain explicit human approval before
 changing the version or pushing a tag.
 
+The workflow compiles with the exact Rust version `rust-toolchain.toml` pins,
+the same one `make verify` uses here, so a release cannot fail on a compiler
+this machine never ran (v0.15.0 did, on a newer stable's `-D warnings`). Move
+to a newer Rust in its own commit, before the release commit, never as part
+of it.
+
 Prepare the release commit on an up-to-date `main`:
 
 ```sh
