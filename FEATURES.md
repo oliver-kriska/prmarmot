@@ -206,12 +206,12 @@ values in the code. New features get the next free number in their area.
   comments — your turn". GitHub's own count stays as it was; `replied_threads` and `returned_threads` sit beside
   `unresolved_threads` in the CLI's JSON and the iPad's ffi record. The answer comes from one more request after
   the board, for at most 30 of its PRs with open threads (two points each, 0.7–1.0 s for 9, measured); a refused
-  answer leaves the board as GitHub counted it. _unreleased_
+  answer leaves the board as GitHub counted it. _since v0.16.0_
 - **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
   "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
   it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
   reviewer may be wanted on, so with those it is still Needs action and the conflict leads: "merge conflict · CI
-  failing". Your own conflict is yours as before. _unreleased_
+  failing". Your own conflict is yours as before. _since v0.16.0_
 - **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
   (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
   ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'
@@ -228,7 +228,7 @@ values in the code. New features get the next free number in their area.
   Review authors' account type comes with the reviews the query already reads: no extra cost, measured. _since v0.15.1_
   The same rule reaches your own PRs: a bot's comments are not a reviewer's response, so a PR whose only review is
   Copilot's still reads "awaiting review" — "team requested, nobody responded" when only a team was asked — until a
-  person comments; a bot's approval or change request is a verdict and counts like anyone's. _unreleased_
+  person comments; a bot's approval or change request is a verdict and counts like anyone's. _since v0.16.0_
 - **F-note-16** A PR in its repository's merge queue says so instead of "mergeable": "approved — in merge queue,
   position 2" while it waits or the queue runs its checks, "approved — merging" once the queue has it, and
   "approved — merge queue couldn't merge it" when the queue gave up. GitHub merges a queued PR in its turn, so
@@ -422,7 +422,7 @@ values in the code. New features get the next free number in their area.
   first search already returns, so no PR is fetched twice and Load more no longer offers pages that add nothing
   (measured: 26 of 39 candidates were duplicates). Across all repositories the Review queue sends its two searches
   as two requests, one after the other: both in one request ran at 85–100 % of GitHub's 10-second cut-off and
-  failed one run in three; each alone takes about half of it. Followed PRs ride on the first. _unreleased_
+  failed one run in three; each alone takes about half of it. Followed PRs ride on the first. _since v0.16.0_
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
   page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
@@ -455,7 +455,7 @@ values in the code. New features get the next free number in their area.
   request that normally takes 4–5 seconds still ran into the cut-off once in ten, so its size is not what failed.
   One retry only. When a refresh does fail this way, the status line, `prmarmot-cli`'s error and the iPad all say
   the same sentence — "GitHub gave up on this request before it finished — it stops answering after about 10
-  seconds. Try again in a moment." — instead of `gh: HTTP 502`. _unreleased_
+  seconds. Try again in a moment." — instead of `gh: HTTP 502`. _since v0.16.0_
 
 ## Settings, theme, shortcuts
 
