@@ -16,8 +16,11 @@ use crate::status::row_needs_you;
 /// Which band a header introduces. Stack sub-headers sit inside a band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionKind {
-    /// PRs awaiting merge that are already approved: your own in My PRs, and
-    /// anyone's in All open.
+    /// Your own PRs awaiting merge that are already approved, at the top of
+    /// My PRs, Involving me and All open.
+    MyApproved,
+    /// Someone else's PRs awaiting merge that are already approved, in
+    /// Involving me and All open.
     Approved,
     AwaitingMyReview,
     AwaitingMyTeamsReview,
@@ -31,6 +34,7 @@ impl SectionKind {
     /// Stable machine key for JSON output.
     pub fn key(&self) -> &'static str {
         match self {
+            Self::MyApproved => "my_approved",
             Self::Approved => "approved",
             Self::AwaitingMyReview => "awaiting_my_review",
             Self::AwaitingMyTeamsReview => "awaiting_my_teams_review",
@@ -174,6 +178,7 @@ pub fn layout_collapsible<'a>(
         display.push(LayoutItem::Header {
             kind,
             label: match kind {
+                SectionKind::MyApproved => "My PR approved",
                 SectionKind::Approved => "Approved",
                 SectionKind::AwaitingMyReview => "Awaiting my review",
                 SectionKind::AwaitingMyTeamsReview => "Awaiting my team's review",
@@ -293,6 +298,8 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
             })))
     {
         SectionKind::AwaitingMyResponse
+    } else if is_approved_section(mode, row) && row.is_own {
+        SectionKind::MyApproved
     } else if is_approved_section(mode, row) {
         SectionKind::Approved
     } else if is_available_section(mode, row) {
@@ -310,7 +317,8 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
 /// and the review comes first. Stack sub-headers stay inside their section
 /// and Snoozed always trails, so neither is here. Awaiting review and
 /// Reviewed never share a view.
-pub const ORDERABLE_SECTIONS: [SectionKind; 10] = [
+pub const ORDERABLE_SECTIONS: [SectionKind; 11] = [
+    SectionKind::MyApproved,
     SectionKind::Approved,
     SectionKind::Category(Category::Todo),
     SectionKind::AwaitingMyResponse,
@@ -416,6 +424,55 @@ impl SectionOrder {
     }
 }
 
+/// The sections `keys` names to hide (`hidden_sections` in config.toml), each
+/// once, in the default order, and one sentence for each key it ignored: an
+/// unknown or repeated one. Only sections one can order can be hidden.
+pub fn hidden_sections_from_keys<S: AsRef<str>>(keys: &[S]) -> (Vec<SectionKind>, Vec<String>) {
+    let mut hidden = Vec::new();
+    let mut ignored = Vec::new();
+    for key in keys {
+        let key = key.as_ref().trim();
+        match ORDERABLE_SECTIONS
+            .iter()
+            .find(|kind| kind.key().eq_ignore_ascii_case(key))
+        {
+            Some(kind) if hidden.contains(kind) => {
+                ignored.push(format!("ignoring repeated hidden_sections entry {key:?}"));
+            }
+            Some(kind) => hidden.push(*kind),
+            None => ignored.push(format!(
+                "ignoring hidden_sections entry {key:?}: use {}",
+                ORDERABLE_SECTIONS.map(|kind| kind.key()).join(", ")
+            )),
+        }
+    }
+    hidden.sort_by_key(|kind| ORDERABLE_SECTIONS.iter().position(|k| k == kind));
+    (hidden, ignored)
+}
+
+/// `items` without the top-level sections in `hidden`: each one's header,
+/// its rows and its stack sub-headers are left out.
+pub fn without_hidden_sections(items: Vec<LayoutItem>, hidden: &[SectionKind]) -> Vec<LayoutItem> {
+    if hidden.is_empty() {
+        return items;
+    }
+    let mut skipping = false;
+    items
+        .into_iter()
+        .filter(|item| {
+            if let LayoutItem::Header {
+                kind,
+                count: Some(_),
+                ..
+            } = item
+            {
+                skipping = hidden.contains(kind);
+            }
+            !skipping
+        })
+        .collect()
+}
+
 /// A section's name in the Settings order list, the same in every view it
 /// appears in (a header adds detail, e.g. "Available to review · no reviewer
 /// requested").
@@ -424,6 +481,7 @@ pub fn section_name(kind: SectionKind) -> &'static str {
         SectionKind::AwaitingMyResponse => "Awaiting my response",
         SectionKind::AwaitingMyReview => "Awaiting my review",
         SectionKind::AwaitingMyTeamsReview => "Awaiting my team's review",
+        SectionKind::MyApproved => "My PR approved",
         SectionKind::Approved => "Approved",
         SectionKind::Category(Category::Todo) => "Requested from you",
         SectionKind::Category(Category::Action) => "Needs action",
@@ -441,13 +499,13 @@ pub fn section_name(kind: SectionKind) -> &'static str {
 pub fn section_views(kind: SectionKind) -> &'static str {
     match kind {
         SectionKind::AwaitingMyResponse
-        | SectionKind::Approved
+        | SectionKind::MyApproved
         | SectionKind::Category(Category::Action | Category::Await) => {
             "My PRs, Involving me, All open"
         }
-        SectionKind::AwaitingMyReview => "Involving me, All open",
+        SectionKind::AwaitingMyReview | SectionKind::Approved => "Involving me, All open",
         SectionKind::AwaitingMyTeamsReview => "Involving me",
-        SectionKind::Category(Category::Todo) => "Review queue, All open",
+        SectionKind::Category(Category::Todo) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Available) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Done) => "Review queue",
         _ => "Every view",
@@ -490,7 +548,7 @@ pub fn group_label(mode: Mode, cat: Category, _all_repos: bool) -> &'static str 
     match (mode, cat) {
         (Mode::Authored | Mode::AllOpen, Category::Action) => "Needs action",
         (Mode::Authored | Mode::AllOpen, Category::Await) => "Awaiting their review",
-        (Mode::Review | Mode::AllOpen, Category::Todo) => "Requested from you",
+        (_, Category::Todo) => "Requested from you",
         (_, Category::Available) => "Available to review · no reviewer requested",
         (Mode::Review, Category::Done) => "Reviewed",
         (_, Category::Draft) => "Drafts",
@@ -515,9 +573,16 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
             "Someone else authored these PRs. Check their review status and notes before reviewing."
                 .into()
         }
+        (_, SectionKind::MyApproved) => format!(
+            "You authored these PRs. Approved by at least one reviewer, with no changes \
+             requested and nothing blocking it: ready to merge. An approved PR that is blocked \
+             stays at the top of {}.",
+            group_label(mode, Category::Action, all_repos)
+        ),
         (_, SectionKind::Approved) => format!(
-            "Approved by at least one reviewer, with no changes requested and nothing blocking \
-             it. An approved PR that is blocked stays at the top of {}.",
+            "Someone else authored these PRs. Approved by at least one reviewer, with no \
+             changes requested and nothing blocking it. An approved PR that is blocked stays at \
+             the top of {}.",
             group_label(mode, Category::Action, all_repos)
         ),
         (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Action)) if mixed => {
@@ -535,7 +600,7 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
             "You authored these PRs and are waiting on others. You cannot review your own PRs."
                 .into()
         }
-        (Mode::Review | Mode::AllOpen, SectionKind::Category(Category::Todo)) => {
+        (_, SectionKind::Category(Category::Todo)) => {
             "Your review is requested, by name or through one of your teams, and you have not \
              reviewed it yet."
                 .into()
@@ -566,7 +631,8 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
 }
 
 /// Every section a person can collapse: the ones they can order, and Snoozed.
-pub const COLLAPSIBLE_SECTIONS: [SectionKind; 11] = [
+pub const COLLAPSIBLE_SECTIONS: [SectionKind; 12] = [
+    SectionKind::MyApproved,
     SectionKind::Approved,
     SectionKind::Category(Category::Todo),
     SectionKind::AwaitingMyResponse,
@@ -645,7 +711,7 @@ pub fn section_summary<'a>(
             vec![longest_wait(), failing()]
         }
         SectionKind::AwaitingMyResponse => vec![unresolved(), failing(), conflicts()],
-        SectionKind::Approved => vec![failing(), conflicts()],
+        SectionKind::MyApproved | SectionKind::Approved => vec![failing(), conflicts()],
         SectionKind::Snoozed => vec![need_you(), failing()],
         SectionKind::Category(_) => vec![failing(), conflicts(), unresolved()],
     };
@@ -968,7 +1034,7 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             [
-                "Approved (1)",
+                "My PR approved (1)",
                 "3",
                 "Requested from you (2)",
                 "2",
@@ -1000,7 +1066,14 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["approved", "todo", "action", "available", "await", "draft"]
+            [
+                "my_approved",
+                "todo",
+                "action",
+                "available",
+                "await",
+                "draft"
+            ]
         );
     }
 
@@ -1094,6 +1167,33 @@ mod tests {
     }
 
     #[test]
+    fn your_approved_prs_lead_apart_from_someone_elses_in_involving_me() {
+        let approved = |number: u64, is_own: bool| {
+            let mut r = row(number, Category::Await);
+            r.review_state = ReviewState::Approved;
+            r.is_own = is_own;
+            r
+        };
+        let rows = vec![approved(1, false), approved(2, true)];
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            true,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            ["My PR approved (1)", "2", "Approved (1)", "1"]
+        );
+        assert_eq!(
+            crate::cells::section_tone(&SectionKind::MyApproved),
+            crate::cells::Tone::Success
+        );
+    }
+
+    #[test]
     fn authored_sections_follow_the_apps_order_with_approvals_first() {
         let mut approved_await = row(1, Category::Await);
         approved_await.review_state = ReviewState::Approved;
@@ -1117,7 +1217,7 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             [
-                "Approved (1)",
+                "My PR approved (1)",
                 "1",
                 "Needs action (2)",
                 "2",
@@ -1547,6 +1647,7 @@ mod tests {
         assert_eq!(
             SectionOrder::default().keys(),
             [
+                "my_approved",
                 "approved",
                 "todo",
                 "awaiting_my_response",
@@ -1567,6 +1668,7 @@ mod tests {
             [
                 "available",
                 "await",
+                "my_approved",
                 "approved",
                 "todo",
                 "awaiting_my_response",
@@ -1584,6 +1686,7 @@ mod tests {
             order.keys(),
             [
                 "draft",
+                "my_approved",
                 "approved",
                 "todo",
                 "awaiting_my_response",
@@ -1598,7 +1701,7 @@ mod tests {
         assert_eq!(
             ignored,
             [
-                "ignoring section_order entry \"in-progress\": use approved, todo, awaiting_my_response, action, \
+                "ignoring section_order entry \"in-progress\": use my_approved, approved, todo, awaiting_my_response, action, \
                  available, awaiting_my_review, awaiting_my_teams_review, await, done, draft",
                 "ignoring repeated section_order entry \"draft\"",
                 "ignoring section_order entry \"snoozed\": Snoozed always comes last",
@@ -1611,12 +1714,65 @@ mod tests {
     }
 
     #[test]
+    fn hidden_sections_leave_out_their_header_rows_and_stacks() {
+        let (hidden, ignored) = hidden_sections_from_keys(&[" Draft", "await", "draft", "later"]);
+        assert_eq!(
+            hidden,
+            [
+                SectionKind::Category(Category::Await),
+                SectionKind::Category(Category::Draft)
+            ]
+        );
+        assert_eq!(ignored.len(), 2, "{ignored:?}");
+        assert!(ignored[0].starts_with("ignoring repeated hidden_sections entry"));
+        assert!(ignored[1].starts_with("ignoring hidden_sections entry \"later\": use my_approved"));
+
+        let mut stacked = row(4, Category::Await);
+        stacked.stack = Some(StackInfo {
+            number: 9,
+            size: 2,
+            base_ref_name: "main".into(),
+            position: Some(1),
+            branch: None,
+        });
+        let mut on_top = stacked.clone();
+        on_top.number = 5;
+        on_top.id = "PR_5".into();
+        on_top.stack.as_mut().unwrap().position = Some(2);
+        let rows = vec![
+            row(1, Category::Action),
+            stacked,
+            on_top,
+            row(6, Category::Draft),
+        ];
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            LayoutItem::Header {
+                kind: SectionKind::Stack,
+                ..
+            }
+        )));
+        let shown = without_hidden_sections(items.clone(), &hidden);
+        assert_eq!(outline(&rows, &shown), ["Needs action (1)", "1"]);
+        assert_eq!(without_hidden_sections(items.clone(), &[]), items);
+    }
+
+    #[test]
     fn moving_a_section_swaps_it_with_its_neighbour_and_stops_at_the_ends() {
         let available = SectionKind::Category(Category::Available);
         let order = SectionOrder::default().moved(available, true);
         assert_eq!(
             order.keys(),
             [
+                "my_approved",
                 "approved",
                 "todo",
                 "awaiting_my_response",
@@ -1631,7 +1787,7 @@ mod tests {
         );
         assert_eq!(order.moved(available, false), SectionOrder::default());
         let first = SectionOrder::default();
-        assert_eq!(first.moved(SectionKind::Approved, true), first);
+        assert_eq!(first.moved(SectionKind::MyApproved, true), first);
         let last = SectionKind::Category(Category::Draft);
         assert_eq!(first.moved(last, false), first);
         // Not a section one can order: nothing moves.
@@ -1678,7 +1834,7 @@ mod tests {
                 "6",
                 "Awaiting their review (1)",
                 "2",
-                "Approved (1)",
+                "My PR approved (1)",
                 "4",
                 "Requested from you (1)",
                 "5",

@@ -17,6 +17,7 @@ pub mod cells;
 pub mod detail;
 pub mod github;
 pub mod layout;
+pub mod linear;
 pub mod pickup;
 pub mod process;
 pub mod report;

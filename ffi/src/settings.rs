@@ -167,6 +167,7 @@ impl From<AppConfig> for FileConfig {
             default_prompt: None,
             default_agent_permissions: None,
             visible_columns: None,
+            column_order: None,
             theme: config.theme,
             view: config.view,
             default_reviewers: config.default_reviewers,
@@ -183,6 +184,8 @@ impl From<AppConfig> for FileConfig {
             stale_after_days: config.stale_after_days,
             agent_authors: config.agent_authors,
             section_order: config.section_order,
+            // The iPad shows every section.
+            hidden_sections: Vec::new(),
             // The iPad keeps no collapsed sections yet; the desktop's live in
             // its own config.toml.
             collapsed_sections: BTreeMap::new(),

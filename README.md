@@ -183,6 +183,22 @@ On PRs you authored, unresolved threads keep the PR in **Needs action**, even
 if you have replied or the PR is a draft. Resolving the threads removes that
 blocker; any remaining blockers still apply.
 
+The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
+with the changed files on hover. It shows by default on wide windows (1360px
+and up); right-click any column header to show or hide it at other widths.
+
+The **Ticket** column links each PR to its Linear issue. The app reads the
+issue from the comment Linear's GitHub integration posts on the PR (any
+`linear` or `linear-code` comment marked `<!-- linear-linkback -->`, among
+the first ten), then falls back to an `[issue_link]` match in the title or
+branch name. A ticket found is cached and not fetched again; a PR with no
+Linear comment yet is checked again after 30 minutes. To re-read one,
+right-click its row → **Refresh Linear ticket** (or a selection → **Refresh
+Linear tickets**).
+
+Drag a column header to reorder the columns: the order holds in every view
+and window width, and is saved as `column_order` in config.toml.
+
 ### Repository coverage
 
 Open **Repos** to choose which repositories the board fetches. **Sync** refreshes
@@ -452,6 +468,7 @@ automatic_update_checks = true          # latest stable release, at most daily
 stale_after_days = 3                    # waiting this long for a reviewer is stale
 agent_authors = ["copilot*"]            # agent-authored on top of GitHub's Bot accounts; * matches anything
 section_order = ["available", "await"]  # these sections first, the rest in default order
+hidden_sections = ["done"]              # sections no view shows (the eye in Settings → Section order)
 details_position = "auto"               # auto | bottom | right
 
 # Folded sections, per view (my_prs, involving_me, review, all_open).
@@ -467,8 +484,9 @@ default_reviewers = ["alice", "bob"]     # any repository without an entry below
 "acme/api" = ["erin"]                    # this repository (wins over "acme")
 "acme/sandbox" = []                      # suggest nobody here
 
+# Fallback when Linear's bot comment on the PR names no issue:
 [issue_link]
-pattern = "PROJ-[0-9]+"                  # regex matched in PR titles
+pattern = "PROJ-[0-9]+"                  # matched in the PR title, else the branch name (any case)
 url_template = "https://linear.app/acme/issue/{id}"
 
 [window]
@@ -825,11 +843,13 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   `sort` (`wait` or `smallest`), `count`, `total` (how many PRs GitHub's search
   found, loaded or not; null for `review`), `truncated`,
   `more_pages_available`, `rate_limit`, and `sections`.
-- **Sections:** each has a stable `key` (`approved`, `action`, `awaiting_my_response`, `awaiting_my_review`, `awaiting_my_teams_review`, `await`, `todo`,
+- **Sections:** each has a stable `key` (`my_approved`, `approved`, `action`, `awaiting_my_response`, `awaiting_my_review`, `awaiting_my_teams_review`, `await`, `todo`,
   `available`, `done`, `draft`, `snoozed`), a `label`, an `explanation` (what
   puts a PR there, the app's hover text), and its `prs` in display
   order. `awaiting_my_teams_review` holds pending reviews requested from your teams in
   Involving me, unless your review is also requested directly.
+  `my_approved` holds your own approved PRs waiting to merge, under **My PR approved**
+  at the top; `approved` holds other authors’ approved PRs.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
   under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
   or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.

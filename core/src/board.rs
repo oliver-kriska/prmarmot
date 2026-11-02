@@ -355,6 +355,9 @@ pub struct IssueLinkRule {
     url_template: String,
     /// Strips a leading `[<match>] ` from the displayed title.
     strip_prefix: Regex,
+    /// `pattern` in any case, for a branch name: Linear's branches carry the
+    /// issue ID in lowercase (`me/eng-123-fix-login`).
+    in_branch: Regex,
 }
 
 impl PartialEq for IssueLinkRule {
@@ -374,6 +377,7 @@ impl IssueLinkRule {
             pattern: Regex::new(pattern)?,
             url_template: url_template.to_string(),
             strip_prefix: Regex::new(&format!(r"^\[(?:{pattern})\]\s*"))?,
+            in_branch: Regex::new(&format!(r"(?i:{pattern})"))?,
         })
     }
 }
@@ -517,6 +521,11 @@ pub struct BoardConfig {
     /// of every PR involving you. The app keeps it off; `prmarmot-cli
     /// --authored` turns it on. A single repository is always authored-only.
     pub authored_only: bool,
+    /// Read each PR's Linear issue from Linear's comment on it
+    /// ([`crate::github::query::TICKETS_QUERY`]) ahead of the title and
+    /// branch. Off by default: it is one more request, which only a front
+    /// end with a cache in front of it should make.
+    pub linear_tickets: bool,
     /// A PR that has waited this many days for a reviewer is stale.
     pub stale_after_days: u64,
     /// Authors whose PRs count as agent-authored on top of GitHub's `Bot`
@@ -592,6 +601,7 @@ impl Default for BoardConfig {
             repo_reviewers: BTreeMap::new(),
             issue_link: None,
             authored_only: false,
+            linear_tickets: false,
             stale_after_days: crate::pickup::DEFAULT_STALE_AFTER_DAYS,
             agent_authors: Vec::new(),
         }
@@ -641,6 +651,9 @@ pub struct BoardRow {
     pub title: String,
     pub issue: Option<String>,
     pub issue_url: Option<String>,
+    /// The linked Linear issue's own title, when Linear's comment named it.
+    #[serde(default)]
+    pub issue_title: Option<String>,
     pub author: Option<String>,
     /// Whether the authenticated viewer authored this PR.
     #[serde(default)]
@@ -738,6 +751,7 @@ impl Default for BoardRow {
             title: String::new(),
             issue: None,
             issue_url: None,
+            issue_title: None,
             author: None,
             is_own: false,
             agent: false,
@@ -1119,7 +1133,7 @@ fn derive_all_open_row(
             return row;
         }
     }
-    let mut row = derive_involving_row(pr, repo, me, cfg);
+    let mut row = involving_facts_row(pr, repo, me, cfg);
     if !is_own_pr(pr, me) {
         classify_other_author(&mut row, Named::No);
     }
@@ -1137,7 +1151,28 @@ fn asks_me_to_review(pr: &RawPr, me: &str) -> bool {
     })
 }
 
+/// One row of Involving me. Someone else's PR that asks for your review, by
+/// name or through one of your teams, and that you have yet to review reads
+/// as in the review queue (Requested from you), so it needs you here as it
+/// does there; the Note names whose PR it is, as Involving me has no Author
+/// column. Every other row is [`involving_facts_row`].
 fn derive_involving_row(pr: &RawPr, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
+    if !is_own_pr(pr, me) && !pr.is_draft {
+        let mut row = derive_review_row(pr, repo, me, cfg, QueueProvenance::Requested);
+        if row.category == Category::Todo
+            && (asks_me_to_review(pr, me) || row.team_review_requested)
+        {
+            let author = row.author.as_deref().unwrap_or("Unknown author");
+            row.note = format!("{author}'s PR · {}", row.note);
+            return row;
+        }
+    }
+    involving_facts_row(pr, repo, me, cfg)
+}
+
+/// Your own PR as in My PRs; anyone else's with its facts, never as your
+/// blockers.
+fn involving_facts_row(pr: &RawPr, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
     if is_own_pr(pr, me) {
         return derive_row(pr, Mode::Authored, repo, me, cfg);
     }
@@ -1447,7 +1482,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     let rebase_only = rebase_allowed
         && methods.and_then(|r| r.merge_commit_allowed) == Some(false)
         && methods.and_then(|r| r.squash_merge_allowed) == Some(false);
-    let (issue, issue_url, title) = derive_title(&pr.title, cfg);
+    let (issue, issue_url, title) = derive_title(&pr.title, pr.head_ref_name.as_deref(), cfg);
     let url = pr.canonical_url(repo);
     let own = is_own_pr(pr, me);
 
@@ -1479,6 +1514,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         title,
         issue,
         issue_url,
+        issue_title: None,
         author: pr.author.as_ref().and_then(|a| a.login.clone()),
         agent: pr
             .author
@@ -2011,16 +2047,33 @@ fn url_component(text: &str) -> String {
     out
 }
 
-fn derive_title(raw_title: &str, cfg: &BoardConfig) -> (Option<String>, Option<String>, String) {
+/// The issue ID and its link, and the title to show. The ID is the title's
+/// first match of the issue-link pattern, else the branch's in any case,
+/// written in capitals (`eng-123` → `ENG-123`, Linear's form).
+fn derive_title(
+    raw_title: &str,
+    branch: Option<&str>,
+    cfg: &BoardConfig,
+) -> (Option<String>, Option<String>, String) {
     let (issue, issue_url) = match &cfg.issue_link {
-        Some(rule) => match rule.pattern.find(raw_title) {
-            Some(m) => {
-                let id = m.as_str().to_string();
-                let url = rule.url_template.replace("{id}", &url_component(&id));
-                (Some(id), Some(url))
+        Some(rule) => {
+            let id = rule
+                .pattern
+                .find(raw_title)
+                .map(|m| m.as_str().to_string())
+                .or_else(|| {
+                    branch
+                        .and_then(|branch| rule.in_branch.find(branch))
+                        .map(|m| m.as_str().to_uppercase())
+                });
+            match id {
+                Some(id) => {
+                    let url = rule.url_template.replace("{id}", &url_component(&id));
+                    (Some(id), Some(url))
+                }
+                None => (None, None),
             }
-            None => (None, None),
-        },
+        }
         None => (None, None),
     };
 

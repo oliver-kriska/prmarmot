@@ -122,6 +122,8 @@ pub struct Launch {
     pub config_warnings: crate::config::ConfigWarnings,
     /// `section_order` from the file.
     pub section_order: SectionOrder,
+    /// `hidden_sections` from the file.
+    pub hidden_sections: Vec<SectionKind>,
     /// `[collapsed_sections]` from the file, per view.
     pub collapsed: CollapsedSections,
     /// `details_position` from the file.
@@ -135,6 +137,12 @@ const DETAILS_LABEL_WIDTH: f32 = 124.;
 
 /// Which sections each view shows collapsed, keyed by the
 /// `[collapsed_sections]` view names; bounded by the four views.
+/// Whether the board has tickets to show by default: an issue rule reads
+/// them from titles and branches, and Linear's comments name them.
+fn ticket_column(config: &prmarmot_core::board::BoardConfig) -> bool {
+    config.issue_link.is_some() || config.linear_tickets
+}
+
 pub type CollapsedSections = HashMap<&'static str, Vec<SectionKind>>;
 
 /// Every view's collapsed sections as the file says.
@@ -275,6 +283,8 @@ pub struct RootView {
     smallest_first: bool,
     /// The order sections come in, in every view (`section_order`, Settings).
     section_order: SectionOrder,
+    /// The sections no view shows (`hidden_sections`, Settings).
+    hidden_sections: Vec<SectionKind>,
     /// The quick filters' and the header's numbers over the loaded rows,
     /// counted in `sync_table`, not per frame.
     counts: QuickCounts,
@@ -312,7 +322,16 @@ impl RootView {
         // is already responsive (no default-width flash).
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
-        let table = Self::build_table(mode, all_repos, initial_class, initial_width, window, cx);
+        let ticket = ticket_column(&state.read(cx).config);
+        let table = Self::build_table(
+            mode,
+            all_repos,
+            ticket,
+            initial_class,
+            initial_width,
+            window,
+            cx,
+        );
         let synced_repos = crate::config::load().synced_repos;
         let mut picker_repos = launch.repos.clone();
         picker_repos.extend(synced_repos.clone());
@@ -362,6 +381,7 @@ impl RootView {
             TableEvent::ColumnWidthsChanged(widths) => {
                 this.on_column_widths_changed(widths.clone(), cx)
             }
+            TableEvent::MoveColumn(_, _) => this.on_column_moved(cx),
             _ => {}
         })
         .detach();
@@ -474,6 +494,7 @@ impl RootView {
             details_position: launch.details_position,
             smallest_first: false,
             section_order: launch.section_order,
+            hidden_sections: launch.hidden_sections,
             counts: QuickCounts::default(),
             suppress_ack_for: None,
             updates: updates::Updates {
@@ -771,6 +792,9 @@ impl RootView {
             table
                 .delegate_mut()
                 .set_section_order(self.section_order.clone());
+            table
+                .delegate_mut()
+                .set_hidden_sections(self.hidden_sections.clone());
             table.delegate_mut().set_can_load_more(can_load_more);
             table.delegate_mut().set_rows_and_attention(rows, attention);
             table.refresh(cx);
@@ -908,9 +932,14 @@ impl RootView {
                 // The order is the window's alone, so a change to it redraws
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
+                let hidden = prmarmot_local::config::hidden_sections(&file);
                 let collapsed = collapsed_from(&file);
-                if this.section_order != sections || this.collapsed != collapsed {
+                if this.section_order != sections
+                    || this.hidden_sections != hidden
+                    || this.collapsed != collapsed
+                {
                     this.section_order = sections;
+                    this.hidden_sections = hidden;
                     this.collapsed = collapsed;
                     this.sync_table(cx);
                 }
@@ -926,12 +955,23 @@ impl RootView {
                     this.refresh = refresh;
                     this.start_refresh_loop(window, cx);
                 }
+                let had_ticket = ticket_column(&this.state.read(cx).config);
                 this.state.update(cx, |state, cx| {
                     state.apply_attention_preferences(
                         crate::state::AttentionPreferences::from_file(&file),
                     );
                     state.apply_config(crate::board_config(&file), cx)
                 });
+                // An issue rule set or cleared can bring the Ticket column or
+                // take it away.
+                if ticket_column(&this.state.read(cx).config) != had_ticket {
+                    this.col_overrides.clear();
+                    let cols = this.columns_for_current(this.state.read(cx).mode, cx);
+                    this.table.update(cx, |table, cx| {
+                        table.delegate_mut().set_columns(cols);
+                        table.refresh(cx);
+                    });
+                }
                 let session = this.settings.take();
                 window.close_dialog(cx);
                 if let Some(focus) = session.and_then(|session| session.return_focus) {
@@ -1228,7 +1268,14 @@ impl RootView {
     /// responsive default for this window width.
     fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
         let all_repos = self.state.read(cx).scope.is_all();
-        let mut cols = columns_for(mode, self.width_class, self.table_width(cx), all_repos);
+        let ticket = ticket_column(&self.state.read(cx).config);
+        let mut cols = columns_for(
+            mode,
+            self.width_class,
+            self.table_width(cx),
+            all_repos,
+            ticket,
+        );
         cols = self.table.read(cx).delegate().customize_columns(cols);
         if crate::skin::glacier(cx) {
             if let Some((_, need)) = self.content_need {
@@ -1355,6 +1402,25 @@ impl RootView {
             self.col_overrides
                 .insert((mode, self.width_class, all_repos), widths);
         }
+    }
+
+    /// A header was dragged to a new place: keep that order in every view and
+    /// width, and remember it. Manual widths are kept by position, so they
+    /// are dropped rather than handed to the wrong columns.
+    fn on_column_moved(&mut self, cx: &mut Context<Self>) {
+        let keys = self
+            .table
+            .update(cx, |table, _| table.delegate_mut().remember_column_order());
+        if let Err(error) = crate::config::save_column_order(&keys) {
+            self.show_feedback(format!("Couldn't save column order: {error}"), cx);
+        }
+        self.col_overrides.clear();
+        let cols = self.columns_for_current(self.state.read(cx).mode, cx);
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_columns(cols);
+            table.refresh(cx);
+        });
+        cx.notify();
     }
 
     /// Keep keyboard/mouse selection off the section-header pseudo-rows (a
@@ -1570,6 +1636,13 @@ impl RootView {
             SelectionAction::Unwatch => SelectionDone::Unwatched(self.watch_rows(&rows, false, cx)),
             SelectionAction::Snooze => {
                 self.snooze_rows(rows, window, cx);
+                return;
+            }
+            SelectionAction::RefreshTickets => {
+                let ids = rows.iter().map(|row| row.id.clone()).collect();
+                self.state
+                    .update(cx, |state, cx| state.refresh_tickets(ids, cx));
+                self.show_feedback(format!("Reading {} Linear tickets again…", rows.len()), cx);
                 return;
             }
             SelectionAction::CancelSnooze => {
@@ -2008,6 +2081,12 @@ impl RootView {
             RowAction::CancelSnooze => self
                 .state
                 .update(cx, |state, cx| state.cancel_snooze(&row.id, cx)),
+            RowAction::RefreshTicket => {
+                self.state.update(cx, |state, cx| {
+                    state.refresh_tickets(vec![row.id.clone()], cx)
+                });
+                self.show_feedback("Reading the Linear ticket again…", cx);
+            }
             RowAction::Details => {
                 let index = self
                     .table
@@ -2241,6 +2320,7 @@ impl RootView {
     fn build_table(
         mode: Mode,
         all_repos: bool,
+        ticket: bool,
         initial_class: TableWidthClass,
         initial_width: f32,
         window: &mut Window,
@@ -2291,17 +2371,20 @@ impl RootView {
             delegate.on_empty_action = Some(std::rc::Rc::new(move |action, window, cx| {
                 let _ = empty_view.update(cx, |this, cx| this.empty_action(action, window, cx));
             }));
-            delegate.restore_visible_columns(crate::config::load().visible_columns.as_deref());
+            let file = crate::config::load();
+            delegate.restore_visible_columns(file.visible_columns.as_deref());
+            delegate.restore_column_order(file.column_order.as_deref());
             let columns = delegate.customize_columns(columns_for(
                 mode,
                 initial_class,
                 initial_width,
                 all_repos,
+                ticket,
             ));
             delegate.set_columns(columns);
             TableState::new(delegate, window, cx)
                 .sortable(false)
-                .col_movable(false)
+                .col_movable(true)
                 .col_resizable(true)
                 .row_selectable(true)
         })

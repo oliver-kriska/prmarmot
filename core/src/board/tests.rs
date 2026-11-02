@@ -4356,3 +4356,169 @@ fn teammate_author_comments_are_not_reviewer_feedback_and_viewer_verdicts_count(
         assert!(!crate::layout::is_approved_section(Mode::Authored, &row));
     }
 }
+
+/// A PR that asks for your review, by name or through your team, needs you
+/// in Involving me exactly as it does in the review queue: the headers of the
+/// two views must agree on "need you".
+#[test]
+fn a_review_asked_of_you_needs_you_in_involving_me_as_in_the_review_queue() {
+    let asks = |number: u64, reviewer: serde_json::Value| {
+        let mut v = someone_elses(number, "alice", "2026-10-29T10:00:00Z");
+        v["reviewRequests"] = json!({"totalCount": 1, "nodes": [{"requestedReviewer": reviewer}]});
+        pr(v)
+    };
+    let by_name = asks(1, json!({"__typename": "User", "login": "me"}));
+    let by_team = asks(
+        2,
+        json!({"__typename": "Team", "name": "Infra", "slug": "infra",
+               "members": {"nodes": [{"login": "me"}]}}),
+    );
+    let not_asked = pr(someone_elses(3, "alice", "2026-10-29T10:00:00Z"));
+    let prs = [by_name, by_team, not_asked];
+    let involving = derive_involving_rows(&prs, "acme/widgets", "me", &cfg());
+    let review: Vec<_> = prs[..2]
+        .iter()
+        .map(|raw| {
+            derive_review_row(
+                raw,
+                "acme/widgets",
+                "me",
+                &cfg(),
+                QueueProvenance::Requested,
+            )
+        })
+        .collect();
+    let need_you = |rows: &[BoardRow]| crate::status::need_you_count(rows, |_| false);
+    assert_eq!(need_you(&review), 2);
+    assert_eq!(need_you(&involving), need_you(&review));
+
+    let by_number = |n: u64| involving.iter().find(|row| row.number == n).unwrap();
+    assert_eq!(by_number(1).category, Category::Todo);
+    assert!(
+        by_number(1).note.starts_with("alice's PR · "),
+        "{}",
+        by_number(1).note
+    );
+    // The team's request keeps its own section.
+    assert!(by_number(2).team_review_requested);
+    assert_ne!(by_number(3).category, Category::Todo);
+    let sections: Vec<_> = crate::layout::layout(
+        &involving,
+        Mode::Authored,
+        true,
+        &Default::default(),
+        true,
+        crate::layout::Sort::Wait,
+    )
+    .into_iter()
+    .filter_map(|item| match item {
+        crate::layout::LayoutItem::Header { kind, .. } => Some(kind.key()),
+        _ => None,
+    })
+    .collect();
+    assert!(sections.contains(&"todo"), "{sections:?}");
+    assert!(
+        sections.contains(&"awaiting_my_teams_review"),
+        "{sections:?}"
+    );
+}
+
+/// Linear names a branch after its issue in lowercase (`me/eng-123-…`): with
+/// no issue ID in the title, the branch's links the row, written in capitals.
+#[test]
+fn a_branch_named_after_its_issue_links_it_when_the_title_does_not() {
+    let linear = BoardConfig {
+        issue_link: Some(
+            IssueLinkRule::new("ENG-[0-9]+", "https://linear.app/acme/issue/{id}").unwrap(),
+        ),
+        ..Default::default()
+    };
+    let derive = |title: &str, branch: &str| {
+        let mut v = base(1);
+        v["title"] = json!(title);
+        v["headRefName"] = json!(branch);
+        derive_row(&pr(v), Mode::Authored, "acme/widgets", "me", &linear)
+    };
+    let row = derive("Fix login", "me/eng-123-fix-login");
+    assert_eq!(row.issue.as_deref(), Some("ENG-123"));
+    assert_eq!(
+        row.issue_url.as_deref(),
+        Some("https://linear.app/acme/issue/ENG-123")
+    );
+    assert_eq!(row.title, "Fix login");
+    // The title's own ID wins over the branch's.
+    let row = derive("ENG-7 Fix login", "me/eng-123-fix-login");
+    assert_eq!(row.issue.as_deref(), Some("ENG-7"));
+    // A branch without one links nothing.
+    assert_eq!(derive("Fix login", "fix-login").issue, None);
+}
+
+/// Linear's own comment names the issue a PR was linked to, even when the
+/// title and branch carry a placeholder (construct-mobile#822: `MOB-000`,
+/// linked to IFR-479); a PR without one keeps what its title gave it.
+#[test]
+fn linear_s_comment_names_the_ticket_ahead_of_the_title_and_branch() {
+    struct Linear;
+    impl GithubTransport for Linear {
+        fn graphql(&self, _: &str, _: &[(&str, &str)]) -> Result<serde_json::Value, GhError> {
+            unreachable!()
+        }
+        fn graphql_with_ids(
+            &self,
+            query: &str,
+            _: &[(&str, &str)],
+            ids: &[String],
+        ) -> Result<serde_json::Value, GhError> {
+            assert_eq!(query, crate::github::query::TICKETS_QUERY);
+            assert_eq!(ids, ["PR_1", "PR_2"]);
+            Ok(json!({"data": {"tickets": [
+                {"id": "PR_1", "comments": {"nodes": [{"author": {"__typename": "Bot"}, "body":
+                    "<!-- linear-linkback -->\n<summary><a href=\"https://linear.app/terabase/issue/IFR-479/remove-dev\">IFR-479 Remove dev environment</a></summary>"}]}},
+                {"id": "PR_2", "comments": {"nodes": []}}
+            ]}}))
+        }
+    }
+    let derive = |number: u64, title: &str| {
+        let mut v = base(number);
+        v["id"] = json!(format!("PR_{number}"));
+        v["title"] = json!(title);
+        derive_row(&pr(v), Mode::Authored, "acme/widgets", "me", &cfg())
+    };
+    let mut fetched = BoardFetch {
+        rows: vec![
+            derive(1, "PROJ-000: chore: remove dev"),
+            derive(2, "PROJ-7 Fix login"),
+        ],
+        rate: None,
+        truncated: false,
+        pagination: BoardPagination::default(),
+        tracked: Vec::new(),
+        access: AccessGaps::default(),
+        total: None,
+    };
+    let off = cfg();
+    settle_tickets(&Linear, &off, &mut fetched);
+    assert_eq!(
+        fetched.rows[0].issue.as_deref(),
+        Some("PROJ-000"),
+        "off by default"
+    );
+
+    let on = BoardConfig {
+        linear_tickets: true,
+        ..cfg()
+    };
+    settle_tickets(&Linear, &on, &mut fetched);
+    let linked = &fetched.rows[0];
+    assert_eq!(linked.issue.as_deref(), Some("IFR-479"));
+    assert_eq!(
+        linked.issue_url.as_deref(),
+        Some("https://linear.app/terabase/issue/IFR-479/remove-dev")
+    );
+    assert_eq!(
+        linked.issue_title.as_deref(),
+        Some("Remove dev environment")
+    );
+    assert_eq!(fetched.rows[1].issue.as_deref(), Some("PROJ-7"));
+    assert_eq!(fetched.rows[1].issue_title, None);
+}

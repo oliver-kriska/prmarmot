@@ -142,10 +142,13 @@ fn parse_args_from(
 }
 
 fn board_config(file: &config::FileConfig) -> BoardConfig {
-    let (config, warning) = prmarmot_local::config::board_config(file);
+    let (mut config, warning) = prmarmot_local::config::board_config(file);
     if let Some(warning) = warning {
         eprintln!("prmarmot: {warning}");
     }
+    // The app caches Linear's answer per PR (`thread_cache`), so it can read
+    // the ticket from Linear's comment; the CLI, which caches nothing, does not.
+    config.linear_tickets = true;
     config
 }
 
@@ -238,6 +241,7 @@ fn main() {
         config_warnings,
         update_paths,
         section_order: prmarmot_local::config::section_order(&file),
+        hidden_sections: prmarmot_local::config::hidden_sections(&file),
         collapsed: app::collapsed_from(&file),
         details_position: prmarmot_local::config::details_position(&file),
     };

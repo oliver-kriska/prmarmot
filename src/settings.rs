@@ -10,7 +10,9 @@ use gpui_component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable};
 use prmarmot_core::board::{issue_link_problem, IssueLinkField};
-use prmarmot_core::layout::{section_name, section_views, SectionOrder};
+use prmarmot_core::layout::{
+    section_name, section_views, SectionKind, SectionOrder, ORDERABLE_SECTIONS,
+};
 
 use prmarmot_local::auth::{token_store, TokenKind};
 use prmarmot_local::config::{AuthSettings, EnvOverrides};
@@ -179,6 +181,10 @@ pub struct SettingsView {
     /// order only when they differ, so a hand-written list stays as written.
     section_order: SectionOrder,
     saved_section_order: SectionOrder,
+    /// The sections hidden in every view, in the default order, and what the
+    /// file holds: saved only when changed.
+    hidden_sections: Vec<SectionKind>,
+    saved_hidden_sections: Vec<SectionKind>,
     /// Where Details opens, and what the file holds: saved only when changed.
     details_position: DetailsPosition,
     saved_details_position: DetailsPosition,
@@ -266,6 +272,7 @@ impl SettingsView {
         };
         let account = stored_account(&auth);
         let section_order = prmarmot_local::config::section_order(&file);
+        let hidden_sections = prmarmot_local::config::hidden_sections(&file);
         let details_position = prmarmot_local::config::details_position(&file);
         let look = Rc::new(crate::skin::Look::from_file(&file));
         let colors = look.colors.clone();
@@ -354,6 +361,8 @@ impl SettingsView {
             automatic_update_checks: file.automatic_update_checks,
             saved_section_order: section_order.clone(),
             section_order,
+            saved_hidden_sections: hidden_sections.clone(),
+            hidden_sections,
             details_position,
             saved_details_position: details_position,
             saved_colors: colors.clone(),
@@ -515,6 +524,8 @@ impl SettingsView {
             automatic_update_checks: Some(self.automatic_update_checks),
             section_order: (self.section_order != self.saved_section_order)
                 .then(|| self.section_order.clone()),
+            hidden_sections: (self.hidden_sections != self.saved_hidden_sections)
+                .then(|| self.hidden_sections.clone()),
             details_position: (self.details_position != self.saved_details_position)
                 .then_some(self.details_position),
             colors: (self.colors != self.saved_colors).then(|| self.colors.clone()),
@@ -737,6 +748,18 @@ impl SettingsView {
     /// Section order: one list for every view, each section moved with its up
     /// and down buttons. The names and where each shows come from core, as
     /// the iPad's list does.
+    /// Hide a shown section or show a hidden one, keeping the list in the
+    /// default order as the file writes it.
+    fn toggle_hidden_section(&mut self, kind: SectionKind) {
+        if let Some(ix) = self.hidden_sections.iter().position(|k| *k == kind) {
+            self.hidden_sections.remove(ix);
+        } else {
+            self.hidden_sections.push(kind);
+            self.hidden_sections
+                .sort_by_key(|kind| ORDERABLE_SECTIONS.iter().position(|k| k == kind));
+        }
+    }
+
     fn render_section_order(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let last = self.section_order.kinds().len().saturating_sub(1);
@@ -761,7 +784,8 @@ impl SettingsView {
             )
             .child(div().text_size(type_size::SMALL).text_color(muted).child(
                 "The order sections come in, the same in every view; each view shows the ones it \
-                 has. Saved as section_order in config.toml.",
+                 has. The eye hides a section in every view. Saved as section_order and \
+                 hidden_sections in config.toml.",
             ))
             .children(
                 self.section_order
@@ -771,6 +795,7 @@ impl SettingsView {
                     .enumerate()
                     .map(|(ix, kind)| {
                         let name = section_name(kind);
+                        let hidden = self.hidden_sections.contains(&kind);
                         h_flex()
                             .gap_2()
                             .child(
@@ -779,13 +804,36 @@ impl SettingsView {
                                     .text_color(muted)
                                     .child((ix + 1).to_string()),
                             )
-                            .child(div().child(name))
+                            .child(
+                                div()
+                                    .when(hidden, |name| name.text_color(muted).line_through())
+                                    .child(name),
+                            )
                             .child(
                                 div()
                                     .flex_1()
                                     .text_size(type_size::CAPTION)
                                     .text_color(muted)
                                     .child(section_views(kind)),
+                            )
+                            .child(
+                                Button::new(("settings-section-hide", ix))
+                                    .small()
+                                    .ghost()
+                                    .icon(if hidden {
+                                        IconName::EyeOff
+                                    } else {
+                                        IconName::Eye
+                                    })
+                                    .tooltip(if hidden {
+                                        format!("Show {name}")
+                                    } else {
+                                        format!("Hide {name}")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_hidden_section(kind);
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 Button::new(("settings-section-up", ix))
@@ -1218,7 +1266,7 @@ impl Render for SettingsView {
                                     cx,
                                 ))
                                 .child(div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
-                                    .child("Use {id} for the matched issue ID. Clear both fields to disable issue links."))
+                                    .child("Use {id} for the matched issue ID. The ID is read from the title, else from the branch name. Linear: [A-Z]+-[0-9]+ (or your team key, e.g. ENG-[0-9]+) and https://linear.app/<workspace>/issue/{id}; the Ticket column then links each PR to its Linear issue. Clear both fields to disable issue links."))
                                 .child(
                                     v_flex()
                                         .gap_1()

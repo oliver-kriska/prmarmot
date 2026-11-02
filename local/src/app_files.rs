@@ -66,6 +66,9 @@ pub struct SettingsUpdate {
     /// `Some` writes `section_order`, and the default order removes it;
     /// `None` leaves whatever the file says as it was written.
     pub section_order: Option<SectionOrder>,
+    /// `Some` writes `hidden_sections`, and none hidden removes it; `None`
+    /// leaves whatever the file says as it was written.
+    pub hidden_sections: Option<Vec<prmarmot_core::layout::SectionKind>>,
     /// `Some` writes `details_position`, and `auto` (the default) removes it.
     pub details_position: Option<crate::config::DetailsPosition>,
     /// `Some` writes `colors`, and Classic (the default) removes it.
@@ -169,6 +172,18 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
         } else {
             doc["section_order"] =
                 toml_edit::value(order.keys().into_iter().collect::<toml_edit::Array>());
+        }
+    }
+    if let Some(hidden) = &update.hidden_sections {
+        if hidden.is_empty() {
+            doc.remove("hidden_sections");
+        } else {
+            doc["hidden_sections"] = toml_edit::value(
+                hidden
+                    .iter()
+                    .map(|kind| kind.key())
+                    .collect::<toml_edit::Array>(),
+            );
         }
     }
     if let Some(position) = update.details_position {
@@ -621,10 +636,39 @@ fn save_visible_columns_at(path: &Path, columns: &[String]) -> Result<(), String
     })
 }
 
+/// Remember the column order the headers were dragged into.
+pub fn save_column_order(columns: &[String]) -> Result<(), String> {
+    save_column_order_at(&config_path(), columns)
+}
+
+fn save_column_order_at(path: &Path, columns: &[String]) -> Result<(), String> {
+    edit_config_at(path, Validate::Settings, |doc| {
+        doc["column_order"] =
+            toml_edit::value(columns.iter().cloned().collect::<toml_edit::Array>());
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{normalized_pins, MAX_PINNED_REPOS};
+
+    #[test]
+    fn column_order_is_saved_beside_unrelated_settings() {
+        let path = temp_config("column-order");
+        std::fs::write(&path, "# keep this\nrepo = 'acme/widgets'\n").unwrap();
+        save_column_order_at(&path, &["title".into(), "pr".into()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# keep this"), "{text}");
+        let saved: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(saved.repo.as_deref(), Some("acme/widgets"));
+        assert_eq!(
+            saved.column_order.as_deref(),
+            Some(&["title".to_owned(), "pr".to_owned()][..])
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn agent_defaults_round_trip_clear_and_preserve_unrelated_settings() {
@@ -1091,6 +1135,45 @@ mod tests {
         .unwrap();
         let saved: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!saved.automatic_update_checks);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hidden_sections_are_written_as_keys_and_none_removes_them() {
+        use prmarmot_core::board::Category;
+        use prmarmot_core::layout::SectionKind;
+        let path = temp_config("hidden-sections");
+        let hidden = vec![
+            SectionKind::Approved,
+            SectionKind::Category(Category::Draft),
+        ];
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                hidden_sections: Some(hidden.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(r#"hidden_sections = ["approved", "draft"]"#),
+            "{text}"
+        );
+        let parsed: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(crate::config::hidden_sections(&parsed), hidden);
+
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                hidden_sections: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("hidden_sections"));
         std::fs::remove_file(path).unwrap();
     }
 

@@ -4,7 +4,9 @@
 //! folded into the rows already loaded.
 
 use super::*;
-use crate::github::query::{check_graphql_errors, parse_rate, MAX_TURN_IDS, TURNS_QUERY};
+use crate::github::query::{
+    check_graphql_errors, parse_rate, MAX_TURN_IDS, TICKETS_QUERY, TURNS_QUERY,
+};
 
 /// One request, sent again unchanged when GitHub gave up on it at
 /// [`SMALL_PAGE_SIZE`] rows. Measured 2026-10-06: a request that takes 4–5 s
@@ -162,7 +164,62 @@ pub fn fetch_view(
         small_pages,
     )?;
     settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
+    settle_tickets(transport, cfg, &mut fetched);
     Ok(fetched)
+}
+
+/// Each row's Linear issue from Linear's own comment on the PR
+/// ([`TICKETS_QUERY`]), which wins over an ID in the title or branch: a
+/// placeholder there (`MOB-000`) is not the issue the PR was linked to. Only
+/// with [`BoardConfig::linear_tickets`]. Every row is asked about, at most
+/// 100 (GitHub's limit for one `nodes` request), so a cache in front of the
+/// transport can answer the ones it knows and fetch only the rest. A
+/// refusal leaves the rows as the title and branch made them.
+pub(crate) fn settle_tickets(
+    transport: &dyn GithubTransport,
+    cfg: &BoardConfig,
+    fetched: &mut BoardFetch,
+) {
+    if !cfg.linear_tickets {
+        return;
+    }
+    let ids: Vec<String> = fetched
+        .rows
+        .iter()
+        .map(|row| row.id.clone())
+        .take(100)
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(body) = transport.graphql_with_ids(TICKETS_QUERY, &[], &ids) else {
+        return;
+    };
+    if check_graphql_errors(&body).is_err() {
+        return;
+    }
+    if let Some(rate) = parse_rate(&body) {
+        fetched.rate = Some(rate);
+    }
+    let Some(nodes) = body
+        .pointer("/data/tickets")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    for node in nodes.iter().filter(|node| !node.is_null()) {
+        let Some(id) = node.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(ticket) = crate::linear::linkback(node) else {
+            continue;
+        };
+        if let Some(row) = fetched.rows.iter_mut().find(|row| row.id == id) {
+            row.issue = Some(ticket.id);
+            row.issue_url = Some(ticket.url);
+            row.issue_title = ticket.title;
+        }
+    }
 }
 
 /// The ownership rule's second request ([`TURNS_QUERY`]): whose turn the
@@ -304,6 +361,7 @@ pub fn fetch_all_open(
         small_pages,
     )?;
     settle_turns(transport, Mode::AllOpen, false, me, cfg, &mut fetched);
+    settle_tickets(transport, cfg, &mut fetched);
     Ok(fetched)
 }
 
@@ -687,6 +745,7 @@ pub fn fetch_more_board_scoped(
     };
     // The rows already settled keep their turns; only the page's new rows ask.
     settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
+    settle_tickets(transport, cfg, &mut fetched);
     Ok(fetched)
 }
 

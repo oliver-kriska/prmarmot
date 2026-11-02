@@ -111,8 +111,8 @@
       "required": ["key", "label", "count", "prs"],
       "properties": {
         "key": {
-          "enum": ["approved", "action", "awaiting_my_response", "awaiting_my_review", "awaiting_my_teams_review", "await", "todo", "available", "done", "draft", "snoozed"],
-          "description": "Stable key. approved: approved and waiting to merge. action: needs action: yours blocked on you (see `blockers`), or, in Involving me and `all`, someone else's with a conflict, failing CI, requested changes or unresolved comments. await: waiting on reviewers (one is requested or has commented). todo: your review is requested. available: nobody is requested yet; in Involving me and `all`, someone else's PR with no reviewer requested and no review. done: you already reviewed. draft: drafts. snoozed: snoozed in the app. In Involving me and `all`, approved, action, available, await and draft hold anyone's PRs; `author` says whose."
+          "enum": ["my_approved", "approved", "action", "awaiting_my_response", "awaiting_my_review", "awaiting_my_teams_review", "await", "todo", "available", "done", "draft", "snoozed"],
+          "description": "Stable key. my_approved: your own PRs, approved and waiting to merge. approved: someone else's PRs, approved and waiting to merge. action: needs action: yours blocked on you (see `blockers`), or, in Involving me and `all`, someone else's with a conflict, failing CI, requested changes or unresolved comments. await: waiting on reviewers (one is requested or has commented). todo: your review is requested. available: nobody is requested yet; in Involving me and `all`, someone else's PR with no reviewer requested and no review. done: you already reviewed. draft: drafts. snoozed: snoozed in the app. In Involving me and `all`, action, available, await and draft hold anyone's PRs; `author` says whose."
         },
         "label": { "type": "string", "description": "The app's section title; wording may change." },
         "explanation": {

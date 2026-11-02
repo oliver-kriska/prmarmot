@@ -340,6 +340,16 @@ pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost
 /// 2 a PR, against a 5,000-point hour.
 pub const MAX_TURN_IDS: usize = 30;
 
+/// The first comments of the given PRs, where Linear's GitHub integration
+/// posts the issue a PR is linked to ([`crate::linear::linkback`]). Linear's
+/// comment came within the first five in every PR sampled (2026-10-30), and
+/// GitHub cannot filter comments by author. Only a cache in front of it
+/// keeps this affordable: it asks about the PRs it has no answer for.
+pub const TICKETS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  tickets: nodes(ids:$tracked){ ... on PullRequest { id comments(first:10){ nodes{ author{ login __typename } body } } } }\n}";
+
+/// The most PRs one tickets request asks GitHub about.
+pub const MAX_TICKET_IDS: usize = 30;
+
 /// Only the rate budget; [`with_tracked_nodes`] adds the tracked PRs. For
 /// following specific PRs without running a board search.
 pub const TRACKED_ONLY_QUERY: &str =

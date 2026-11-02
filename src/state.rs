@@ -203,6 +203,9 @@ pub struct AppState {
     pub mode: Mode,
     pub config: BoardConfig,
     pub transport: Arc<dyn GithubTransport>,
+    /// The cache `transport` goes through once connected, for forgetting a
+    /// PR's Linear ticket on request.
+    ticket_cache: Option<Arc<prmarmot_local::thread_cache::ThreadCacheTransport>>,
     connector: Arc<dyn Connector>,
     pub rows: Vec<BoardRow>,
     pub last_synced: Option<DateTime<Local>>,
@@ -473,6 +476,7 @@ impl AppState {
             mode,
             config,
             transport,
+            ticket_cache: None,
             connector,
             rows: Vec::new(),
             last_synced: None,
@@ -697,11 +701,13 @@ impl AppState {
                     Ok((connection, attention, board)) => {
                         let namespace = attention.snapshots.namespace().clone();
                         state.attention = Some(Arc::new(attention));
-                        state.transport =
+                        let cache =
                             Arc::new(prmarmot_local::thread_cache::ThreadCacheTransport::new(
                                 connection.transport,
                                 namespace,
                             ));
+                        state.ticket_cache = Some(cache.clone());
+                        state.transport = cache;
                         state.me = Some(connection.login);
                         state.signed_in_via = Some(connection.via);
                         state.token_reach_hint = connection.token_reach_hint;
@@ -1128,6 +1134,26 @@ impl AppState {
     pub fn pause_text(&self) -> Option<String> {
         self.backoff_remaining()
             .map(|secs| paused_text(self.pause_reason, secs))
+    }
+
+    /// Read these PRs' Linear tickets again: forget them, then refresh the
+    /// open view at once, its rows staying on screen meanwhile. A fetch
+    /// already running may have read the old tickets, so its answer is
+    /// dropped.
+    pub fn refresh_tickets(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        let Some(cache) = self.ticket_cache.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move { cache.forget_tickets(&ids) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.invalidate(state.mode);
+                state.refresh(cx);
+            });
+        })
+        .detach();
     }
 
     /// Kick off one fetch unless one is in flight or we are backing off.

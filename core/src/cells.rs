@@ -391,7 +391,7 @@ pub fn ci_cell(ci: Ci) -> (&'static str, Tone) {
 pub fn section_tone(kind: &crate::layout::SectionKind) -> Tone {
     use crate::layout::SectionKind;
     match kind {
-        SectionKind::Approved => Tone::Success,
+        SectionKind::MyApproved | SectionKind::Approved => Tone::Success,
         SectionKind::Category(Category::Action) => Tone::Danger,
         // Waiting on somebody else, and waiting on you, are both "not done
         // yet" rather than "broken": visible, never a wall of alarm.

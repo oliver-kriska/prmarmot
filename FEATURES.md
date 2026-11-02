@@ -24,11 +24,13 @@ values in the code. New features get the next free number in their area.
   **Show all repositories**, and while GitHub has more to load it offers **Load more**, because the next page can
   hold PRs the first did not. _since v0.15.1_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
-  - My PRs: Approved, Awaiting my response, Needs action, Awaiting their review, Drafts.
-  - Involving me: Approved, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts. _since v0.12.0_
+  - My PRs: My PR approved, Awaiting my response, Needs action, Awaiting their review, Drafts.
+  - Involving me: My PR approved, Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts. _since v0.12.0_
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
-  - All open: Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts.
+  - All open: My PR approved, Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts.
     _since v0.12.0_
+  - **My PR approved** holds your own approved PRs waiting to merge, with a green header; **Approved** holds
+    someone else's.
 
   A section has one name in every view. Where other people's PRs sit beside yours, one that nobody was asked to
   review and nobody has reviewed is under Available to review, as in the Review queue, rather than under Awaiting
