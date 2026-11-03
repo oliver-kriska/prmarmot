@@ -161,10 +161,11 @@ Launch posts go out only after the memory benchmark is published (G0) and the we
 - [x] **Memory benchmark** in `benchmarks/`: method, raw samples and the verdict, reproducible by anyone
       (v0.9.1, 37.4 h, 2026-09-20).
 - [x] Repo hygiene: topics, social preview, homepage, Discussions with the pinned waitlist thread and the Ideas category.
-- [ ] Issue templates that route bugs to Issues and requests to Ideas.
-- [ ] README: hero GIF, install one-liner, the "no account, no server" line, the CLI + agent-skill section, and a
-      comparison table (github.com/pulls · gh-dash · RepoBar · Gitify · PR Flow) with an honest platform row and an
-      "AI review" row.
+- [x] Issue templates that route bugs to Issues and requests to Ideas (desktop/CLI and iPad bug forms, 2026-11-03).
+- [x] README: install one-liner, the "no account, no server" line, the CLI + agent-skill section, and a
+      comparison table (github.com/pulls · gh-dash · Gitify · RepoBar · PR Flow) with an honest platform row and an
+      "AI review" row, every cell sourced and dated (2026-11-03).
+- [ ] README hero GIF.
 - [ ] Posts: Show HN, r/rust, r/github, Lobsters; awesome-rust, awesome-github, awesome-claude-code.
 - [x] Adoption tracking without telemetry: `scripts/adoption-snapshot.sh` appends stars, downloads, traffic,
       stranger issues, waitlist signals and Ideas upvotes to `measurements/adoption.csv`.
