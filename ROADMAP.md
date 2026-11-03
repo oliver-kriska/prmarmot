@@ -82,7 +82,7 @@ Two ways to influence it:
 | Rung | Product | How it is built | Price | Role |
 |---|---|---|---|---|
 | 1 | **PR Marmot for Mac + Linux** | Rust, GPUI, reuses your `gh` login, everything stays on your machine | Free, MIT, forever | The product; the open-source brand |
-| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Free for seven days, then bought once, on the App Store | First paid product |
+| 2 | **PR Marmot for iPad** | Native Swift over the same `prmarmot-core`, signed in with your GitHub account, no server | Free for seven days, then bought once, on the App Store since 2026-10-30 | First paid product |
 | 3 | **PR Marmot Cloud** | A hosted watcher that computes the same Note transitions while your laptop is closed and pushes to your iPad | Subscription | The only way mobile alerts can be reliable |
 | 4 | Mac App Store copy of rung 1 (optional) | The same open-source app, sandboxed | Paid for convenience | Only if it turns out cheap |
 
@@ -110,7 +110,7 @@ Numbers are targets, revised against reality, never moved to make a gate pass.
 | Gate | Passes when | Unlocks |
 |---|---|---|
 | **G0 memory** — passed 2026-09-20 | On the shipped cask build, 12–24 h unattended soak: mean physical footprint after hour 1 < 150 MB, p99 after hour 1 < 200 MB, linear-fit slope ≤ 2 MB/h, idle CPU ≈ 0 %. Results are published in `benchmarks/`. Measured on v0.9.1 over 37.4 h: 106.7 MB mean, 159 MB p99, −0.77 MB/h, 0.01 %. | Launch posts (Phase 3) |
-| **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | Scope of the iPad app (Phase 5, already in development since 2026-09-17) |
+| **G1 signal** | ≥ 300 stars **or** ≥ 100 waitlist signals **or** ≥ 20 issues from people who are not the maintainer, about 8 weeks after launch. A waitlist signal is one unique human who commented or 👍-reacted on the pinned waitlist thread (that thread only; the maintainer excluded; counted by `scripts/adoption-snapshot.sh`). No email form, no third-party service. | How much goes into the iPad app's next versions (Phase 5 shipped on 2026-10-30 ahead of G1) and whether Cloud follows |
 | **G2 demand** | ≥ 100 paid iPad purchases **or** ≥ 50 % of iPad reviews and waitlist comments asking for alerts. | Cloud (Phase 6) |
 
 ## Phase 0 — Rename to PR Marmot — done
@@ -250,19 +250,20 @@ Needed by every rung above 1; also improves rung 1 (onboarding without `gh`, Ent
 - [x] Contract tests: the Swift package runs the same golden fixtures through the bindings.
 - [x] One search grammar: `label:` / `author:` / `repo:` / `is:stale` live in `prmarmot-core`, golden-tested, and reach the terminal as `prmarmot-cli --filter`.
 
-## Phase 5 — PR Marmot for iPad — in development
+## Phase 5 — PR Marmot for iPad — shipped 2026-10-30
 
-**Status (2026-09-19):** in development, started on 2026-09-17 ahead of G1 at the maintainer's decision, in a
-separate closed-source repository over the open-source `prmarmot-core` through `ffi/`. G1 no longer gates the
-build; it still informs how much goes into it. A foreground triage companion that mirrors the desktop: the same
-dense board (sections, stacks, CI, reviews, labels, Note, watch and snooze, changed markers, search chips) and a
-Details inspector. No alert promises until Phase 6.
+**Status (2026-11-03):** PR Marmot for iPad 1.0.0 was approved on 2026-10-30 and is on the
+[App Store](https://apps.apple.com/us/app/pr-marmot/id6814076030): iPadOS 17.2 or later, free for seven days,
+then one purchase. Started on 2026-09-17 ahead of G1 at the maintainer's decision, in a separate closed-source
+repository over the open-source `prmarmot-core` through `ffi/`. A foreground triage companion that mirrors the
+desktop: the same dense board (sections, stacks, CI, reviews, labels, Note, watch and snooze, changed markers,
+search chips) and a Details inspector. No alert promises until Phase 6.
 
 - [x] SwiftUI app (iPadOS only; no iPhone in v1) over `PRMarmotCore`, URLSession transport, Device Flow or a pasted token, Keychain, same refresh floor and rate-limit rules.
 - [x] Parity with desktop: categories, stacks, Note, search, change markers, watches, snooze; local state only, no sync in v1. Every feature is tested against a mocked GitHub API.
-- [x] Platform wins: Shortcuts ("what needs me"), Spotlight, keyboard shortcuts on iPad. Home/Lock Screen widgets are deferred: without a server they can only show the app's last refresh, so they wait for Phase 6.
+- [x] Platform wins: Shortcuts ("what needs me"), Spotlight, keyboard shortcuts on iPad. Three Home Screen widgets (Needs you, Needs you by queue, Board) show what the app last synced, with the sync time; they never fetch on their own.
 - [ ] Best-effort background refresh with local notifications, labelled best-effort in the UI and never in a screenshot.
-- [ ] Free for seven days, then bought once, on the App Store (2026-09-25; replaces the 2026-09-18 plan of a paid app with no trial). The trial and the one-time unlock are both App Store in-app purchases handled on the iPad by StoreKit: no subscription, no server, and a reinstall or a second iPad does not restart the trial. The desktop app stays free, with every feature.
+- [x] Free for seven days, then bought once, on the App Store (2026-09-25; replaces the 2026-09-18 plan of a paid app with no trial). The trial and the one-time unlock are both App Store in-app purchases handled on the iPad by StoreKit: no subscription, no server, and a reinstall or a second iPad does not restart the trial. The desktop app stays free, with every feature.
 - [ ] TestFlight invitations go to the waitlist thread first; App Store privacy label "data not collected" (the privacy manifest declares no tracking and no collected data).
 
 ## Phase 6 — PR Marmot Cloud — after G2
