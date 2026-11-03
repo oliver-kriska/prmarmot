@@ -682,6 +682,11 @@ fn the_snooze_menu_and_the_row_facts_are_the_desktops_words() {
     );
     assert_eq!(cancel_snooze_label(), "Cancel snooze");
     assert_eq!(
+        prmarmot_ffi::snooze_wake_hour(),
+        prmarmot_local::attention_state::SNOOZE_WAKE_HOUR
+    );
+    assert_eq!(prmarmot_ffi::snooze_wake_hour(), 9);
+    assert_eq!(
         [SizeBand::Small, SizeBand::Medium, SizeBand::Large].map(size_band_label),
         ["Small", "Medium", "Large"]
     );

@@ -262,6 +262,15 @@ pub fn cancel_snooze_label() -> String {
     local_attention::SNOOZE_CANCEL.into()
 }
 
+/// The hour "Until tomorrow" wakes at, in the reader's time zone: the
+/// desktop's constant, so a date-aware caller that resolves the next
+/// local morning itself (and then calls `snooze_until`) wakes when the
+/// desktop does.
+#[uniffi::export]
+pub fn snooze_wake_hour() -> u32 {
+    local_attention::SNOOZE_WAKE_HOUR
+}
+
 /// A snoozed PR and the sentence describing why.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SnoozedPr {
