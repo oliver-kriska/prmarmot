@@ -1,0 +1,96 @@
+name: iPad bug report
+description: PR Marmot for iPad does something wrong, crashes, or shows the wrong state.
+title: "[iPad] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem with PR Marmot for iPad. This public tracker accepts iPad bug reports even though the iPad interface is closed source.
+
+        [iPad support](https://prmarmot.dev/support/#pr-marmot-for-ipad) covers sign-in, trials, purchases, and refunds. For something you would rather not post publicly, use the email contact on the [support page](https://prmarmot.dev/support/). Feature ideas go to [Ideas](https://github.com/oliver-kriska/prmarmot/discussions/categories/ideas) and questions to [Q&A](https://github.com/oliver-kriska/prmarmot/discussions/categories/q-a).
+
+        This report is public. Please remove private repository names, PR titles, and logins from anything you paste or attach. Never paste tokens or sign-in codes. Do not attach App Store receipts or Apple Account details.
+  - type: input
+    id: version
+    attributes:
+      label: PR Marmot for iPad version
+      description: The app version shown in PR Marmot Settings. If the app will not open, say so.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: ipados
+    attributes:
+      label: iPadOS version
+      description: In the iPad's Settings → General → About → iPadOS Version.
+      placeholder: "iPadOS 26.1"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: iPad model
+      description: In the iPad's Settings → General → About → Model Name. Do not include the serial number.
+      placeholder: "iPad Air 11-inch (M2)"
+    validations:
+      required: true
+  - type: dropdown
+    id: sign-in
+    attributes:
+      label: Sign-in method
+      description: If sign-in failed, choose the method you tried. Never paste the token or device code.
+      options:
+        - Sign in with GitHub (device code)
+        - Personal access token (classic)
+        - Personal access token (fine-grained)
+        - Have not tried signing in
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: GitHub service
+      description: Choose the service, without sharing a private Enterprise hostname.
+      options:
+        - GitHub.com
+        - GitHub Enterprise Server
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: purchase
+    attributes:
+      label: Trial or purchase state
+      description: Check Settings → Purchase or the purchase screen. If it shows the wrong state, explain below; do not attach receipts.
+      options:
+        - Trial not started
+        - Trial active
+        - Trial ended
+        - Bought
+        - Waiting for approval (Ask to Buy)
+        - Not sure or cannot open the app
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Steps to reproduce, what you expected, and what happened instead. Include any error message. For display problems, say whether you used full screen, Split View, or Stage Manager.
+      placeholder: |
+        1. Opened Review queue for all repositories
+        2. Expected …
+        3. Saw … instead
+    validations:
+      required: true
+  - type: textarea
+    id: note
+    attributes:
+      label: What the Note said
+      description: For a wrong PR state, copy the Note and describe how the PR looked on GitHub. Remove private repository names, PR titles, and logins. Leave blank if no Note was shown.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Attach screenshots if they help. Remove private repository names, PR titles, logins, tokens, sign-in codes, and Apple Account details first.

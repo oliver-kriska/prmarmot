@@ -6,7 +6,10 @@ contact_links:
     about: One thread per feature in Ideas — vote with 👍; upvotes decide what gets built next.
   - name: Question or setup help
     url: https://github.com/oliver-kriska/prmarmot/discussions/categories/q-a
-    about: Installing, gh login, config, or "is this expected?" — ask in Q&A.
-  - name: iPad app + Cloud waitlist
+    about: Installing, signing in, settings, or "is this expected?" — ask in Q&A.
+  - name: iPad support
+    url: https://prmarmot.dev/support/
+    about: Help with iPad sign-in, trials, purchases, and refunds, plus an email contact for private reports.
+  - name: iPad launch + Cloud waitlist
     url: https://github.com/oliver-kriska/prmarmot/discussions/8
-    about: React with 👍 or comment on the pinned thread to be notified.
+    about: The iPad app is on the App Store. Read the launch thread, or react with 👍 or comment for the proposed Cloud service.

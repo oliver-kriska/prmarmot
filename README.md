@@ -56,9 +56,44 @@ event per line, and `watch --pr OWNER/NAME#N --until ci-pass` blocks until the
 condition is met (`prmarmot-cli skill install` teaches your agent to use it).
 See [Terminal and agent CLI](#terminal-and-agent-cli).
 
-**PR Marmot for iPad** is coming to the App Store: free for seven days, then
-bought once, with no subscription. Get notified:
-[github.com/oliver-kriska/prmarmot/discussions/8](https://github.com/oliver-kriska/prmarmot/discussions/8)
+**PR Marmot for iPad** is [on the App Store](https://apps.apple.com/us/app/pr-marmot/id6814076030):
+the same board on an iPad, free for seven days, then bought once, with no
+subscription. It is a separate app and its source is not public; the desktop
+app and `prmarmot-cli` stay free and MIT.
+
+## How it compares
+
+Each tool does a different job, and GitHub's own page stays the place where
+you review and merge. Every cell comes from the tool's own site, repository or
+store listing, read on 2026-11-03.
+
+| | [github.com/pulls][c-gh] | [gh-dash][c-dash] | [Gitify][c-gitify] | [RepoBar][c-repobar] | [PR Flow][c-prflow] | PR Marmot |
+|---|---|---|---|---|---|---|
+| What it is | GitHub's pull requests page | Terminal UI, a `gh` extension | Notifications in the menu bar | Repository status in the menu bar | Desktop review client | Read-only desktop dashboard |
+| Runs on | Any browser; GitHub Mobile | [macOS, Linux, Windows, FreeBSD][c-dash-rel] | macOS, Windows, Linux | macOS 15 or later | macOS, Windows, Linux | Apple-silicon macOS; Linux and Intel Macs from source; iPad. No Windows, no iPhone |
+| AI review | [Copilot code review][c-copilot], in paid Copilot plans; each review uses AI credits | Not stated | Not stated | Not stated | [Optional][c-prflow-ai], through a provider you configure | None, by design |
+| Price | Free | Free | Free | Free | $69 once, 7-day trial | Free; iPad: 7-day trial, then one purchase |
+| Source | GitHub's | MIT | MIT | MIT | [Proprietary][c-prflow-lic] | MIT (desktop and CLI) |
+| Stars, 2026-11-03 | | 12,716 | 5,394 | 2,225 | | 7 |
+
+Pick gh-dash if you live in a terminal, Gitify for every kind of GitHub
+notification, RepoBar if you think in repositories, and PR Flow if you want to
+review diffs and get AI help inside one app. PR Marmot is for one window that
+says, in a plain sentence, what each pull request needs from you next.
+
+There is no memory or CPU comparison here, because nobody measured the others
+the same way. PR Marmot's own 37-hour soak is published in
+[`benchmarks/`](benchmarks/2026-09-20-memory-gate-v0.9.1.md).
+
+[c-gh]: https://github.blog/changelog/2026-07-09-new-pull-requests-dashboard-is-now-generally-available/
+[c-dash]: https://github.com/dlvhdr/gh-dash
+[c-gitify]: https://github.com/gitify-app/gitify
+[c-repobar]: https://github.com/steipete/RepoBar
+[c-prflow]: https://prflow.app/pricing
+[c-copilot]: https://docs.github.com/en/copilot/concepts/agents/code-review
+[c-dash-rel]: https://github.com/dlvhdr/gh-dash/releases/latest
+[c-prflow-ai]: https://prflow.app/
+[c-prflow-lic]: https://github.com/akozma89/pr-flow-releases/blob/main/LICENSE
 
 ## What it does
 

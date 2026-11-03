@@ -1,5 +1,5 @@
-name: Bug report
-description: PR Marmot or prmarmot-cli does something wrong, crashes, or shows the wrong state.
+name: Desktop or CLI bug report
+description: PR Marmot on macOS or Linux, or prmarmot-cli, does something wrong, crashes, or shows the wrong state.
 labels: [bug]
 body:
   - type: markdown
@@ -7,7 +7,9 @@ body:
       value: |
         Thanks for reporting. Feature ideas go to [Ideas](https://github.com/oliver-kriska/prmarmot/discussions/categories/ideas) and setup questions to [Q&A](https://github.com/oliver-kriska/prmarmot/discussions/categories/q-a).
 
-        Please remove private repository names, PR titles, and logins from anything you paste.
+        For PR Marmot for iPad, use the [iPad bug report](https://github.com/oliver-kriska/prmarmot/issues/new?template=ipad_bug_report.yml) instead.
+
+        This report is public. Please remove private repository names, PR titles, and logins from anything you paste or attach. Never paste tokens or sign-in codes.
   - type: input
     id: version
     attributes:
@@ -51,13 +53,13 @@ body:
     id: gh
     attributes:
       label: GitHub CLI
-      description: Output of `gh --version`, and whether `gh auth status` says you are logged in (and to which host). Do not paste tokens.
+      description: If you use the GitHub CLI, include `gh --version` and whether `gh auth status` says you are logged in. Otherwise leave this blank. Do not paste tokens or private hostnames.
       placeholder: |
         gh version 2.80.0 (2026-09-01)
         gh auth status: logged in to github.com
       render: text
     validations:
-      required: true
+      required: false
   - type: textarea
     id: what
     attributes:
