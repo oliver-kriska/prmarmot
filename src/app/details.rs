@@ -39,10 +39,14 @@ impl RootView {
                 .background_executor()
                 .spawn(async move {
                     let config = prmarmot_local::config::load();
-                    let root = config
-                        .repositories_dir
-                        .filter(|s| !s.trim().is_empty())
-                        .ok_or("Set Repositories folder in Settings first")?;
+                    let roots: Vec<std::path::PathBuf> = config
+                        .repository_folders()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect();
+                    if roots.is_empty() {
+                        return Err("Set Repositories folders in Settings first".into());
+                    }
                     let cache = prmarmot_local::config::cache_root().join("worktrees.json");
                     if review {
                         let agent = prmarmot_local::vscode_agents::ReviewAgent::connect(
@@ -50,9 +54,7 @@ impl RootView {
                             config.default_model.as_deref().unwrap_or_default(),
                         )?;
                         let repo = prmarmot_local::worktrees::resolve_repository(
-                            std::path::Path::new(&root),
-                            &cache,
-                            &request,
+                            &roots, &cache, &request,
                         )?;
                         agent.start_review(
                             &repo,
@@ -65,11 +67,7 @@ impl RootView {
                         )?;
                         Ok("PR session ready; requested VS Code Agents window".into())
                     } else {
-                        let path = prmarmot_local::worktrees::resolve(
-                            std::path::Path::new(&root),
-                            &cache,
-                            &request,
-                        )?;
+                        let path = prmarmot_local::worktrees::resolve(&roots, &cache, &request)?;
                         prmarmot_local::worktrees::open_vscode(&path)?;
                         Ok::<_, String>(format!("Opened {} in VS Code", path.display()))
                     }

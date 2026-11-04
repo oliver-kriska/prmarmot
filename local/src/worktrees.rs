@@ -19,9 +19,10 @@ pub struct PullRequest {
     pub number: u64,
 }
 
+/// A cached path counts only while it is inside one of the folders searched
+/// now, so changing the folders forgets just the entries they no longer cover.
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
-    root: PathBuf,
     repositories: Vec<(String, PathBuf)>,
     pulls: Vec<(String, PathBuf)>,
 }
@@ -106,39 +107,62 @@ fn matching_remote(repo: &Path, identity: &str) -> Option<String> {
     })
 }
 
-fn discover(root: &Path, identity: &str) -> Result<PathBuf, String> {
-    let mut pending = vec![root.to_owned()];
+/// Search the folders in order; the first clone with a matching remote wins.
+/// One limit covers the whole search, and a folder inside an earlier one is
+/// not searched twice. An unreadable folder is skipped unless all are.
+fn discover(roots: &[PathBuf], identity: &str) -> Result<PathBuf, String> {
     let started = Instant::now();
     let mut visited = 0;
-    while let Some(path) = pending.pop() {
-        visited += 1;
-        if visited > MAX_DIRS || started.elapsed() > Duration::from_secs(60) {
-            return Err(
-                "Repository search limit reached; choose a narrower Repositories folder".into(),
-            );
+    let mut unreadable = None;
+    let mut readable = false;
+    for (index, root) in roots.iter().enumerate() {
+        let earlier = &roots[..index];
+        if earlier.iter().any(|done| root.starts_with(done)) {
+            continue;
         }
-        if path.join(".git").exists() && matching_remote(&path, identity).is_some() {
-            return Ok(path);
+        let mut pending = vec![root.clone()];
+        while let Some(path) = pending.pop() {
+            visited += 1;
+            if visited > MAX_DIRS || started.elapsed() > Duration::from_secs(60) {
+                return Err(
+                    "Repository search limit reached; choose narrower Repositories folders".into(),
+                );
+            }
+            if path.join(".git").exists() && matching_remote(&path, identity).is_some() {
+                return Ok(path);
+            }
+            let entries = match std::fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(e) if &path == root => {
+                    unreadable.get_or_insert(format!("Cannot read repositories folder: {e}"));
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            readable = true;
+            let mut dirs: Vec<_> = entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_name() != ".git" && entry.file_type().is_ok_and(|t| t.is_dir())
+                })
+                .map(|entry| entry.path())
+                .filter(|path| !earlier.contains(path))
+                .collect();
+            dirs.sort();
+            pending.extend(dirs.into_iter().rev());
         }
-        let entries = match std::fs::read_dir(&path) {
-            Ok(entries) => entries,
-            Err(e) if path == root => return Err(format!("Cannot read repositories folder: {e}")),
-            Err(_) => continue,
-        };
-        let mut dirs: Vec<_> = entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.file_name() != ".git" && entry.file_type().is_ok_and(|t| t.is_dir())
-            })
-            .map(|entry| entry.path())
-            .collect();
-        dirs.sort();
-        pending.extend(dirs.into_iter().rev());
     }
-    Err(format!(
-        "No repository matching {identity} found in {}",
-        root.display()
-    ))
+    match unreadable {
+        Some(error) if !readable => Err(error),
+        _ => Err(format!(
+            "No repository matching {identity} found in {}",
+            roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 #[derive(Debug)]
@@ -202,59 +226,68 @@ fn matches_pr(repo: &Path, tree: &Worktree, pr: &PullRequest) -> bool {
 }
 
 /// Resolve first, then persist, so editor failures never create extra worktrees.
-pub fn resolve(root: &Path, cache_path: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
-    resolve_inner(root, cache_path, pr, false)
+pub fn resolve(roots: &[PathBuf], cache_path: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
+    resolve_inner(roots, cache_path, pr, false)
 }
 
 /// Find and cache the repository without fetching or creating a checkout.
 /// Agents uses this repository as the parent of its own managed worktree.
 pub fn resolve_repository(
-    root: &Path,
+    roots: &[PathBuf],
     cache_path: &Path,
     pr: &PullRequest,
 ) -> Result<PathBuf, String> {
-    resolve_inner(root, cache_path, pr, true)
+    resolve_inner(roots, cache_path, pr, true)
 }
 
 fn resolve_inner(
-    root: &Path,
+    roots: &[PathBuf],
     cache_path: &Path,
     pr: &PullRequest,
     repository_only: bool,
 ) -> Result<PathBuf, String> {
-    if !root.is_absolute() {
-        return Err("Set an absolute Repositories folder in Settings".into());
+    if roots.is_empty() || roots.iter().any(|root| !root.is_absolute()) {
+        return Err("Set absolute Repositories folders in Settings".into());
     }
-    let root = root
-        .canonicalize()
-        .map_err(|e| format!("Cannot open repositories folder: {e}"))?;
+    // A folder that is missing (an unplugged drive, say) is left out, so the
+    // others still work; only when none can be opened is that the error.
+    let mut missing = None;
+    let roots: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| {
+            root.canonicalize()
+                .map_err(|e| {
+                    missing.get_or_insert(format!("Cannot open repositories folder: {e}"));
+                })
+                .ok()
+        })
+        .collect();
+    if roots.is_empty() {
+        return Err(missing.unwrap_or_default());
+    }
     let mut cache: Cache = std::fs::metadata(cache_path)
         .ok()
         .filter(|m| m.len() <= MAX_CACHE_BYTES)
         .and_then(|_| std::fs::read(cache_path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    if cache.root != root
-        || cache.repositories.len() > MAX_ENTRIES
-        || cache.pulls.len() > MAX_ENTRIES
-    {
-        cache = Cache {
-            root: root.clone(),
-            ..Cache::default()
-        };
+    if cache.repositories.len() > MAX_ENTRIES || cache.pulls.len() > MAX_ENTRIES {
+        cache = Cache::default();
     }
     let repo = cache
         .repositories
         .iter()
         .find(|(key, path)| {
             key == &pr.repository
-                && path.canonicalize().is_ok_and(|p| p.starts_with(&root))
+                && path
+                    .canonicalize()
+                    .is_ok_and(|p| roots.iter().any(|root| p.starts_with(root)))
                 && matching_remote(path, &pr.repository).is_some()
         })
         .map(|(_, path)| path.clone());
     let repo = match repo {
         Some(repo) => repo,
-        None => discover(&root, &pr.repository)?,
+        None => discover(&roots, &pr.repository)?,
     };
     remember(&mut cache.repositories, pr.repository.clone(), repo.clone());
     save_cache(cache_path, &cache)?;
@@ -514,8 +547,11 @@ mod tests {
                 number: 42,
             }
         }
+        fn roots(&self) -> Vec<PathBuf> {
+            vec![self.root.clone()]
+        }
         fn resolve(&self, pr: &PullRequest) -> Result<PathBuf, String> {
-            resolve(&self.root, &self.cache, pr)
+            resolve(&self.roots(), &self.cache, pr)
         }
     }
     impl Drop for Fixture {
@@ -647,7 +683,10 @@ mod tests {
         let pr = f.pr();
         std::fs::write(f.repo.join("unfinished.txt"), "keep me").unwrap();
         let before = git(&f.repo, &["worktree", "list", "--porcelain"]).unwrap();
-        assert_eq!(resolve_repository(&f.root, &f.cache, &pr).unwrap(), f.repo);
+        assert_eq!(
+            resolve_repository(&f.roots(), &f.cache, &pr).unwrap(),
+            f.repo
+        );
         assert_eq!(
             git(&f.repo, &["worktree", "list", "--porcelain"]).unwrap(),
             before
@@ -682,13 +721,77 @@ mod tests {
     }
 
     #[test]
-    fn root_changes_invalidate_both_caches() {
+    fn a_cached_repository_outside_every_folder_is_found_again() {
         let a = Fixture::new();
         let b = Fixture::new();
         let mut pr = a.pr();
         pr.branch = "main".into();
         assert_eq!(a.resolve(&pr).unwrap(), a.repo);
-        assert_eq!(resolve(&b.root, &a.cache, &pr).unwrap(), b.repo);
+        assert_eq!(resolve(&b.roots(), &a.cache, &pr).unwrap(), b.repo);
+    }
+
+    #[test]
+    fn folders_are_searched_in_order_and_a_cached_pick_survives_reordering() {
+        let a = Fixture::new();
+        let b = Fixture::new();
+        let mut pr = a.pr();
+        pr.branch = "main".into();
+        let both = vec![a.root.clone(), b.root.clone()];
+        assert_eq!(resolve(&both, &a.cache, &pr).unwrap(), a.repo);
+        let reversed = vec![b.root.clone(), a.root.clone()];
+        assert_eq!(
+            resolve(&reversed, &a.cache, &pr).unwrap(),
+            a.repo,
+            "the clone already in use stays in use"
+        );
+        std::fs::remove_file(&a.cache).unwrap();
+        assert_eq!(resolve(&reversed, &a.cache, &pr).unwrap(), b.repo);
+    }
+
+    #[test]
+    fn a_missing_folder_is_skipped_unless_every_folder_is_missing() {
+        let f = Fixture::new();
+        let mut pr = f.pr();
+        pr.branch = "main".into();
+        let gone = f.root.join("unplugged");
+        let roots = vec![gone.clone(), f.root.clone()];
+        assert_eq!(resolve(&roots, &f.cache, &pr).unwrap(), f.repo);
+        assert!(resolve(&[gone], &f.cache, &pr)
+            .unwrap_err()
+            .contains("Cannot open repositories folder"));
+    }
+
+    #[test]
+    fn a_folder_inside_another_is_searched_once_and_keeps_its_place() {
+        let f = Fixture::new();
+        let first = f.root.join("a-first");
+        git(
+            &f.root,
+            &["clone", f.repo.to_str().unwrap(), first.to_str().unwrap()],
+        )
+        .unwrap();
+        git(
+            &first,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "git@github.test:acme/widgets.git",
+            ],
+        )
+        .unwrap();
+        let nested = f.root.join("nested");
+        let roots = vec![nested.clone(), f.root.clone()];
+        assert_eq!(
+            discover(&roots, "github.test/acme/widgets").unwrap(),
+            f.repo,
+            "the first folder wins although the second sorts a clone earlier"
+        );
+        assert!(
+            discover(&[nested, f.root.clone()], "github.test/other/repo")
+                .unwrap_err()
+                .contains(", ")
+        );
     }
 
     #[test]
@@ -713,7 +816,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&f.root, f.root.join("0-loop")).unwrap();
         assert_eq!(
-            discover(&f.root, "github.test/acme/widgets").unwrap(),
+            discover(&f.roots(), "github.test/acme/widgets").unwrap(),
             first
         );
     }

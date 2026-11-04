@@ -234,14 +234,18 @@ cache directory causes requests to proceed without persistent cache savings.
 
 ### Open a PR in VS Code
 
-In Settings → Advanced, set **Repositories folder** (or choose it with the folder
-picker). Click the **VS Code icon** beside the binoculars in a PR row, or select
-a PR and click **Open in VS Code** in its details toolbar.
+In Settings → Advanced, set **Repositories folders**: one or more absolute folders
+separated by `;`, or add them with **Add folders…**. Click the **VS Code icon**
+beside the binoculars in a PR row, or select a PR and click **Open in VS Code** in
+its details toolbar.
 
-PR Marmot searches that folder recursively for the first repository whose remote
-matches the PR, then reuses an existing worktree tracking its head branch. Repository
-and PR checkout locations are cached across launches and checked before reuse.
-Changing the search folder invalidates both mappings on the next request.
+PR Marmot searches the folders recursively, in the order listed, for the first
+repository whose remote matches the PR, then reuses an existing worktree tracking
+its head branch. A folder inside an earlier one is searched once, and a missing
+folder (an unplugged drive, say) is skipped while any other can be opened.
+Repository and PR checkout locations are cached across launches and checked before
+reuse; a cached repository is kept while it is inside one of the folders, so
+reordering or adding folders does not move a PR to a different clone.
 
 When a checkout is needed, creation follows `wt.sh` conventions:
 `<repo-root>.worktrees/<slugified-branch>`. Slugs are lowercase, replace runs of
@@ -252,8 +256,11 @@ is reported as a collision; nothing is overwritten. Existing checkouts are opene
 without pulling, resetting, or discarding local edits.
 
 Git uses your existing credentials. VS Code opens in a new window via `code -n`,
-with macOS application discovery as a fallback. The setting can also be written as
-`repositories_dir = "/absolute/path/to/projects"` in the configuration file.
+with macOS application discovery as a fallback. The setting can also be written in
+the configuration file as `repositories_dir = "/absolute/path/to/projects"` for one
+folder, or `repositories_dirs = ["/path/to/work", "/path/to/oss"]` for several
+(`repositories_dirs` wins when both are set; Settings keeps `repositories_dir` on the
+first folder so older builds still find it).
 
 ### Start a review in VS Code Agents
 

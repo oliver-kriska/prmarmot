@@ -220,22 +220,28 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    /// Add the chosen folders after the ones already listed, each once.
     fn choose_repositories_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let selection = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
-            multiple: false,
-            prompt: Some("Choose repositories folder".into()),
+            multiple: true,
+            prompt: Some("Add repositories folders".into()),
         });
         cx.spawn_in(window, async move |this, cx| match selection.await {
             Ok(Ok(Some(paths))) => {
-                if let Some(path) = paths.first() {
-                    let value = path.to_string_lossy().into_owned();
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.repositories_dir
-                            .update(cx, |input, cx| input.set_value(value, window, cx));
-                    });
-                }
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let mut folders = split_folders(&this.repositories_dir.read(cx).value());
+                    for path in paths {
+                        let path = path.to_string_lossy().into_owned();
+                        if !folders.contains(&path) {
+                            folders.push(path);
+                        }
+                    }
+                    let value = folders.join(FOLDER_SEPARATOR);
+                    this.repositories_dir
+                        .update(cx, |input, cx| input.set_value(value, window, cx));
+                });
             }
             Ok(Ok(None)) => {}
             _ => {
@@ -255,6 +261,7 @@ impl SettingsView {
     ) -> Self {
         let file = config::load();
         let env = EnvOverrides::current();
+        let repositories_folders = file.repository_folders().join(FOLDER_SEPARATOR);
 
         let reviewers = env
             .reviewers
@@ -335,8 +342,8 @@ impl SettingsView {
             }),
             repositories_dir: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("Absolute folder containing your repositories")
-                    .default_value(file.repositories_dir.clone().unwrap_or_default())
+                    .placeholder("Absolute folders containing your repositories, separated by ;")
+                    .default_value(repositories_folders)
             }),
             cache_dir: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -406,7 +413,7 @@ impl SettingsView {
             (&this.background_refresh, "Background refresh interval"),
             (&this.thread_refresh, "Thread refresh interval"),
             (&this.cache_dir, "Cache location"),
-            (&this.repositories_dir, "Repositories folder"),
+            (&this.repositories_dir, "Repositories folders"),
             (&this.default_harness, "Default agent harness"),
             (&this.default_model, "Default agent model"),
             (&this.default_prompt, "Default agent prompt"),
@@ -485,17 +492,20 @@ impl SettingsView {
                 cx,
             );
         }
-        let repositories_dir = self.repositories_dir.read(cx).value().trim().to_owned();
-        if !repositories_dir.is_empty() && !std::path::Path::new(&repositories_dir).is_absolute() {
+        let repositories_dirs = split_folders(&self.repositories_dir.read(cx).value());
+        if repositories_dirs
+            .iter()
+            .any(|path| !std::path::Path::new(path).is_absolute())
+        {
             return self.show_invalid(
-                "Repositories folder",
-                "Use an absolute directory path".into(),
+                "Repositories folders",
+                "Use absolute directory paths, separated by ;".into(),
                 window,
                 cx,
             );
         }
         let update = SettingsUpdate {
-            repositories_dir: Some(repositories_dir),
+            repositories_dirs: Some(repositories_dirs),
             default_harness: Some(self.default_harness.read(cx).value().trim().to_owned()),
             default_model: Some(self.default_model.read(cx).value().trim().to_owned()),
             default_prompt: Some(self.default_prompt.read(cx).value().trim().to_owned()),
@@ -662,7 +672,7 @@ impl SettingsView {
             "Background refresh interval" => (&self.background_refresh, 6),
             "Thread refresh interval" => (&self.thread_refresh, 7),
             "Cache location" => (&self.cache_dir, 9),
-            "Repositories folder" => (&self.repositories_dir, 11),
+            "Repositories folders" => (&self.repositories_dir, 11),
             "Issue ID regular expression" => (&self.issue_pattern, 28),
             _ => (&self.issue_url, 29),
         };
@@ -1112,12 +1122,12 @@ impl Render for SettingsView {
                     .child(self.field("Cache location", &self.cache_dir, None, cx))
                     .child(div().text_size(type_size::SMALL).child("Absolute directory for board and thread caches; blank uses the default. Changes apply to subsequent requests. Existing files are not moved. Watches and sign-in stay in their original locations."))
                     .child(v_flex()
-                        .child(self.field("Repositories folder", &self.repositories_dir, None, cx))
-                        .child(Button::new("choose-repositories-folder").small().label("Choose folder…")
+                        .child(self.field("Repositories folders", &self.repositories_dir, None, cx))
+                        .child(Button::new("choose-repositories-folder").small().label("Add folders…")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_repositories_folder(window, cx);
                             }))))
-                    .child(div().text_size(type_size::SMALL).child("Open in VS Code searches this folder recursively. New checkouts use <repo>.worktrees/<branch-slug>."))
+                    .child(div().text_size(type_size::SMALL).child("Open in VS Code searches these folders recursively, in order, and uses the first matching clone. Separate folders with ;. New checkouts use <repo>.worktrees/<branch-slug>."))
                     .child(self.field("Default agent harness", &self.default_harness, None, cx))
                     .child(self.field("Default agent model", &self.default_model, None, cx))
                     .child(self.field("Default agent prompt", &self.default_prompt, None, cx))
@@ -1368,6 +1378,21 @@ fn validate_reviewers(value: &str) -> Result<Vec<String>, String> {
     Ok(reviewers)
 }
 
+/// Between Repositories folders in their one-line field. A path can hold a
+/// comma, and on macOS a colon, far more often than a semicolon.
+const FOLDER_SEPARATOR: &str = "; ";
+
+/// The Repositories folders field as paths, in order, each once.
+fn split_folders(value: &str) -> Vec<String> {
+    let mut folders: Vec<String> = Vec::new();
+    for folder in value.split(';').map(str::trim) {
+        if !folder.is_empty() && !folders.iter().any(|saved| saved == folder) {
+            folders.push(folder.to_owned());
+        }
+    }
+    folders
+}
+
 #[derive(Debug)]
 struct FieldError {
     field: &'static str,
@@ -1393,6 +1418,15 @@ fn validate_issue_link(pattern: &str, url: &str) -> Result<Option<(String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repositories_folders_split_on_semicolons_in_order_and_once() {
+        assert_eq!(
+            split_folders(" /work ; /oss, archive ;; /work "),
+            ["/work", "/oss, archive"]
+        );
+        assert!(split_folders("  ").is_empty());
+    }
 
     #[test]
     fn the_account_block_names_the_live_sign_in_and_an_unused_token() {
