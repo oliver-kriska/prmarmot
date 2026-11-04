@@ -618,6 +618,11 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
         (Mode::Review, SectionKind::Category(Category::Done)) => {
             "You already reviewed it. The Note says when new commits came in since.".into()
         }
+        (Mode::Authored, SectionKind::Category(Category::Draft)) if all_repos => {
+            "Your PRs marked as a draft on GitHub, so not ready for review yet. Someone else's \
+             draft is left out until it is marked ready."
+                .into()
+        }
         (_, SectionKind::Category(Category::Draft)) => {
             "Marked as a draft on GitHub, so not ready for review yet.".into()
         }

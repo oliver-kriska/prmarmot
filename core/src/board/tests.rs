@@ -2192,6 +2192,69 @@ fn involving_search_includes_team_requests_on_initial_and_later_pages() {
 }
 
 #[test]
+fn involving_me_keeps_your_own_drafts_and_leaves_out_everyone_elses() {
+    struct Drafts {
+        calls: Mutex<usize>,
+    }
+    impl GithubTransport for Drafts {
+        fn graphql(
+            &self,
+            _query: &str,
+            _variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            let page = *calls as u64;
+            let mut mine = base(page * 10 + 1);
+            mine["id"] = json!(format!("mine_{page}"));
+            mine["isDraft"] = json!(true);
+            let mut theirs = base(page * 10 + 2);
+            theirs["id"] = json!(format!("theirs_{page}"));
+            theirs["author"] = json!({"login": "alice"});
+            theirs["isDraft"] = json!(true);
+            Ok(json!({"data": {"search": {
+                "issueCount": 4,
+                "pageInfo": {"hasNextPage": page == 1, "endCursor": "drafts-page"},
+                "nodes": [mine, theirs]
+            }}}))
+        }
+    }
+    let transport = Drafts {
+        calls: Mutex::new(0),
+    };
+    let scope = BoardScope::AllRepositories;
+    let config = BoardConfig::default();
+    let initial = fetch_board_scoped_with_tracked(
+        &transport,
+        Mode::Authored,
+        &scope,
+        "me",
+        &config,
+        Tracked::default(),
+        false,
+    )
+    .unwrap();
+    let ids = |rows: &[BoardRow]| {
+        let mut ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&initial.rows), ["mine_1"]);
+    assert_eq!(initial.rows[0].category, Category::Draft);
+    let more = fetch_more_board_scoped(&transport, Mode::Authored, &scope, "me", &config, &initial)
+        .unwrap();
+    assert_eq!(ids(&more.rows), ["mine_1", "mine_2"], "Load more too");
+
+    // All open lists every draft in its repository.
+    let mut theirs = base(3);
+    theirs["author"] = json!({"login": "alice"});
+    theirs["isDraft"] = json!(true);
+    let rows = derive_rows(&[pr(theirs)], Mode::AllOpen, "acme/widgets", "me", &cfg());
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].category, Category::Draft);
+}
+
+#[test]
 fn team_review_requests_require_membership_and_yield_to_direct_requests() {
     let mut value = base(1);
     value["author"] = json!({"login": "alice"});

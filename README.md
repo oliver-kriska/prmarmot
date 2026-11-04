@@ -70,7 +70,8 @@ views with a plain-language **Note** on every row.
 - **Involving me** is the zero-config, all-repositories default. Your own PRs
   keep actionable Notes; other authors' PRs use ownership-aware status Notes:
   a teammate's PR with open threads nobody answered you on waits on its
-  author, and only the author replying to you makes it your turn.
+  author, and only the author replying to you makes it your turn. Only your
+  own drafts are listed; someone else's draft appears once it is marked ready.
   Selecting one repository changes this queue to **My PRs** with the existing
   authored behavior.
 - **Review queue** separates PRs that request your review from PRs with no
