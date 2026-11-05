@@ -162,6 +162,7 @@ impl From<AppConfig> for FileConfig {
             thread_refresh_secs: None,
             cache_dir: None,
             repositories_dir: None,
+            repositories_dirs: Vec::new(),
             default_harness: None,
             default_model: None,
             default_prompt: None,

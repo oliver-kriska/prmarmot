@@ -1058,6 +1058,13 @@ fn is_own_pr(pr: &RawPr, me: &str) -> bool {
     pr.author.as_ref().and_then(|a| a.login.as_deref()) == Some(me)
 }
 
+/// Involving me's Drafts holds your own drafts only: someone else's draft is
+/// not ready for review, so it waits on its author and leaves the board until
+/// it is marked ready. All open still lists every draft in its repository.
+fn shows_in_involving(pr: &RawPr, me: &str) -> bool {
+    !pr.is_draft || is_own_pr(pr, me)
+}
+
 fn pr_identity(pr: &RawPr, repo: &str) -> String {
     pr.id.clone().unwrap_or_else(|| pr.canonical_url(repo))
 }
@@ -1087,6 +1094,7 @@ fn derive_involving_rows(prs: &[RawPr], repo: &str, me: &str, cfg: &BoardConfig)
     let mut rows: Vec<_> = prs
         .iter()
         .take(MAX_BOARD_ROWS)
+        .filter(|pr| shows_in_involving(pr, me))
         .map(|pr| derive_involving_row(pr, repo, me, cfg))
         .collect();
     rows.sort_by(board_order(Mode::Authored, true));

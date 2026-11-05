@@ -16,6 +16,8 @@ values in the code. New features get the next free number in their area.
   repositories. Your own PRs get actionable Notes, and other people's get status Notes ("alice's PR · approved").
   It never widens to PRs that don't involve you. _since v0.6.0_ Across all repositories the most recently updated PRs
   come first, so the first page holds the ones with fresh activity rather than the newest opened. _since v0.14.0_
+  Its Drafts holds your own drafts only; someone else's draft is left out until it is marked ready (All open still
+  lists every draft).
 - **F-board-3** **My PRs** in one repository lists the PRs you opened there. _since v0.1.0_
 - **F-board-4** **Review queue** splits PRs that request your review (**Requested from you**) from other people's
   PRs with no pending user or team reviewer request (**Available to review**), an optional pool rather than an

@@ -1012,7 +1012,7 @@ fn merge_involving(
     merge_by_identity(
         rows,
         |by_id| {
-            for pr in prs {
+            for pr in prs.iter().filter(|pr| shows_in_involving(pr, me)) {
                 by_id.insert(
                     pr_identity(pr, repo),
                     derive_involving_row(pr, repo, me, cfg),

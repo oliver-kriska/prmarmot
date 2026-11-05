@@ -50,7 +50,8 @@ pub struct SettingsUpdate {
     pub background_refresh_secs: Option<u64>,
     pub thread_refresh_secs: Option<u64>,
     pub cache_dir: Option<String>,
-    pub repositories_dir: Option<String>,
+    /// Open in VS Code's folders, in search order; empty removes them.
+    pub repositories_dirs: Option<Vec<String>>,
     pub default_harness: Option<String>,
     pub default_model: Option<String>,
     pub default_prompt: Option<String>,
@@ -123,14 +124,29 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             return Err("Cache location must be an absolute path, or blank for the default".into());
         }
     }
-    if let Some(path) = &update.repositories_dir {
-        let path = path.trim();
-        if path.is_empty() {
-            doc.remove("repositories_dir");
-        } else if Path::new(path).is_absolute() {
-            doc["repositories_dir"] = toml_edit::value(path);
+    if let Some(paths) = &update.repositories_dirs {
+        let paths: Vec<&str> = paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .collect();
+        if paths.iter().any(|path| !Path::new(path).is_absolute()) {
+            return Err("Each repositories folder must be an absolute path".into());
+        }
+        // `repositories_dir` keeps the first folder, so a build that reads
+        // only that key still searches it; the list is written only when
+        // there is more than one, leaving a single-folder file as it was.
+        match paths.first() {
+            Some(first) => doc["repositories_dir"] = toml_edit::value(*first),
+            None => {
+                doc.remove("repositories_dir");
+            }
+        }
+        if paths.len() > 1 {
+            doc["repositories_dirs"] =
+                toml_edit::value(paths.into_iter().collect::<toml_edit::Array>());
         } else {
-            return Err("Repositories folder must be an absolute path".into());
+            doc.remove("repositories_dirs");
         }
     }
     for (key, value) in [
@@ -822,7 +838,7 @@ mod tests {
         save_settings_at(
             &path,
             &SettingsUpdate {
-                repositories_dir: Some("/tmp/projects".into()),
+                repositories_dirs: Some(vec!["/tmp/projects".into()]),
                 ..Default::default()
             },
         )
@@ -830,12 +846,16 @@ mod tests {
         let saved = std::fs::read_to_string(&path).unwrap();
         let config: FileConfig = toml::from_str(&saved).unwrap();
         assert_eq!(config.repositories_dir.as_deref(), Some("/tmp/projects"));
+        assert!(
+            !saved.contains("repositories_dirs"),
+            "one folder keeps one key"
+        );
         assert!(saved.contains("# keep me"));
         assert_eq!(config.refresh_secs, Some(120));
         assert!(save_settings_at(
             &path,
             &SettingsUpdate {
-                repositories_dir: Some("relative".into()),
+                repositories_dirs: Some(vec!["/tmp/projects".into(), "relative".into()]),
                 ..Default::default()
             }
         )
@@ -844,7 +864,7 @@ mod tests {
         save_settings_at(
             &path,
             &SettingsUpdate {
-                repositories_dir: Some(String::new()),
+                repositories_dirs: Some(vec![" ".into()]),
                 ..Default::default()
             },
         )
@@ -852,6 +872,30 @@ mod tests {
         assert!(!std::fs::read_to_string(&path)
             .unwrap()
             .contains("repositories_dir"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn several_repositories_folders_keep_the_first_where_older_builds_read_it() {
+        let path = temp_config("repositories-folders");
+        let save = |paths: &[&str]| {
+            save_settings_at(
+                &path,
+                &SettingsUpdate {
+                    repositories_dirs: Some(paths.iter().map(|path| (*path).into()).collect()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let saved = std::fs::read_to_string(&path).unwrap();
+            toml::from_str::<FileConfig>(&saved).unwrap()
+        };
+        let config = save(&["/work", " /oss "]);
+        assert_eq!(config.repositories_dir.as_deref(), Some("/work"));
+        assert_eq!(config.repository_folders(), ["/work", "/oss"]);
+        let config = save(&["/oss"]);
+        assert!(config.repositories_dirs.is_empty());
+        assert_eq!(config.repository_folders(), ["/oss"]);
         std::fs::remove_file(path).unwrap();
     }
 

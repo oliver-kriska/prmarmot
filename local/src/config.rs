@@ -44,8 +44,14 @@ pub struct FileConfig {
     pub thread_refresh_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<String>,
+    /// The one folder Open in VS Code searches. With more than one folder this
+    /// holds the first, so a build that knows only this key still finds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repositories_dir: Option<String>,
+    /// Every folder Open in VS Code searches, in order; read ahead of
+    /// `repositories_dir` ([`FileConfig::repository_folders`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repositories_dirs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_harness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +155,7 @@ impl Default for FileConfig {
             thread_refresh_secs: None,
             cache_dir: None,
             repositories_dir: None,
+            repositories_dirs: Vec::new(),
             default_harness: None,
             default_model: None,
             default_prompt: None,
@@ -1205,6 +1212,25 @@ store = 'vault'",
 }
 
 impl FileConfig {
+    /// The folders Open in VS Code searches, in order: `repositories_dirs`
+    /// when it names any, else the single `repositories_dir`.
+    pub fn repository_folders(&self) -> Vec<String> {
+        let folders = |paths: &[String]| -> Vec<String> {
+            paths
+                .iter()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let listed = folders(&self.repositories_dirs);
+        if listed.is_empty() {
+            folders(self.repositories_dir.as_slice())
+        } else {
+            listed
+        }
+    }
+
     /// The whole config as TOML text.
     ///
     /// The desktop edits `config.toml` in place with `toml_edit`, which keeps
