@@ -439,6 +439,8 @@ fn short_count(n: u64) -> String {
 pub enum ColumnKind {
     Pr,
     Repo,
+    RepoOwner,
+    RepoName,
     /// The linked issue (`[issue_link]`, e.g. a Linear ticket).
     Ticket,
     Title,
@@ -453,9 +455,11 @@ pub enum ColumnKind {
 }
 
 impl ColumnKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 13] = [
         Self::Pr,
         Self::Repo,
+        Self::RepoOwner,
+        Self::RepoName,
         Self::Ticket,
         Self::Title,
         Self::Ci,
@@ -472,6 +476,8 @@ impl ColumnKind {
         match self {
             Self::Pr => "pr",
             Self::Repo => "repo",
+            Self::RepoOwner => "repo_owner",
+            Self::RepoName => "repo_name",
             Self::Ticket => "ticket",
             Self::Title => "title",
             Self::Ci => "ci",
@@ -488,6 +494,8 @@ impl ColumnKind {
         match self {
             Self::Pr => "PR",
             Self::Repo => "Repo",
+            Self::RepoOwner => "Repository owner",
+            Self::RepoName => "Repository name",
             Self::Ticket => "Ticket",
             Self::Title => "Title",
             Self::Ci => "CI",
@@ -1057,7 +1065,7 @@ impl BoardTableDelegate {
                 } else {
                     let width = match kind {
                         ColumnKind::Pr => PR_W,
-                        ColumnKind::Repo => REPO_W,
+                        ColumnKind::Repo | ColumnKind::RepoOwner | ColumnKind::RepoName => REPO_W,
                         ColumnKind::Ticket => TICKET_W,
                         ColumnKind::Title => TITLE_MIN,
                         ColumnKind::Ci => CI_W,
@@ -2115,19 +2123,28 @@ impl BoardTableDelegate {
 
     fn repo_cell(
         &mut self,
+        kind: ColumnKind,
         at: usize,
         row_ix: usize,
-        _col_ix: usize,
-        _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> AnyElement {
         let row = &self.rows[at];
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let chip = FilterChip::new(Qualifier::Repo, row.repo.as_str());
+        let (owner, name) = row.repo.split_once('/').unwrap_or(("", row.repo.as_str()));
+        let text = match kind {
+            ColumnKind::RepoOwner => owner,
+            ColumnKind::RepoName => name,
+            _ => row.repo.as_str(),
+        };
         div()
             .text_color(muted)
-            .child(self.filter_target(("repo-filter", row_ix), row.repo.clone(), Some(chip)))
+            .child(self.filter_target(
+                (kind.key(), row_ix),
+                if text.is_empty() { "—" } else { text }.to_owned(),
+                Some(chip),
+            ))
             .into_any_element()
     }
 
@@ -3267,7 +3284,9 @@ impl TableDelegate for BoardTableDelegate {
             ColumnKind::Pr => self.pr_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Labels => self.labels_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Ci => self.ci_cell(at, row_ix, col_ix, window, cx),
-            ColumnKind::Repo => self.repo_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Repo | ColumnKind::RepoOwner | ColumnKind::RepoName => {
+                self.repo_cell(kind, at, row_ix, cx)
+            }
             ColumnKind::Ticket => self.ticket_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Author => self.author_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Unresolved => self.unresolved_cell(at, row_ix, col_ix, window, cx),
@@ -3343,11 +3362,22 @@ mod tests {
     #[test]
     fn column_selection_restores_known_keys_and_falls_back_for_empty_selections() {
         let mut original = BoardTableDelegate::new(Mode::Authored, false);
+        assert!(!original.kinds.contains(&Some(ColumnKind::RepoOwner)));
+        assert!(!original.kinds.contains(&Some(ColumnKind::RepoName)));
         original.toggle_column(ColumnKind::Title);
+        original.toggle_column(ColumnKind::RepoOwner);
+        original.toggle_column(ColumnKind::RepoName);
         let keys = original.visible_column_keys();
         let mut restored = BoardTableDelegate::new(Mode::Review, true);
         restored.restore_visible_columns(Some(&keys));
-        assert_eq!(restored.visible_column_keys(), keys);
+        // Visibility is a selection; dragged order is saved separately.
+        assert_eq!(
+            restored
+                .visible_column_keys()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            keys.into_iter().collect::<HashSet<_>>()
+        );
         restored.restore_visible_columns(Some(&["obsolete".into(), "pr".into(), "pr".into()]));
         assert_eq!(restored.visible_column_keys(), ["pr"]);
         for keys in [None, Some(vec![]), Some(vec!["obsolete".into()])] {
@@ -3371,6 +3401,8 @@ mod tests {
         delegate.toggle_column(ColumnKind::Title);
         delegate.toggle_column(ColumnKind::Author);
         delegate.toggle_column(ColumnKind::Repo);
+        delegate.toggle_column(ColumnKind::RepoOwner);
+        delegate.toggle_column(ColumnKind::RepoName);
         for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for class in [TableWidthClass::Compact, TableWidthClass::Wide] {
                 let columns =
@@ -3379,6 +3411,8 @@ mod tests {
                 assert!(!kinds.contains(&ColumnKind::Title));
                 assert!(kinds.contains(&ColumnKind::Author));
                 assert!(kinds.contains(&ColumnKind::Repo));
+                assert!(kinds.contains(&ColumnKind::RepoOwner));
+                assert!(kinds.contains(&ColumnKind::RepoName));
             }
         }
     }
@@ -4584,12 +4618,18 @@ mod tests {
             complete_order(vec![
                 Title, Pr, Repo, Ticket, Ci, Review, Author, Unresolved, Labels, Note, Title
             ]),
-            [Title, Pr, Repo, Ticket, Ci, Review, Author, Unresolved, Lines, Labels, Note]
+            [
+                Title, Pr, Repo, RepoOwner, RepoName, Ticket, Ci, Review, Author, Unresolved,
+                Lines, Labels, Note
+            ]
         );
         // Moving Title before PR among the shown columns moves only those.
         assert_eq!(
             merged_order(&ColumnKind::ALL, &[Title, Pr, Ci, Note]),
-            [Title, Repo, Ticket, Pr, Ci, Review, Author, Unresolved, Lines, Labels, Note]
+            [
+                Title, Repo, RepoOwner, RepoName, Ticket, Pr, Ci, Review, Author, Unresolved,
+                Lines, Labels, Note
+            ]
         );
 
         let mut d = BoardTableDelegate::new(Mode::Authored, false);

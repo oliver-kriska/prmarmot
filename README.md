@@ -188,6 +188,10 @@ The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
 with the changed files on hover. It shows by default on wide windows (1360px
 and up); right-click any column header to show or hide it at other widths.
 
+The **Repository owner** and **Repository name** columns show the two parts of
+`owner/name` separately. Both are hidden by default; right-click any column
+header to enable them. Column visibility is saved between launches.
+
 The **Ticket** column links each PR to its Linear issue. The app reads the
 issue from the comment Linear's GitHub integration posts on the PR (any
 `linear` or `linear-code` comment marked `<!-- linear-linkback -->`, among
