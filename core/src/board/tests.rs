@@ -3886,6 +3886,77 @@ fn nothing_to_ask_sends_no_turns_request() {
 }
 
 #[test]
+fn unanswered_viewer_review_is_grouped_as_reviewed_until_the_author_replies() {
+    use crate::layout::{layout, LayoutItem, SectionKind, Sort};
+    use std::collections::HashSet;
+
+    let mut value = own_pr_with_threads(60, 5);
+    value["author"] = json!({"login": "alice"});
+    value["reviews"]["nodes"] = json!([{
+        "author": {"login": "me"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-11-09T15:36:20Z"
+    }]);
+    value["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let pr = pr(value);
+    for mode in [Mode::Authored, Mode::AllOpen] {
+        let mut row = if mode == Mode::Authored {
+            derive_involving_row(&pr, "acme/widgets", "me", &cfg())
+        } else {
+            derive_all_open_row(&pr, "acme/widgets", "me", &cfg(), &[])
+        };
+        apply_turns(&mut row, Turns::default(), mode, "me", &cfg());
+        assert_eq!(row.my_review, Some(ReviewVerdict::Commented));
+        assert!(row
+            .note
+            .ends_with("5 unresolved comments — waits on its author"));
+
+        let sections = |row: &BoardRow| {
+            layout(
+                std::slice::from_ref(row),
+                mode,
+                true,
+                &HashSet::new(),
+                true,
+                Sort::Wait,
+            )
+            .into_iter()
+            .filter_map(|item| match item {
+                LayoutItem::Header { kind, label, .. } => Some((kind, label)),
+                LayoutItem::Row(_) => None,
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sections(&row),
+            [(SectionKind::Category(Category::Done), "Reviewed".into())]
+        );
+
+        apply_turns(
+            &mut row,
+            Turns {
+                returned: 1,
+                returned_at: Some("2026-11-09T16:00:00Z".into()),
+                ..Turns::default()
+            },
+            mode,
+            "me",
+            &cfg(),
+        );
+        assert_eq!(
+            sections(&row),
+            [(
+                SectionKind::Category(Category::Action),
+                "Needs action".into()
+            )]
+        );
+        assert!(row
+            .note
+            .contains("the author replied to your comment — your turn"));
+    }
+}
+
+#[test]
 fn someone_elses_open_threads_wait_on_its_author_unless_they_answered_you() {
     let mut v = own_pr_with_threads(7, 3);
     v["author"] = json!({"login": "alice"});

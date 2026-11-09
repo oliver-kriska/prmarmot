@@ -277,7 +277,8 @@ pub fn layout_collapsible<'a>(
 
 /// Which section a row sits in: its category, except that an approved PR
 /// waiting to merge gets the Approved band, and one that nobody was asked to
-/// review is Available to review.
+/// review is Available to review. Someone else's waiting PR that you already
+/// reviewed sits in Reviewed; an author's reply makes it actionable again.
 fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     if mode == Mode::Authored && !row.is_own && !row.draft && row.team_review_requested {
         SectionKind::AwaitingMyTeamsReview
@@ -305,7 +306,15 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     } else if is_available_section(mode, row) {
         SectionKind::Category(Category::Available)
     } else if row.category == Category::Await && !row.is_own {
-        SectionKind::AwaitingMyReview
+        if row
+            .my_review
+            .as_ref()
+            .is_some_and(ReviewVerdict::is_standing)
+        {
+            SectionKind::Category(Category::Done)
+        } else {
+            SectionKind::AwaitingMyReview
+        }
     } else {
         SectionKind::Category(row.category)
     }
@@ -315,8 +324,7 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
 /// what is done leads (Approved), then what needs you, then what waits, then
 /// drafts. All open holds both a review asked of you and PRs that need action,
 /// and the review comes first. Stack sub-headers stay inside their section
-/// and Snoozed always trails, so neither is here. Awaiting review and
-/// Reviewed never share a view.
+/// and Snoozed always trails, so neither is here.
 pub const ORDERABLE_SECTIONS: [SectionKind; 11] = [
     SectionKind::MyApproved,
     SectionKind::Approved,
@@ -507,7 +515,7 @@ pub fn section_views(kind: SectionKind) -> &'static str {
         SectionKind::AwaitingMyTeamsReview => "Involving me",
         SectionKind::Category(Category::Todo) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Available) => "Review queue, Involving me, All open",
-        SectionKind::Category(Category::Done) => "Review queue",
+        SectionKind::Category(Category::Done) => "Review queue, Involving me, All open",
         _ => "Every view",
     }
 }
@@ -550,7 +558,7 @@ pub fn group_label(mode: Mode, cat: Category, _all_repos: bool) -> &'static str 
         (Mode::Authored | Mode::AllOpen, Category::Await) => "Awaiting their review",
         (_, Category::Todo) => "Requested from you",
         (_, Category::Available) => "Available to review · no reviewer requested",
-        (Mode::Review, Category::Done) => "Reviewed",
+        (_, Category::Done) => "Reviewed",
         (_, Category::Draft) => "Drafts",
         // Unreachable pairings (Action in Review etc.) — a calm fallback.
         _ => "Other",
@@ -617,6 +625,9 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
         }
         (Mode::Review, SectionKind::Category(Category::Done)) => {
             "You already reviewed it. The Note says when new commits came in since.".into()
+        }
+        (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Done)) => {
+            "You already reviewed these PRs. They are waiting on others; the Note says when they are waiting on their author.".into()
         }
         (Mode::Authored, SectionKind::Category(Category::Draft)) if all_repos => {
             "Your PRs marked as a draft on GitHub, so not ready for review yet. Someone else's \
@@ -1902,7 +1913,7 @@ mod tests {
         }
         assert_eq!(
             section_views(SectionKind::Category(Category::Done)),
-            "Review queue"
+            "Review queue, Involving me, All open"
         );
         // The Settings name is the header's, before any " · " detail.
         for (mode, kind) in [

@@ -858,6 +858,10 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   Involving me, unless your review is also requested directly.
   `my_approved` holds your own approved PRs waiting to merge, under **My PR approved**
   at the top; `approved` holds other authors’ approved PRs.
+  `done` holds PRs you already reviewed in the Review queue, and other authors’
+  waiting PRs you already reviewed in Involving me and All open. Unanswered
+  comments stay under **Reviewed**, with a note that they wait on the author;
+  an author's reply to your thread returns the PR to your attention.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
   under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
   or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.
