@@ -489,7 +489,7 @@ values in the code. New features get the next free number in their area.
   repaints once a second only while a request is out. On a view's first load, the rows already known appear before
   the rest: the Review queue across all repositories shows "Requested from you" when the first search lands, about
   half-way, and every view shows its rows before the follow-up about open threads. A board already on screen stays as
-  it is until the whole answer replaces it. _unreleased_
+  it is until the whole answer replaces it. _since v0.21.0_
 - **F-refresh-3** Each refresh is one GraphQL request.
   - My PRs and Involving me return up to 60 PRs and cost about 4 points.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
@@ -510,7 +510,7 @@ values in the code. New features get the next free number in their area.
   another, until every PR is in or the search holds 300 (also when GitHub answers only 30 at a time). The header
   says "Loading more PRs (60 of 119 so far)…" meanwhile, and a refresh loads as many pages again. Only past 300,
   or when GitHub refuses a page, does the partial-results notice stay, with **Load more** to retry. The CLI still
-  loads the pages `--pages` asks for. _unreleased_
+  loads the pages `--pages` asks for. _since v0.21.0_
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else
@@ -555,9 +555,9 @@ values in the code. New features get the next free number in their area.
   of a new version starts empty. _since v0.19.0_
   A file an older version wrote is read too, so the first launch after an update shows the board instead of every
   view's first search on an empty table; a row field the older version did not write takes its default, and a file
-  of another shape or another account is still ignored. _unreleased_ When a view has no saved board, the first
+  of another shape or another account is still ignored. _since v0.21.0_ When a view has no saved board, the first
   board of a run is followed by one background load of the other of My PRs and the Review queue, after the open
-  view's answer rather than beside it, so the first switch shows rows at once. _unreleased_
+  view's answer rather than beside it, so the first switch shows rows at once. _since v0.21.0_
   Once a snapshot is one configured refresh interval old, **Showing older data** appears above the table with
   its age and updating, paused or failed status. It warns that PRs may have changed or merged and stays until a
   successful refresh, even for an empty snapshot. **Refresh now** is offered when not updating or rate-limited.
@@ -673,7 +673,7 @@ values in the code. New features get the next free number in their area.
 - **F-settings-16** Settings opens without waiting on the system keychain. The Account block names the sign-in the
   board is already using, and the keychain is read in the background only to correct it. Changes to the window,
   section order and appearance are written to disk off the UI thread. They are flushed when you quit, and
-  **Save** waits up to a quarter of a second for them before it writes. _unreleased_
+  **Save** waits up to a quarter of a second for them before it writes. _since v0.21.0_
 
 ## Updates and install
 
@@ -704,11 +704,11 @@ values in the code. New features get the next free number in their area.
   The check can be turned off. _since v0.6.0_ It asks through the GitHub CLI when that can answer, and otherwise
   asks GitHub directly without a token. _since v0.9.1_ **PR Marmot → Check for Updates…** asks right away, even
   with the automatic check off or already done today, and answers in a dialog: up to date, a newer version with
-  **Download** (direct install) or the Homebrew command, or why the check failed. _unreleased_ A Homebrew install
+  **Download** (direct install) or the Homebrew command, or why the check failed. _since v0.21.0_ A Homebrew install
   is no longer upgraded by the app: the banner and the dialog say to quit PR Marmot and run
   `brew update && brew upgrade --cask prmarmot && open -a prmarmot` in Terminal, and **Copy command** puts it on
   the clipboard. `brew update` comes first because Homebrew refreshes its index only once a day on its own and
-  would call a release from the last day "already installed". _unreleased_
+  would call a release from the last day "already installed". _since v0.21.0_
 - **F-install-7** The first PR Marmot launch copies the former `prboard` app's config and state once and leaves the
   originals alone. If the copy fails, the app stops with an error instead of starting empty. _since v0.6.0_
 - **F-install-8** Linux and Intel Macs build from source, and `install.sh --from-source` puts the binaries in
