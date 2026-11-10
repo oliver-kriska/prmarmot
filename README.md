@@ -20,7 +20,7 @@ Your GitHub token stays on your machine (in the keychain on macOS), with no PR
 Marmot account, no server and no telemetry. The app talks only to GitHub, and
 every line of it is here to read.
 
-![PR Marmot's board: the Approved section, then Needs action opening with #1842, approved but blocked by failing CI and two unresolved comments; each pull request has a Note such as "CI failing", "merge conflict — rebase" or "assign alex + sam"](assets/screenshots/board.png)
+![Animated PR Marmot demo: the board zooms into an approved PR blocked by failing CI and two unresolved comments, then a refresh marks changed pull requests with blue dots](assets/screenshots/hero.gif)
 
 *Involving me, across all repositories. Every repository, person and pull
 request shown is fictional.*
@@ -895,9 +895,11 @@ Each initial involvement/authored search returns up to 60 PRs. In
 all-repositories scope, candidates are limited to PRs involving your resolved
 login, most recently updated first; PR Marmot never broadens this to arbitrary
 other-authored public PRs.
-Review queue uses one GraphQL operation with two search aliases: up to 60
-explicitly requested PRs and 60 other-authored candidates, then keeps available
-candidates only when they have no pending user or team reviewer request. Your
+Review queue runs two searches, up to 60 explicitly requested PRs and 60
+other-authored candidates, as two aliases of one GraphQL operation for a single
+repository and as two serial requests across all repositories (each alone stays
+well inside GitHub's query time limit), then keeps available candidates only
+when they have no pending user or team reviewer request. Your
 own PRs are excluded from the review queue. This is based on **review requests**,
 not issue assignees.
 
@@ -966,18 +968,19 @@ nix run . -- --repo owner/name
 With direnv, `direnv allow` loads the same shell whenever you enter the
 directory.
 
-The workspace contains the GPUI app and three UI-independent crates:
+The workspace contains the GPUI app and four UI-independent crates:
 - `core/` holds GitHub transport, categorization, Notes, board layout, and change
   detection.
 - `local/` holds the config file and attention state, shared by the app and the
   CLI.
 - `cli/` is `prmarmot-cli`.
+- `ffi/` is `prmarmot-ffi`, the UniFFI bindings PR Marmot for iPad builds on.
 
-Current UI dependencies are `gpui-component 0.6.1` and `gpui-pre` /
+Current UI dependencies are `gpui-component 0.6.4` and `gpui-pre` /
 `gpui-pre-platform 0.3.5`.
 
 ```sh
-make check      # fmt check + clippy -D warnings + tests for core, local, cli (same as CI)
+make check      # fmt check + clippy -D warnings + tests for core, local, cli, ffi (same as CI)
 make build      # debug GPUI app build
 make cli        # release build of prmarmot-cli (no Metal)
 make verify     # full-workspace fmt, clippy, and tests

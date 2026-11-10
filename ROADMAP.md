@@ -165,7 +165,7 @@ Launch posts go out only after the memory benchmark is published (G0) and the we
 - [x] README: install one-liner, the "no account, no server" line, the CLI + agent-skill section, and a
       comparison table (github.com/pulls · gh-dash · Gitify · RepoBar · PR Flow) with an honest platform row and an
       "AI review" row, every cell sourced and dated (2026-11-03).
-- [ ] README hero GIF.
+- [x] README hero GIF (2026-11-10).
 - [ ] Posts: Show HN, r/rust, r/github, Lobsters; awesome-rust, awesome-github, awesome-claude-code.
 - [x] Adoption tracking without telemetry: `scripts/adoption-snapshot.sh` appends stars, downloads, traffic,
       stranger issues, waitlist signals and Ideas upvotes to `measurements/adoption.csv`.
