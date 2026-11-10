@@ -87,7 +87,8 @@ values in the code. New features get the next free number in their area.
   alex approved, feature, resolve 1 comment"); a header row keeps its section name. Details' facts are read as
   text ("Author: demo-user"), its label and run chips as buttons and links, and every toolbar and Settings control
   has a name (the pinned repositories, Search, Details, Needs you, the section-order arrows, the On/Off switches by
-  their setting). _since v0.21.1_
+  their setting). On macOS these are the names VoiceOver reads; screen readers on Linux are untested.
+  _since v0.21.1_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
   - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.1_
@@ -670,11 +671,11 @@ values in the code. New features get the next free number in their area.
   _since v0.20.0_
 - **F-settings-14** The Dock icon follows the appearance the board is drawn in: a pale slate tile when it is light,
   the slate tile when it is dark, and with Appearance set to System it changes when macOS does. Finder and
-  Launchpad keep the slate icon. _unreleased · macOS_
+  Launchpad keep the slate icon. _since v0.21.0 · macOS_
 - **F-settings-15** The menu bar has **About PR Marmot** and **Check for Updates…**; a **View** menu with the three
   views (`⌘1` `⌘2` `⌘3`, the open one ticked, All open greyed across all repositories) and **Refresh** (`⌘R`); a
   **Window** menu (Minimize `⌘M`, Zoom); and **Help** with the keyboard shortcuts, the website, the release notes
-  and a link to report a problem. _unreleased · macOS_
+  and a link to report a problem. _since v0.21.0 · macOS_
 - **F-settings-16** Settings opens without waiting on the system keychain. The Account block names the sign-in the
   board is already using, and the keychain is read in the background only to correct it. Changes to the window,
   section order and appearance are written to disk off the UI thread. They are flushed when you quit, and
@@ -703,8 +704,9 @@ values in the code. New features get the next free number in their area.
 - **F-install-6** On launch, and at most once a day after that, the app checks for the latest stable release and
   shows a banner when there is one.
   - For a direct install, the banner opens the release page.
-  - For a Homebrew install, a helper process upgrades the cask after the app quits, reopens it, and reports any
-    failure on the next launch.
+  - For a Homebrew install, the banner gives the Homebrew command (below). Up to v0.20 a helper process upgraded
+    the cask after the app quit and reopened it. Since v0.21.0 the app starts no helper; on its first launch it
+    only reports a failure that an older version's helper left behind.
 
   The check can be turned off. _since v0.6.0_ It asks through the GitHub CLI when that can answer, and otherwise
   asks GitHub directly without a token. _since v0.9.1_ **PR Marmot → Check for Updates…** asks right away, even
@@ -839,8 +841,9 @@ values in the code. New features get the next free number in their area.
 - **F-platform-5** On macOS, the system permission prompt appears only after you click **Enable notifications…** in
   the footer and confirm in its dialog. Until permission is granted, nothing is sent and nothing prompts. On Linux
   notifications go to the desktop notification service directly, with no permission step. _since v0.6.0_
-- **F-platform-6** The Dock badge and the Homebrew upgrade helper exist only on macOS. On Linux an available update
-  opens the release page. _since v0.6.0_
+- **F-platform-6** The Dock badge exists only on macOS. On Linux an available update opens the release page.
+  _since v0.6.0_ The macOS-only Homebrew upgrade helper is gone; a Homebrew install is shown the command
+  instead (F-install-6). _since v0.21.0_
 - **F-platform-7** A stored token uses the login keychain on macOS and a `0600` file on Linux (F-auth-6).
   _since v0.9.0_
 - **F-platform-8** If the app ever panics, it writes one line to `$XDG_STATE_HOME/prmarmot/panics.log`
