@@ -4057,3 +4057,175 @@ fn the_author_answering_you_on_their_pr_is_your_turn_in_involving_me() {
         "someone else's PR in Involving me shows no wait, as before"
     );
 }
+
+/// One page of the single search: `numbers` as PRs, `issueCount` 7, and a
+/// next page when `next`.
+fn search_page(numbers: std::ops::Range<u64>, cursor: &str, next: bool) -> serde_json::Value {
+    json!({"data": {
+        "search": {
+            "issueCount": 7,
+            "pageInfo": {"hasNextPage": next, "endCursor": cursor},
+            "nodes": numbers.map(base).collect::<Vec<_>>()
+        },
+        "rateLimit": null
+    }})
+}
+
+fn window_board(
+    transport: &dyn GithubTransport,
+    events: &mut Vec<FetchProgress>,
+) -> Result<BoardFetch, GhError> {
+    fetch_view_with_progress(
+        transport,
+        Mode::Authored,
+        &BoardScope::Repository("acme/widgets".into()),
+        "me",
+        &cfg(),
+        &RemoteFilter::default(),
+        Tracked::default(),
+        false,
+        &mut |event| events.push(event),
+    )
+}
+
+#[test]
+fn a_window_board_loads_every_page_by_itself_and_says_how_far_it_got() {
+    let transport = SequenceTransport::new(vec![
+        Ok(search_page(1..3, "p1", true)),
+        Ok(search_page(3..5, "p2", true)),
+        Ok(search_page(5..8, "p3", false)),
+    ]);
+    let mut events = Vec::new();
+    let fetched = window_board(&transport, &mut events).unwrap();
+    assert_eq!(fetched.rows.len(), 7, "every PR is in, nobody clicked");
+    assert!(!fetched.truncated);
+    assert!(!fetched.pagination.can_load_more(Mode::Authored));
+    assert!(transport.0.lock().unwrap().is_empty(), "three requests");
+
+    let steps: Vec<FetchStep> = events
+        .iter()
+        .filter_map(|event| match event {
+            FetchProgress::Step { step, .. } => Some(*step),
+            FetchProgress::Rows(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        vec![
+            FetchStep::Search,
+            FetchStep::MorePages {
+                loaded: 2,
+                total: Some(7)
+            },
+            FetchStep::MorePages {
+                loaded: 4,
+                total: Some(7)
+            },
+        ]
+    );
+    let handed: Vec<usize> = events
+        .iter()
+        .filter_map(|event| match event {
+            FetchProgress::Rows(board) => Some(board.rows.len()),
+            FetchProgress::Step { .. } => None,
+        })
+        .collect();
+    assert_eq!(handed, vec![2, 4], "each page's rows before the next asks");
+}
+
+#[test]
+fn a_window_board_stops_at_five_pages() {
+    let transport = SequenceTransport::new(
+        (1..=6)
+            .map(|page| Ok(search_page(page..page + 1, &format!("p{page}"), true)))
+            .collect(),
+    );
+    let fetched = window_board(&transport, &mut Vec::new()).unwrap();
+    assert_eq!(fetched.rows.len(), MAX_PAGES_PER_ALIAS as usize);
+    assert!(fetched.truncated);
+    assert!(fetched.pagination.page_limit_reached(Mode::Authored));
+    assert_eq!(
+        transport.0.lock().unwrap().len(),
+        1,
+        "the sixth page is never asked"
+    );
+}
+
+#[test]
+fn a_refused_later_page_keeps_the_rows_in_and_leaves_load_more_to_retry() {
+    let transport = SequenceTransport::new(vec![
+        Ok(search_page(1..3, "p1", true)),
+        Err(GhError::Network("offline".into())),
+    ]);
+    let fetched = window_board(&transport, &mut Vec::new()).unwrap();
+    assert_eq!(fetched.rows.len(), 2);
+    assert!(fetched.truncated);
+    assert!(fetched.pagination.can_load_more(Mode::Authored));
+}
+
+#[test]
+fn a_later_page_github_gives_up_on_is_asked_again_at_thirty_rows() {
+    let transport = SequenceTransport::new(vec![
+        Ok(search_page(1..3, "p1", true)),
+        Err(GhError::Http {
+            status: 502,
+            message: "Bad gateway".into(),
+        }),
+        Ok(search_page(3..5, "p2", false)),
+    ]);
+    let mut events = Vec::new();
+    let fetched = window_board(&transport, &mut events).unwrap();
+    assert_eq!(fetched.rows.len(), 4);
+    assert!(fetched.pagination.small_pages());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        FetchProgress::Step {
+            step: FetchStep::MorePages { .. },
+            retry: true
+        }
+    )));
+}
+
+#[test]
+fn fetch_view_is_page_one_only_for_the_cli() {
+    let transport = SequenceTransport::new(vec![
+        Ok(search_page(1..3, "p1", true)),
+        Ok(search_page(3..5, "p2", false)),
+    ]);
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    assert_eq!(fetched.rows.len(), 2);
+    assert!(fetched.pagination.can_load_more(Mode::Authored));
+    assert_eq!(
+        transport.0.lock().unwrap().len(),
+        1,
+        "--pages decides the rest"
+    );
+}
+
+#[test]
+fn small_pages_still_reach_three_hundred_rows() {
+    let page = |page: u64| -> serde_json::Value {
+        let first = 1 + (page - 1) * 30;
+        search_page(first..first + 30, &format!("p{page}"), true)
+    };
+    let transport = SequenceTransport::new((1..=11).map(|n| Ok(page(n))).collect());
+    let fetched = fetch_view_with_progress(
+        &transport,
+        Mode::Authored,
+        &BoardScope::Repository("acme/widgets".into()),
+        "me",
+        &cfg(),
+        &RemoteFilter::default(),
+        Tracked::default(),
+        true,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(fetched.rows.len(), 300, "ten pages of 30, not five");
+    assert!(fetched.pagination.page_limit_reached(Mode::Authored));
+    assert_eq!(
+        transport.0.lock().unwrap().len(),
+        1,
+        "the eleventh is never asked"
+    );
+}

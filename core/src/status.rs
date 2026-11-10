@@ -714,7 +714,7 @@ pub fn fetch_progress_text(
         "Loading"
     };
     let doing = match step {
-        FetchStep::Search | FetchStep::ReviewRequested if retry => {
+        FetchStep::Search | FetchStep::ReviewRequested | FetchStep::MorePages { .. } if retry => {
             format!("GitHub took too long; asking for {SMALL_PAGE_SIZE} PRs at a time")
         }
         FetchStep::Search => {
@@ -728,6 +728,17 @@ pub fn fetch_progress_text(
         }
         FetchStep::ReviewRequested => format!("{verb} review requests (1 of 2)"),
         FetchStep::ReviewAvailable => format!("{verb} PRs available to review (2 of 2)"),
+        FetchStep::MorePages { loaded, total } => {
+            let count = match total {
+                Some(total) => format!("{loaded} of {total}"),
+                None => loaded.to_string(),
+            };
+            if synced_secs_ago.is_some() {
+                format!("Updating ({count} PRs so far)")
+            } else {
+                format!("Loading more PRs ({count} so far)")
+            }
+        }
         FetchStep::Turns => "Checking who answered last on open threads".to_owned(),
     };
     let mut text = if elapsed_secs == 0 {
@@ -1436,6 +1447,19 @@ mod tests {
         assert_eq!(
             fetch_progress_text(Mode::Review, false, FetchStep::Turns, false, 12, None),
             "Checking who answered last on open threads… 12 s"
+        );
+        let more = |total| FetchStep::MorePages { loaded: 60, total };
+        assert_eq!(
+            fetch_progress_text(Mode::AllOpen, false, more(Some(119)), false, 3, None),
+            "Loading more PRs (60 of 119 so far)… 3 s"
+        );
+        assert_eq!(
+            fetch_progress_text(Mode::Review, true, more(None), false, 0, Some(240)),
+            "Updating (60 PRs so far)… · synced 4m ago"
+        );
+        assert_eq!(
+            fetch_progress_text(Mode::AllOpen, false, more(Some(119)), true, 9, None),
+            "GitHub took too long; asking for 30 PRs at a time… 9 s"
         );
     }
 }

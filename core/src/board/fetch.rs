@@ -127,8 +127,9 @@ pub fn resolve_pull_request_id(
     parse_pull_request_id(&body, repo, number)
 }
 
-/// Page one of any view, plus followed PRs — the one call the desktop, the
-/// CLI and the iPad make for a refresh. All open sends `filter`'s labels and
+/// Page one of any view, plus followed PRs, and nothing more: the CLI asks
+/// for further pages itself (`--pages`). A window wants
+/// [`fetch_view_with_progress`], which goes on to every page. All open sends `filter`'s labels and
 /// authors with its search (see [`fetch_all_open`]); My PRs and the review
 /// queue ignore it. `small_pages` is the previous fetch's
 /// [`BoardPagination::small_pages`] for the same view (false for the first):
@@ -145,7 +146,7 @@ pub fn fetch_view(
     tracked: Tracked<'_>,
     small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
-    fetch_view_with_progress(
+    fetch_pages(
         transport,
         mode,
         scope,
@@ -154,6 +155,7 @@ pub fn fetch_view(
         filter,
         tracked,
         small_pages,
+        false,
         &mut |_| {},
     )
 }
@@ -171,6 +173,11 @@ pub enum FetchStep {
     ReviewRequested,
     /// ...and the second: the PRs open to review that ask nobody.
     ReviewAvailable,
+    /// The next page of the view's search(es), sent by itself after page
+    /// one until every PR is in or 300 rows a search are
+    /// (Oliver, 2026-11-10: a board that stops at 60 of 119 hides PRs).
+    /// `loaded` rows are in so far, of `total` when GitHub counted them.
+    MorePages { loaded: u32, total: Option<u64> },
     /// The rows are in; [`TURNS_QUERY`] asks who spoke last on their open
     /// threads.
     Turns,
@@ -190,9 +197,13 @@ pub enum FetchProgress {
     Rows(Box<BoardFetch>),
 }
 
-/// [`fetch_view`], telling `progress` which request it is waiting for and
-/// handing over rows as soon as part of the board is known. Sends exactly the
-/// same requests, in the same order, as [`fetch_view`].
+/// A whole board for a window: page one as [`fetch_view`] sends it, then
+/// every further page by itself, one request after another, until no PR is
+/// left or [`MAX_PAGES_PER_ALIAS`] pages are in (300 rows a search). The
+/// person never has to ask for the rest; a page GitHub refuses ends the run
+/// with the rows already in, and Load more then retries from there. Tells
+/// `progress` which request it is waiting for and hands over rows as soon as
+/// part of the board is known.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_view_with_progress(
     transport: &dyn GithubTransport,
@@ -203,6 +214,33 @@ pub fn fetch_view_with_progress(
     filter: &RemoteFilter,
     tracked: Tracked<'_>,
     small_pages: bool,
+    progress: &mut dyn FnMut(FetchProgress),
+) -> Result<BoardFetch, GhError> {
+    fetch_pages(
+        transport,
+        mode,
+        scope,
+        me,
+        cfg,
+        filter,
+        tracked,
+        small_pages,
+        true,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_pages(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    filter: &RemoteFilter,
+    tracked: Tracked<'_>,
+    small_pages: bool,
+    every_page: bool,
     progress: &mut dyn FnMut(FetchProgress),
 ) -> Result<BoardFetch, GhError> {
     let unfiltered = RemoteFilter::default();
@@ -222,6 +260,9 @@ pub fn fetch_view_with_progress(
         small_pages,
         progress,
     )?;
+    if every_page {
+        fetch_rest(transport, mode, scope, me, cfg, &mut fetched, progress);
+    }
     settle_turns(
         transport,
         mode,
@@ -232,6 +273,60 @@ pub fn fetch_view_with_progress(
         progress,
     );
     Ok(fetched)
+}
+
+/// The pages after the first, each a request of its own sent after the last
+/// one answered, so no request is bigger than Load more's and none runs in
+/// parallel. Stops at [`MAX_PAGES_PER_ALIAS`] pages per search; a refused
+/// page leaves `fetched` as it was, its cursor ready for Load more.
+fn fetch_rest(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    fetched: &mut BoardFetch,
+    progress: &mut dyn FnMut(FetchProgress),
+) {
+    while fetched.pagination.can_load_more(mode) {
+        progress(FetchProgress::Rows(Box::new(fetched.clone())));
+        let step = FetchStep::MorePages {
+            loaded: u32::try_from(fetched.rows.len()).unwrap_or(u32::MAX),
+            total: fetched.total,
+        };
+        match next_page(transport, mode, scope, me, cfg, fetched, step, progress) {
+            Ok(next) => *fetched = next,
+            Err(_) => break,
+        }
+    }
+}
+
+/// One more page of `current`, at its page size, and once at
+/// [`SMALL_PAGE_SIZE`] when GitHub gives up on a full one (the cursor stays
+/// valid at any size).
+#[allow(clippy::too_many_arguments)]
+fn next_page(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    current: &BoardFetch,
+    step: FetchStep,
+    progress: &mut dyn FnMut(FetchProgress),
+) -> Result<BoardFetch, GhError> {
+    progress(FetchProgress::Step { step, retry: false });
+    let first = current.pagination.page_size();
+    match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
+        Err(error) if error.is_query_timeout() && !current.pagination.small_pages => {
+            progress(FetchProgress::Step { step, retry: true });
+            let mut fetched =
+                fetch_more_sized(transport, mode, scope, me, cfg, current, SMALL_PAGE_SIZE)?;
+            fetched.pagination.small_pages = true;
+            Ok(fetched)
+        }
+        fetched => fetched,
+    }
 }
 
 /// The ownership rule's second request ([`TURNS_QUERY`]): whose turn the
@@ -355,10 +450,9 @@ pub(crate) fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
 
 /// All open for one repository, with `filter`'s labels and authors matched by
 /// GitHub rather than among the loaded rows, so the count, the first page, and
-/// Load more all cover the whole repository. Same one-operation contract and
-/// bounds as the other views: [`PAGE_SIZE`] rows a page (or
-/// [`SMALL_PAGE_SIZE`], see [`fetch_view`]), user-invoked
-/// Load more, at most [`MAX_PAGES_PER_ALIAS`] pages.
+/// Load more all cover the whole repository. Page one only, like
+/// [`fetch_view`]: [`PAGE_SIZE`] rows (or [`SMALL_PAGE_SIZE`]), further
+/// pages through [`fetch_more_board`], at most [`MAX_PAGES_PER_ALIAS`].
 pub fn fetch_all_open(
     transport: &dyn GithubTransport,
     repo: &str,
@@ -798,17 +892,11 @@ pub fn fetch_more_board_scoped(
     cfg: &BoardConfig,
     current: &BoardFetch,
 ) -> Result<BoardFetch, GhError> {
-    let first = current.pagination.page_size();
-    let mut fetched = match fetch_more_sized(transport, mode, scope, me, cfg, current, first) {
-        // Same fallback as page one: the cursor stays valid at any page size.
-        Err(error) if error.is_query_timeout() && !current.pagination.small_pages => {
-            let mut fetched =
-                fetch_more_sized(transport, mode, scope, me, cfg, current, SMALL_PAGE_SIZE)?;
-            fetched.pagination.small_pages = true;
-            fetched
-        }
-        fetched => fetched?,
+    let step = FetchStep::MorePages {
+        loaded: u32::try_from(current.rows.len()).unwrap_or(u32::MAX),
+        total: current.total,
     };
+    let mut fetched = next_page(transport, mode, scope, me, cfg, current, step, &mut |_| {})?;
     // The rows already settled keep their turns; only the page's new rows ask.
     settle_turns(
         transport,
@@ -835,7 +923,11 @@ fn fetch_more_sized(
     let mut next = current.clone();
     match mode {
         Mode::Authored => {
-            if !next.pagination.authored.can_load() {
+            if !next
+                .pagination
+                .authored
+                .can_load(next.pagination.page_cap())
+            {
                 return Ok(next);
             }
             let search = scope_search_string(scope, mode, me, cfg);
@@ -862,7 +954,11 @@ fn fetch_more_sized(
             let Some(search) = next.pagination.search.clone() else {
                 return Ok(next);
             };
-            if !next.pagination.authored.can_load() {
+            if !next
+                .pagination
+                .authored
+                .can_load(next.pagination.page_cap())
+            {
                 return Ok(next);
             }
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
@@ -883,8 +979,14 @@ fn fetch_more_sized(
             next.rate = rate;
         }
         Mode::Review => {
-            let requested = next.pagination.requested.can_load();
-            let available = next.pagination.available.can_load();
+            let requested = next
+                .pagination
+                .requested
+                .can_load(next.pagination.page_cap());
+            let available = next
+                .pagination
+                .available
+                .can_load(next.pagination.page_cap());
             if !requested && !available {
                 return Ok(next);
             }

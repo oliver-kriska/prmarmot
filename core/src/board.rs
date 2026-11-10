@@ -762,11 +762,8 @@ impl AliasCursor {
         }
     }
 
-    fn can_load(&self) -> bool {
-        self.has_next
-            && !self.blocked
-            && self.end_cursor.is_some()
-            && self.pages < MAX_PAGES_PER_ALIAS
+    fn can_load(&self, cap: u8) -> bool {
+        self.has_next && !self.blocked && self.end_cursor.is_some() && self.pages < cap
     }
 
     fn update(&mut self, page: crate::github::query::PageInfo) {
@@ -829,16 +826,30 @@ impl BoardPagination {
         }
     }
 
+    /// How many pages a search may hold: [`MAX_PAGES_PER_ALIAS`] full ones,
+    /// or as many [`SMALL_PAGE_SIZE`] ones as hold the same 300 rows — a view
+    /// GitHub answers only in small pages must not stop at 150 (Involving me
+    /// across all repositories did, at 150 of 161, on 2026-11-10).
+    fn page_cap(&self) -> u8 {
+        if self.small_pages {
+            MAX_PAGES_PER_ALIAS * (PAGE_SIZE / SMALL_PAGE_SIZE)
+        } else {
+            MAX_PAGES_PER_ALIAS
+        }
+    }
+
     pub fn can_load_more(&self, mode: Mode) -> bool {
+        let cap = self.page_cap();
         match mode {
-            Mode::Authored => self.authored.can_load(),
-            Mode::Review => self.requested.can_load() || self.available.can_load(),
-            Mode::AllOpen => self.search.is_some() && self.authored.can_load(),
+            Mode::Authored => self.authored.can_load(cap),
+            Mode::Review => self.requested.can_load(cap) || self.available.can_load(cap),
+            Mode::AllOpen => self.search.is_some() && self.authored.can_load(cap),
         }
     }
 
     pub fn page_limit_reached(&self, mode: Mode) -> bool {
-        let limited = |c: &AliasCursor| c.has_next && c.pages >= MAX_PAGES_PER_ALIAS;
+        let cap = self.page_cap();
+        let limited = |c: &AliasCursor| c.has_next && c.pages >= cap;
         match mode {
             Mode::Authored | Mode::AllOpen => limited(&self.authored),
             Mode::Review => limited(&self.requested) || limited(&self.available),
