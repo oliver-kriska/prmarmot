@@ -200,8 +200,8 @@ The cask links `prmarmot-cli` into Homebrew's `bin` as well.
 Every install path — the installer, Homebrew, and `make install` — uses the same
 `/Applications/prmarmot.app`, so a Mac has one PR Marmot. The installer and
 `make install` remove an older copy that earlier versions put in
-`~/Applications`. Once Homebrew manages the app, update with
-`brew upgrade --cask prmarmot`; the installer refuses and says so. If an app is
+`~/Applications`. Once Homebrew manages the app, quit it and update with
+`brew update && brew upgrade --cask prmarmot`; the installer refuses and says so. If an app is
 already in `/Applications` when you first install the cask, use
 `brew install --cask --force oliver-kriska/tap/prmarmot` to replace it.
 
@@ -629,10 +629,12 @@ Every feature, with its limits and the version it shipped in, is listed in
   warns that PRs may already have changed or merged. It stays until fresh data
   arrives, including when a refresh fails or pauses.
 - **Updates:** by default PR Marmot checks the latest stable GitHub release on
-  launch and at most once per day. A header banner opens the verified release
-  page for direct installs. Homebrew installs stage a detached helper and quit
-  only after it starts; the helper upgrades the `prmarmot` cask after the app
-  exits, reopens it, and reports failures on the next launch.
+  launch and at most once per day, and **PR Marmot → Check for Updates…** asks
+  right away. A header banner opens the verified release
+  page for direct installs. For a Homebrew install it says to quit PR Marmot and
+  run `brew update && brew upgrade --cask prmarmot && open -a prmarmot`, and
+  **Copy command** puts that on the clipboard; the app never runs Homebrew
+  itself.
 - **Repositories:** **All repositories** is always first in the searchable
   picker. Choosing a repository performs a fresh repository-scoped request—it
   never filters the truncated global page and pretends it is complete. **Pin**
@@ -1021,6 +1023,8 @@ scripts/demo.sh             # fictional Involving me (board.png: 1440×628 windo
 scripts/demo.sh --review    # fictional Review queue
 scripts/demo.sh --fail-once # exercise the initial error and Retry recovery
 scripts/demo.sh --update-available # show a fictional stable update banner
+scripts/demo.sh --update-homebrew  # the same, as a Homebrew install sees it
+scripts/demo.sh --slow-gh 4        # GitHub answering in 4 s: loading steps, early rows
 scripts/demo.sh --update-failed    # show a fictional prior helper failure
 scripts/demo.sh --self-test # validate the demo fixtures (Python 3 required)
 scripts/demo.sh --dark      # the same, in the dark theme

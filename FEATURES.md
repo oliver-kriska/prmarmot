@@ -482,6 +482,13 @@ values in the code. New features get the next free number in their area.
   pause (F-refresh-5). _since v0.13.0_ Hover it for what the figure is: GitHub's hourly points, what a refresh
   spends, and the reserve refreshing stops at (one core sentence, exported for the iPad). The Review queue's
   unresolved-thread column is headed "Threads". _since v0.20.0_
+  While a refresh runs, the status line (and the empty board on a first load) names the request it waits for and
+  counts the seconds: "Loading review requests (1 of 2)… 4 s", "Loading PRs available to review (2 of 2)… 7 s",
+  "Checking who answered last on open threads…", or that GitHub took too long and fewer PRs are being asked for. It
+  repaints once a second only while a request is out. On a view's first load, the rows already known appear before
+  the rest: the Review queue across all repositories shows "Requested from you" when the first search lands, about
+  half-way, and every view shows its rows before the follow-up about open threads. A board already on screen stays as
+  it is until the whole answer replaces it. _unreleased_
 - **F-refresh-3** Each refresh is one GraphQL request.
   - My PRs and Involving me return up to 60 PRs and cost about 4 points.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
@@ -540,6 +547,11 @@ values in the code. New features get the next free number in their area.
   are kept in `board-<host>-<account>.json` beside the attention files, written a second after each answer by
   the build that reads them; a file another version or another account wrote is ignored, and the first launch
   of a new version starts empty. _since v0.19.0_
+  A file an older version wrote is read too, so the first launch after an update shows the board instead of every
+  view's first search on an empty table; a row field the older version did not write takes its default, and a file
+  of another shape or another account is still ignored. _unreleased_ When a view has no saved board, the first
+  board of a run is followed by one background load of the other of My PRs and the Review queue, after the open
+  view's answer rather than beside it, so the first switch shows rows at once. _unreleased_
   Once a snapshot is one configured refresh interval old, **Showing older data** appears above the table with
   its age and updating, paused or failed status. It warns that PRs may have changed or merged and stays until a
   successful refresh, even for an empty snapshot. **Refresh now** is offered when not updating or rate-limited.
@@ -645,6 +657,17 @@ values in the code. New features get the next free number in their area.
   Details and the appearance preview have short entrance transitions, disabled with Reduce Motion; no animation
   loops run while idle. Rounded sheets retain inset containment rather than rounded subtree clipping.
   _since v0.20.0_
+- **F-settings-14** The Dock icon follows the appearance the board is drawn in: a pale slate tile when it is light,
+  the slate tile when it is dark, and with Appearance set to System it changes when macOS does. Finder and
+  Launchpad keep the slate icon. _unreleased · macOS_
+- **F-settings-15** The menu bar has **About PR Marmot** and **Check for Updates…**; a **View** menu with the three
+  views (`⌘1` `⌘2` `⌘3`, the open one ticked, All open greyed across all repositories) and **Refresh** (`⌘R`); a
+  **Window** menu (Minimize `⌘M`, Zoom); and **Help** with the keyboard shortcuts, the website, the release notes
+  and a link to report a problem. _unreleased · macOS_
+- **F-settings-16** Settings opens without waiting on the system keychain. The Account block names the sign-in the
+  board is already using, and the keychain is read in the background only to correct it. Changes to the window,
+  section order and appearance are written to disk off the UI thread. They are flushed when you quit, and
+  **Save** waits up to a quarter of a second for them before it writes. _unreleased_
 
 ## Updates and install
 
@@ -673,7 +696,13 @@ values in the code. New features get the next free number in their area.
     failure on the next launch.
 
   The check can be turned off. _since v0.6.0_ It asks through the GitHub CLI when that can answer, and otherwise
-  asks GitHub directly without a token. _since v0.9.1_
+  asks GitHub directly without a token. _since v0.9.1_ **PR Marmot → Check for Updates…** asks right away, even
+  with the automatic check off or already done today, and answers in a dialog: up to date, a newer version with
+  **Download** (direct install) or the Homebrew command, or why the check failed. _unreleased_ A Homebrew install
+  is no longer upgraded by the app: the banner and the dialog say to quit PR Marmot and run
+  `brew update && brew upgrade --cask prmarmot && open -a prmarmot` in Terminal, and **Copy command** puts it on
+  the clipboard. `brew update` comes first because Homebrew refreshes its index only once a day on its own and
+  would call a release from the last day "already installed". _unreleased_
 - **F-install-7** The first PR Marmot launch copies the former `prboard` app's config and state once and leaves the
   originals alone. If the copy fails, the app stops with an error instead of starting empty. _since v0.6.0_
 - **F-install-8** Linux and Intel Macs build from source, and `install.sh --from-source` puts the binaries in
