@@ -980,8 +980,10 @@ The workspace contains the GPUI app and four UI-independent crates:
 - `cli/` is `prmarmot-cli`.
 - `ffi/` is `prmarmot-ffi`, the UniFFI bindings PR Marmot for iPad builds on.
 
-Current UI dependencies are `gpui-component 0.6.4` and `gpui-pre` /
-`gpui-pre-platform 0.3.5`.
+Current UI dependencies are `gpui-component 0.9.1` with its `gpui-fast` feature,
+on [GPUI Fast](https://github.com/longbridge/gpui-fast) (`gpui-fast` /
+`gpui-fast-platform 0.1.14`), which redraws only what changed and keeps scrolled
+rows as cached tiles.
 
 ```sh
 make check      # fmt check + clippy -D warnings + tests for core, local, cli, ffi (same as CI)
