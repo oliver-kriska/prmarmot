@@ -53,6 +53,9 @@ pub enum FetchStep {
     ReviewRequested,
     /// Its second: the PRs open to review that ask nobody.
     ReviewAvailable,
+    /// The next page, sent by itself after page one until every PR is in or
+    /// five pages are; `loaded` rows so far, of `total` when GitHub counted.
+    MorePages { loaded: u32, total: Option<u64> },
     /// The rows are in; asking who spoke last on their open threads.
     Turns,
 }
@@ -63,6 +66,7 @@ impl From<core_board::FetchStep> for FetchStep {
             core_board::FetchStep::Search => Self::Search,
             core_board::FetchStep::ReviewRequested => Self::ReviewRequested,
             core_board::FetchStep::ReviewAvailable => Self::ReviewAvailable,
+            core_board::FetchStep::MorePages { loaded, total } => Self::MorePages { loaded, total },
             core_board::FetchStep::Turns => Self::Turns,
         }
     }
@@ -74,6 +78,7 @@ impl From<FetchStep> for core_board::FetchStep {
             FetchStep::Search => Self::Search,
             FetchStep::ReviewRequested => Self::ReviewRequested,
             FetchStep::ReviewAvailable => Self::ReviewAvailable,
+            FetchStep::MorePages { loaded, total } => Self::MorePages { loaded, total },
             FetchStep::Turns => Self::Turns,
         }
     }

@@ -168,6 +168,11 @@ no longer current, and show early rows only to a view with none — never count,
 observe, cache or notify from them. The observer is held for that one fetch
 only, but keep the store `weak` in it all the same.
 
+`fetchBoardTracking…` and `fetchAllOpen…` load every page by themselves, one
+request after another, until no PR is left or a search holds 300 rows (step
+`MorePages`, with `rows` before each page); `hasMore` is then true only when
+GitHub refused a later page, so Load more retries. `fetchBoard` stays page one.
+
 ## Panics abort
 
 The `ios` profile in the workspace `Cargo.toml` sets `panic = "abort"`, which

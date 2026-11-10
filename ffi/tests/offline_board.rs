@@ -668,7 +668,9 @@ fn paged_body() -> String {
 /// Answers with `paged_body`, and when `hold` says so, only once the test
 /// lets it: the request is sent, then waits. Only the board search is held;
 /// the turns follow-up that trails every page answers at once, so one
-/// release still stands for one fetch.
+/// release still stands for one fetch. A later page (one sent `after` a
+/// cursor) is refused: a fetch that shows a board goes on to every page by
+/// itself, and the refusal is what leaves it a cursor for `has_more`.
 struct Held {
     body: String,
     hold: std::sync::atomic::AtomicBool,
@@ -684,6 +686,13 @@ impl GithubTransport for Held {
                 status: 200,
                 headers: Vec::new(),
                 body: r#"{"data":{"turns":[]}}"#.to_owned(),
+            });
+        }
+        if request.body.contains(r#""after""#) {
+            return Ok(HttpResponse {
+                status: 500,
+                headers: Vec::new(),
+                body: r#"{"message":"later pages are refused here"}"#.to_owned(),
             });
         }
         if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
