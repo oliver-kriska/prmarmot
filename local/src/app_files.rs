@@ -6,6 +6,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use prmarmot_core::board::BoardScope;
 use prmarmot_core::layout::{SectionKind, SectionOrder};
@@ -68,8 +70,10 @@ pub struct SettingsUpdate {
 
 /// Save editable settings while preserving comments and unrelated keys.
 /// Existing malformed or unreadable files are rejected, never replaced.
+/// Written after every remembered value queued before it, and on the
+/// calling thread, so the dialog can show an error.
 pub fn save_settings(update: &SettingsUpdate) -> Result<(), String> {
-    save_settings_at(&config_path(), update)
+    writer().with_file(|path| save_settings_at(path, update))
 }
 
 fn save_settings_at(path: &Path, update: &SettingsUpdate) -> Result<(), String> {
@@ -411,14 +415,16 @@ impl ConfigWarnings {
 /// the user's comments and formatting intact; failures are logged, never
 /// fatal — persistence is a convenience, not a dependency.
 pub fn persist_str(key: &str, value: &str) {
-    persist(|doc| {
-        doc[key] = toml_edit::value(value);
+    let (name, value) = (key.to_owned(), value.to_owned());
+    persist(key, move |doc| {
+        doc[name.as_str()] = toml_edit::value(value);
         Ok(())
     });
 }
 
 pub fn persist_pins(pins: &[String]) {
-    persist(|doc| {
+    let pins = pins.to_vec();
+    persist("pinned_repos", move |doc| {
         doc["pinned_repos"] = toml_edit::value(
             pins.iter()
                 .map(String::as_str)
@@ -429,8 +435,9 @@ pub fn persist_pins(pins: &[String]) {
 }
 
 pub fn persist_scope(scope: &BoardScope) {
-    persist(|doc| {
-        set_scope(doc, scope);
+    let scope = scope.clone();
+    persist("scope", move |doc| {
+        set_scope(doc, &scope);
         Ok(())
     });
 }
@@ -448,7 +455,8 @@ fn set_scope(doc: &mut toml_edit::DocumentMut, scope: &BoardScope) {
 /// Persist the host signed in to from the sign-in screen under `[auth]`, so the
 /// next launch connects there too.
 pub fn persist_auth_host(host: &str) {
-    persist(|doc| set_auth_host(doc, host));
+    let host = host.to_owned();
+    persist("auth.host", move |doc| set_auth_host(doc, &host));
 }
 
 fn set_auth_host(doc: &mut toml_edit::DocumentMut, host: &str) -> Result<(), String> {
@@ -464,7 +472,10 @@ fn set_auth_host(doc: &mut toml_edit::DocumentMut, host: &str) -> Result<(), Str
 /// The default (only Snoozed) removes the view's entry, and the table goes
 /// once it is empty, so an untouched file stays as it was.
 pub fn persist_collapsed(view: &str, kinds: &[SectionKind]) {
-    persist(|doc| set_collapsed(doc, view, kinds));
+    let (view, kinds) = (view.to_owned(), kinds.to_vec());
+    persist(&format!("collapsed_sections.{view}"), move |doc| {
+        set_collapsed(doc, &view, &kinds)
+    });
 }
 
 fn set_collapsed(
@@ -498,9 +509,12 @@ fn set_collapsed(
     Ok(())
 }
 
-/// Persist the window size under `[window]`.
+/// Persist the window size under `[window]`. It is written when the app
+/// quits, so this one waits: it and every write queued before it are on disk
+/// when it returns (`ConfigWriter::flush`).
 pub fn persist_window(width: f32, height: f32) {
-    persist(|doc| set_window(doc, width, height));
+    persist("window", move |doc| set_window(doc, width, height));
+    flush_config_writes();
 }
 
 fn set_window(doc: &mut toml_edit::DocumentMut, width: f32, height: f32) -> Result<(), String> {
@@ -511,10 +525,222 @@ fn set_window(doc: &mut toml_edit::DocumentMut, width: f32, height: f32) -> Resu
     Ok(())
 }
 
-/// Remembering where things were is a convenience, never a dependency: a
-/// failure is logged and the app carries on.
-fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) {
-    if let Err(e) = edit_config_at(&config_path(), Validate::Toml, update) {
+/// Remembering where things were is a convenience, never a dependency: the
+/// edit is queued for the config writer and the caller carries on; a failure
+/// is logged, as it always was.
+fn persist(
+    key: &str,
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String> + Send + 'static,
+) {
+    writer().submit(key, edit);
+}
+
+/// The app's one config writer, started on first use, writing to
+/// [`config_path`].
+static WRITER: OnceLock<ConfigWriter> = OnceLock::new();
+
+fn writer() -> &'static ConfigWriter {
+    WRITER.get_or_init(|| ConfigWriter::new(config_path()))
+}
+
+/// Wait until every remembered value queued so far is on disk. Quitting
+/// calls it; a process that never queued one returns at once.
+pub fn flush_config_writes() {
+    if let Some(writer) = WRITER.get() {
+        writer.flush();
+    }
+}
+
+/// [`flush_config_writes`] for a window that is about to read the file: waits
+/// at most `timeout`, so a write that hangs (a slow or network home
+/// directory) never freezes the window. False when it gave up; the file then
+/// may not have the latest queued value yet.
+pub fn flush_config_writes_within(timeout: Duration) -> bool {
+    WRITER
+        .get()
+        .is_none_or(|writer| writer.flush_within(timeout))
+}
+
+/// One queued edit of the config document.
+type ConfigEdit = Box<dyn FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String> + Send>;
+
+/// The longest [`ConfigWriter::flush`] waits, so a quit is never held
+/// forever by a write that cannot finish (a hung network home directory).
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Writes remembered values (view, scope, pins, folds, theme, auth host,
+/// window size) to `config.toml` on a thread of its own, so the UI thread
+/// never waits on a read, a parse and an `fsync`. Edits are applied in the
+/// order they were queued; a key queued again before the last one was
+/// written replaces it (and moves to the end), so a burst of view switches is
+/// one write of the last view. Each write is the same read-edit-atomic
+/// rename as [`edit_config_at`], one per batch. Bounded: one pending edit per
+/// key, and the keys are a fixed handful.
+pub struct ConfigWriter {
+    shared: Arc<WriterShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct WriterShared {
+    path: PathBuf,
+    queue: Mutex<WriterQueue>,
+    /// Signalled when an edit is queued and when a batch is written.
+    changed: Condvar,
+    /// Held across each read-edit-write of the file, by the writer thread and
+    /// by [`ConfigWriter::with_file`], so two never interleave.
+    file: Mutex<()>,
+}
+
+#[derive(Default)]
+struct WriterQueue {
+    /// Edits not yet taken by the writer, oldest first, one per key.
+    pending: Vec<(String, ConfigEdit)>,
+    /// How many edits were ever queued, coalesced ones included.
+    queued: u64,
+    /// How many of those have been written (or failed and been logged).
+    written: u64,
+    shutdown: bool,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl ConfigWriter {
+    /// A writer for `path`. If its thread can't be started, edits are
+    /// written on the caller's thread instead, as before.
+    pub fn new(path: PathBuf) -> Self {
+        let shared = Arc::new(WriterShared {
+            path,
+            queue: Mutex::new(WriterQueue::default()),
+            changed: Condvar::new(),
+            file: Mutex::new(()),
+        });
+        let thread = {
+            let shared = Arc::clone(&shared);
+            std::thread::Builder::new()
+                .name("prmarmot-config".into())
+                .spawn(move || run_writer(&shared))
+        };
+        let thread = match thread {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                eprintln!("prmarmot: writing the config on the UI thread: {e}");
+                None
+            }
+        };
+        Self { shared, thread }
+    }
+
+    /// Queue `edit` under `key`, replacing an edit of the same key that has
+    /// not been written yet.
+    pub fn submit(
+        &self,
+        key: &str,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String> + Send + 'static,
+    ) {
+        if self.thread.is_none() {
+            let _file = lock(&self.shared.file);
+            write_batch(&self.shared.path, vec![(key.to_owned(), Box::new(edit))]);
+            return;
+        }
+        let mut queue = lock(&self.shared.queue);
+        queue.pending.retain(|(queued, _)| queued != key);
+        queue.pending.push((key.to_owned(), Box::new(edit)));
+        queue.queued += 1;
+        self.shared.changed.notify_all();
+    }
+
+    /// Wait until every edit queued before this call is written, or
+    /// [`FLUSH_TIMEOUT`] has passed. Returns whether they all were.
+    pub fn flush(&self) -> bool {
+        self.flush_within(FLUSH_TIMEOUT)
+    }
+
+    fn flush_within(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut queue = lock(&self.shared.queue);
+        let target = queue.queued;
+        while queue.written < target {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            queue = self
+                .shared
+                .changed
+                .wait_timeout(queue, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    /// Run `f` on the file itself, on this thread, after every queued edit
+    /// is written and with no other write in between: the Settings save,
+    /// whose error the dialog shows.
+    pub fn with_file<T>(&self, f: impl FnOnce(&Path) -> T) -> T {
+        self.flush();
+        let _file = lock(&self.shared.file);
+        f(&self.shared.path)
+    }
+}
+
+impl Drop for ConfigWriter {
+    /// Write what is queued, then stop the thread.
+    fn drop(&mut self) {
+        lock(&self.shared.queue).shutdown = true;
+        self.shared.changed.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run_writer(shared: &WriterShared) {
+    loop {
+        let (batch, upto) = {
+            let mut queue = lock(&shared.queue);
+            while queue.pending.is_empty() && !queue.shutdown {
+                queue = shared
+                    .changed
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            if queue.pending.is_empty() {
+                return; // shut down with nothing left to write
+            }
+            (std::mem::take(&mut queue.pending), queue.queued)
+        };
+        {
+            let _file = lock(&shared.file);
+            // A panic in one batch must not leave `flush` waiting on it.
+            let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                write_batch(&shared.path, batch);
+            }));
+            if written.is_err() {
+                eprintln!("prmarmot: not saving the config: the writer panicked");
+            }
+        }
+        let mut queue = lock(&shared.queue);
+        queue.written = upto;
+        shared.changed.notify_all();
+    }
+}
+
+/// Apply `batch` in order to one read of the file and write it once. An edit
+/// that fails is logged and skipped, the others still land; a file that
+/// can't be read or isn't TOML is never replaced.
+fn write_batch(path: &Path, batch: Vec<(String, ConfigEdit)>) {
+    let result = edit_config_at(path, Validate::Toml, |doc| {
+        for (_, edit) in batch {
+            if let Err(e) = edit(doc) {
+                eprintln!("prmarmot: not saving the config: {e}");
+            }
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
         eprintln!("prmarmot: not saving the config: {e}");
     }
 }
@@ -1040,5 +1266,156 @@ theme = \"dark\"\n",
         .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# preserved\n");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A config path in a directory of its own, removed with the directory.
+    fn writer_dir(name: &str) -> (PathBuf, PathBuf) {
+        let dir = temp_config(&format!("writer-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        (dir, path)
+    }
+
+    fn set_x(value: i64) -> impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String> + Send {
+        move |doc| {
+            doc["x"] = toml_edit::value(value);
+            Ok(())
+        }
+    }
+
+    fn read_x(path: &Path) -> Option<i64> {
+        let text = std::fs::read_to_string(path).ok()?;
+        text.parse::<toml_edit::DocumentMut>()
+            .ok()?
+            .get("x")?
+            .as_integer()
+    }
+
+    #[test]
+    fn the_writer_applies_edits_in_the_order_they_were_queued() {
+        let (dir, path) = writer_dir("order");
+        std::fs::write(&path, "# keep this\n").unwrap();
+        let writer = ConfigWriter::new(path.clone());
+        // Two keys writing the same value: the later one wins, and a key
+        // queued again moves behind the ones queued since.
+        writer.submit("a", set_x(1));
+        writer.submit("b", set_x(2));
+        assert!(writer.flush());
+        assert_eq!(read_x(&path), Some(2));
+        let file = writer.shared.file.lock().unwrap();
+        writer.submit("a", set_x(3));
+        writer.submit("b", set_x(4));
+        writer.submit("a", set_x(5));
+        drop(file);
+        assert!(writer.flush());
+        assert_eq!(read_x(&path), Some(5));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("# keep this"));
+        drop(writer);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_writer_keeps_only_the_latest_value_per_key() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (dir, path) = writer_dir("coalesce");
+        let writer = ConfigWriter::new(path.clone());
+        let runs = Arc::new(AtomicUsize::new(0));
+        // Hold the file so nothing is written while the burst is queued.
+        let file = writer.shared.file.lock().unwrap();
+        for view in ["authored", "review", "all", "review"] {
+            let runs = Arc::clone(&runs);
+            writer.submit("view", move |doc| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                doc["view"] = toml_edit::value(view);
+                Ok(())
+            });
+        }
+        writer.submit("theme", |doc| {
+            doc["theme"] = toml_edit::value("dark");
+            Ok(())
+        });
+        drop(file);
+        assert!(writer.flush());
+        // The first may have been taken before the file was free; the
+        // middle two never run.
+        assert!(runs.load(Ordering::SeqCst) <= 2);
+        let parsed: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.view.as_deref(), Some("review"));
+        assert_eq!(parsed.theme.as_deref(), Some("dark"));
+        drop(writer);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn flush_waits_for_every_queued_write_and_drop_writes_the_rest() {
+        let (dir, path) = writer_dir("flush");
+        let writer = ConfigWriter::new(path.clone());
+        assert!(writer.flush(), "nothing queued returns at once");
+        let file = writer.shared.file.lock().unwrap();
+        writer.submit("a", set_x(7));
+        // The file is held, so the write can't land in time.
+        assert!(!writer.flush_within(Duration::from_millis(50)));
+        assert_eq!(read_x(&path), None);
+        drop(file);
+        assert!(writer.flush());
+        assert_eq!(read_x(&path), Some(7));
+
+        // A value queued just before quitting is written by the quit's own
+        // synchronous write, or by dropping the writer.
+        writer.submit("view", |doc| {
+            doc["view"] = toml_edit::value("all");
+            Ok(())
+        });
+        writer.submit("window", |doc| set_window(doc, 900.0, 600.0));
+        assert!(writer.flush());
+        let parsed: FileConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.view.as_deref(), Some("all"));
+        assert_eq!(parsed.window.map(|w| w.width), Some(900.0));
+        writer.submit("a", set_x(8));
+        drop(writer);
+        assert_eq!(read_x(&path), Some(8));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_settings_save_follows_the_queued_writes_and_reports_its_error() {
+        let (dir, path) = writer_dir("settings");
+        let writer = ConfigWriter::new(path.clone());
+        let file = writer.shared.file.lock().unwrap();
+        writer.submit("a", set_x(1));
+        drop(file);
+        let seen = writer.with_file(read_x);
+        assert_eq!(seen, Some(1), "the queued edit landed first");
+        std::fs::write(&path, "refresh_secs = \"five\"\n").unwrap();
+        let result = writer.with_file(|path| save_settings_at(path, &SettingsUpdate::default()));
+        assert!(result.is_err());
+        drop(writer);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_edit_or_an_unreadable_file_writes_nothing_wrong() {
+        let (dir, path) = writer_dir("failing");
+        std::fs::write(&path, "window = 900\n").unwrap();
+        let writer = ConfigWriter::new(path.clone());
+        let file = writer.shared.file.lock().unwrap();
+        writer.submit("window", |doc| set_window(doc, 900.0, 600.0));
+        writer.submit("a", set_x(3));
+        drop(file);
+        assert!(writer.flush());
+        // The window edit is refused and logged; the other one lands.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("window = 900"));
+        assert_eq!(read_x(&path), Some(3));
+
+        std::fs::write(&path, "not [toml\n").unwrap();
+        writer.submit("a", set_x(4));
+        assert!(writer.flush());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not [toml\n");
+        drop(writer);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

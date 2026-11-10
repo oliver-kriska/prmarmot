@@ -557,8 +557,11 @@ pub struct Turns {
 }
 
 /// One row of the dashboard. `review_state` is authored-mode only (`None` in
-/// the review queue); everything else is set in both modes.
+/// the review queue); everything else is set in both modes. A field missing
+/// when a row is read back takes its default, so the board saved by an older
+/// version still opens the next one (`prmarmot_local::board_cache`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BoardRow {
     /// GitHub node id (canonical URL for legacy prototype fixtures).
     pub id: String,

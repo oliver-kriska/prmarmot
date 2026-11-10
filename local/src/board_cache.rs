@@ -1,9 +1,12 @@
 //! The board as it was when the app last ran — every queue's rows and when
 //! each was synced — so the next launch shows those rows while the first
-//! refresh runs, instead of an empty table. Written by the build that reads
-//! it: a file another version wrote is ignored, so rows never have to
-//! survive a change to their shape, and a file for another account or host
-//! is ignored too.
+//! refresh runs, instead of an empty table. A file another version wrote is
+//! read too — after an update the first launch would otherwise wait out
+//! every view's first search on an empty table — as long as its
+//! [`SCHEMA_VERSION`] matches and its rows still parse; a row field the older
+//! version did not write takes its default (`BoardRow` is `serde(default)`).
+//! Those rows show with their age until the refresh replaces them. A file
+//! for another account or host is ignored.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +15,9 @@ use prmarmot_core::attention::SnapshotNamespace;
 use prmarmot_core::board::{BoardRow, BoardScope, Mode};
 use serde::{Deserialize, Serialize};
 
+/// The file's shape. Bump it when a saved row would read back wrongly rather
+/// than fail to parse (a field that changed meaning); a new field needs only
+/// a default.
 pub const SCHEMA_VERSION: u32 = 1;
 /// At most this many queues are kept: the app's cache holds the three views
 /// of twelve pins and All repositories, and the open queue is one more.
@@ -49,18 +55,17 @@ struct File {
 #[derive(Deserialize)]
 struct Header {
     schema_version: u32,
-    app_version: String,
 }
 
-/// The queues the last run of `app_version` left for `namespace`, or none:
-/// a missing, unreadable, oversized, foreign or older file reads as an
-/// empty board, never as an error, because the refresh that follows is the
-/// truth anyway.
-pub fn load(namespace: &SnapshotNamespace, app_version: &str) -> Vec<CachedBoard> {
-    load_at(&path(namespace), namespace, app_version)
+/// The queues the last run left for `namespace`, whichever version wrote
+/// them, or none: a missing, unreadable, oversized, foreign or unparsable
+/// file reads as an empty board, never as an error, because the refresh that
+/// follows is the truth anyway.
+pub fn load(namespace: &SnapshotNamespace) -> Vec<CachedBoard> {
+    load_at(&path(namespace), namespace)
 }
 
-fn load_at(path: &Path, namespace: &SnapshotNamespace, app_version: &str) -> Vec<CachedBoard> {
+fn load_at(path: &Path, namespace: &SnapshotNamespace) -> Vec<CachedBoard> {
     let Ok(metadata) = fs::metadata(path) else {
         return Vec::new();
     };
@@ -70,26 +75,19 @@ fn load_at(path: &Path, namespace: &SnapshotNamespace, app_version: &str) -> Vec
     let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    from_bytes(&bytes, namespace, app_version).unwrap_or_default()
+    from_bytes(&bytes, namespace).unwrap_or_default()
 }
 
-/// What `to_bytes` wrote, when it was this version's for this account.
-pub fn from_bytes(
-    bytes: &[u8],
-    namespace: &SnapshotNamespace,
-    app_version: &str,
-) -> Result<Vec<CachedBoard>, String> {
+/// What `to_bytes` wrote, when it was this account's in this shape.
+pub fn from_bytes(bytes: &[u8], namespace: &SnapshotNamespace) -> Result<Vec<CachedBoard>, String> {
     if bytes.len() > MAX_BYTES {
         return Err(format!("file is too large ({} bytes)", bytes.len()));
     }
-    // The version first, so a newer release's file is named as that rather
-    // than as whatever shape it no longer matches.
+    // The shape first, so another schema is named as that rather than as
+    // whatever field it no longer matches.
     let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if header.schema_version != SCHEMA_VERSION {
         return Err(format!("unsupported schema {}", header.schema_version));
-    }
-    if header.app_version != app_version {
-        return Err(format!("written by version {}", header.app_version));
     }
     let file: File = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if file.namespace != *namespace {
@@ -163,7 +161,7 @@ mod tests {
     #[test]
     fn the_board_round_trips_for_the_build_and_account_that_wrote_it() {
         let bytes = to_bytes(&namespace(), "0.18.2", &[board(7)]).unwrap();
-        let boards = from_bytes(&bytes, &namespace(), "0.18.2").unwrap();
+        let boards = from_bytes(&bytes, &namespace()).unwrap();
         assert_eq!(boards.len(), 1);
         assert_eq!(
             boards[0].scope,
@@ -178,26 +176,37 @@ mod tests {
     }
 
     #[test]
-    fn another_version_account_or_host_reads_as_an_empty_board() {
+    fn another_account_host_or_schema_reads_as_an_empty_board() {
         let bytes = to_bytes(&namespace(), "0.18.2", &[board(7)]).unwrap();
-        assert!(from_bytes(&bytes, &namespace(), "0.19.0")
-            .unwrap_err()
-            .contains("0.18.2"));
         assert!(from_bytes(
             &bytes,
             &SnapshotNamespace::new("github.com", "someone-else"),
-            "0.18.2"
         )
         .unwrap_err()
         .contains("namespace"));
-        assert!(from_bytes(b"not json", &namespace(), "0.18.2").is_err());
+        assert!(from_bytes(b"not json", &namespace()).is_err());
         assert!(from_bytes(
             br#"{"schema_version":99,"app_version":"0.18.2"}"#,
-            &namespace(),
-            "0.18.2"
+            &namespace()
         )
         .unwrap_err()
         .contains("schema 99"));
+    }
+
+    #[test]
+    fn an_older_versions_board_opens_and_missing_row_fields_take_defaults() {
+        let bytes = to_bytes(&namespace(), "0.18.2", &[board(7)]).unwrap();
+        // An older build wrote fewer row fields: drop some, as it would have.
+        let mut file: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let row = file["boards"][0]["rows"][0].as_object_mut().unwrap();
+        for field in ["base_pr", "reviewed_at", "labels", "head_oid"] {
+            row.remove(field);
+        }
+        let older = serde_json::to_vec(&file).unwrap();
+        let boards = from_bytes(&older, &namespace()).unwrap();
+        assert_eq!(boards[0].rows[0].number, 7);
+        assert_eq!(boards[0].rows[0].title, "Fix | pipes in titles");
+        assert_eq!(boards[0].rows[0].base_pr, None);
     }
 
     #[test]
@@ -212,13 +221,13 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("board.json");
-        assert!(load_at(&path, &namespace(), "0.18.2").is_empty());
+        assert!(load_at(&path, &namespace()).is_empty());
         let boards: Vec<CachedBoard> = (0..(MAX_QUEUES as u64 + 5)).map(board).collect();
         let bytes = to_bytes(&namespace(), "0.18.2", &boards).unwrap();
         fs::write(&path, &bytes).unwrap();
-        assert_eq!(load_at(&path, &namespace(), "0.18.2").len(), MAX_QUEUES);
+        assert_eq!(load_at(&path, &namespace()).len(), MAX_QUEUES);
         fs::write(&path, vec![b' '; MAX_BYTES + 1]).unwrap();
-        assert!(load_at(&path, &namespace(), "0.18.2").is_empty());
+        assert!(load_at(&path, &namespace()).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }
