@@ -145,6 +145,66 @@ pub fn fetch_view(
     tracked: Tracked<'_>,
     small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
+    fetch_view_with_progress(
+        transport,
+        mode,
+        scope,
+        me,
+        cfg,
+        filter,
+        tracked,
+        small_pages,
+        &mut |_| {},
+    )
+}
+
+/// Which request a running refresh is waiting for, so a front end can say
+/// so instead of one unchanging "Loading…" for the 10 s or more GitHub's
+/// searches can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchStep {
+    /// The view's one search: My PRs, All open, or the review queue of one
+    /// repository.
+    Search,
+    /// The review queue across all repositories, first of its two requests:
+    /// the PRs that ask for your review.
+    ReviewRequested,
+    /// ...and the second: the PRs open to review that ask nobody.
+    ReviewAvailable,
+    /// The rows are in; [`TURNS_QUERY`] asks who spoke last on their open
+    /// threads.
+    Turns,
+}
+
+/// What [`fetch_view_with_progress`] reports while it runs.
+#[derive(Debug, Clone)]
+pub enum FetchProgress {
+    /// A request is about to be sent. `retry` is true when GitHub gave up on
+    /// the full page and this asks again with [`SMALL_PAGE_SIZE`] rows.
+    Step { step: FetchStep, retry: bool },
+    /// Rows a later step will add to or refine, in the view's order: the
+    /// requested half of the all-repositories review queue, and every view's
+    /// rows before [`FetchStep::Turns`]. A front end can show them to a view
+    /// that has none yet; the result still comes from the `Ok` at the end,
+    /// and only it is the board.
+    Rows(Box<BoardFetch>),
+}
+
+/// [`fetch_view`], telling `progress` which request it is waiting for and
+/// handing over rows as soon as part of the board is known. Sends exactly the
+/// same requests, in the same order, as [`fetch_view`].
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_view_with_progress(
+    transport: &dyn GithubTransport,
+    mode: Mode,
+    scope: &BoardScope,
+    me: &str,
+    cfg: &BoardConfig,
+    filter: &RemoteFilter,
+    tracked: Tracked<'_>,
+    small_pages: bool,
+    progress: &mut dyn FnMut(FetchProgress),
+) -> Result<BoardFetch, GhError> {
     let unfiltered = RemoteFilter::default();
     let filter = if mode == Mode::AllOpen {
         filter
@@ -160,8 +220,17 @@ pub fn fetch_view(
         tracked,
         filter,
         small_pages,
+        progress,
     )?;
-    settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
+    settle_turns(
+        transport,
+        mode,
+        scope.is_all(),
+        me,
+        cfg,
+        &mut fetched,
+        progress,
+    );
     Ok(fetched)
 }
 
@@ -178,6 +247,7 @@ fn settle_turns(
     me: &str,
     cfg: &BoardConfig,
     fetched: &mut BoardFetch,
+    progress: &mut dyn FnMut(FetchProgress),
 ) {
     // Your own PRs and the ones you reviewed first, then someone else's,
     // each nearest the top first: the cap falls on the rows that matter
@@ -196,6 +266,11 @@ fn settle_turns(
     if ids.is_empty() {
         return;
     }
+    progress(FetchProgress::Rows(Box::new(fetched.clone())));
+    progress(FetchProgress::Step {
+        step: FetchStep::Turns,
+        retry: false,
+    });
     let Ok(body) = transport.graphql_with_ids(TURNS_QUERY, &[], &ids) else {
         return;
     };
@@ -302,8 +377,17 @@ pub fn fetch_all_open(
         tracked,
         filter,
         small_pages,
+        &mut |_| {},
     )?;
-    settle_turns(transport, Mode::AllOpen, false, me, cfg, &mut fetched);
+    settle_turns(
+        transport,
+        Mode::AllOpen,
+        false,
+        me,
+        cfg,
+        &mut fetched,
+        &mut |_| {},
+    );
     Ok(fetched)
 }
 
@@ -323,10 +407,14 @@ fn fetch_scoped(
     tracked: Tracked<'_>,
     filter: &RemoteFilter,
     small_pages: bool,
+    progress: &mut dyn FnMut(FetchProgress),
 ) -> Result<BoardFetch, GhError> {
+    let mut retry = false;
     if !small_pages {
-        match fetch_scoped_sized(transport, mode, scope, me, cfg, tracked, filter, PAGE_SIZE) {
-            Err(error) if error.is_query_timeout() => {}
+        match fetch_scoped_sized(
+            transport, mode, scope, me, cfg, tracked, filter, PAGE_SIZE, retry, progress,
+        ) {
+            Err(error) if error.is_query_timeout() => retry = true,
             fetched => return fetched,
         }
     }
@@ -350,6 +438,8 @@ fn fetch_scoped(
         tracked,
         filter,
         SMALL_PAGE_SIZE,
+        retry,
+        progress,
     )?;
     fetched.pagination.small_pages = true;
     Ok(fetched)
@@ -365,10 +455,21 @@ fn fetch_scoped_sized(
     tracked: Tracked<'_>,
     filter: &RemoteFilter,
     first: u8,
+    retry: bool,
+    progress: &mut dyn FnMut(FetchProgress),
 ) -> Result<BoardFetch, GhError> {
     if mode == Mode::AllOpen && scope.is_all() {
         return Err(GhError::NeedsRepository);
     }
+    let split_review = mode == Mode::Review && scope.is_all();
+    progress(FetchProgress::Step {
+        step: if split_review {
+            FetchStep::ReviewRequested
+        } else {
+            FetchStep::Search
+        },
+        retry,
+    });
     let repo = scope.fallback_repo();
     // `owner/name` or nothing: a scope that is not one would skip the
     // repository check and read as an empty board instead of a missing one.
@@ -486,6 +587,25 @@ fn fetch_scoped_sized(
                     &[("requested", requested_search), ("who", me.to_owned())],
                 )?;
                 let (requested, requested_page, rate) = parse_alias_response(&body, "requested")?;
+                // The first half is most of what the queue is for: show it
+                // while GitHub searches for the second.
+                let (rows, overflow) = review_rows(&requested, &[], repo, me, cfg, true);
+                progress(FetchProgress::Rows(Box::new(BoardFetch {
+                    rows,
+                    rate: rate.clone(),
+                    truncated: requested_page.has_next_page || overflow,
+                    pagination: BoardPagination {
+                        requested: AliasCursor::from_page(requested_page.clone()),
+                        ..Default::default()
+                    },
+                    tracked: derive_followed(&body, tracked, repo, me, cfg),
+                    access,
+                    total: None,
+                })));
+                progress(FetchProgress::Step {
+                    step: FetchStep::ReviewAvailable,
+                    retry,
+                });
                 let mut second = send_with_ids(
                     transport,
                     &with_page_size(REVIEW_AVAILABLE_QUERY, first),
@@ -518,39 +638,14 @@ fn fetch_scoped_sized(
                 let parsed = parse_review_response(&body)?;
                 (body, access, parsed)
             };
-            let mut seen = HashSet::new();
-            let mut rows = Vec::new();
-
-            for pr in parsed.requested.iter().filter(|pr| !is_own_pr(pr, me)) {
-                if seen.insert(pr_identity(pr, repo)) {
-                    rows.push(derive_review_row(
-                        pr,
-                        repo,
-                        me,
-                        cfg,
-                        QueueProvenance::Requested,
-                    ));
-                }
-            }
-            for pr in parsed
-                .available
-                .iter()
-                .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
-            {
-                if seen.insert(pr_identity(pr, repo)) {
-                    rows.push(derive_review_row(
-                        pr,
-                        repo,
-                        me,
-                        cfg,
-                        QueueProvenance::Available,
-                    ));
-                }
-            }
-            let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
-            rows.truncate(MAX_EXPANDED_BOARD_ROWS);
-            rows.sort_by(board_order(Mode::Review, scope.is_all()));
-            infer_branch_stacks(&mut rows);
+            let (rows, overflow) = review_rows(
+                &parsed.requested,
+                &parsed.available,
+                repo,
+                me,
+                cfg,
+                scope.is_all(),
+            );
             Ok(BoardFetch {
                 rows,
                 rate: parsed.rate,
@@ -566,6 +661,51 @@ fn fetch_scoped_sized(
             })
         }
     }
+}
+
+/// The review queue's rows from its two searches: requested first, then the
+/// PRs open to review that ask nobody, each PR once and never your own,
+/// bounded, in the view's order. True when the bound cut rows.
+fn review_rows(
+    requested: &[RawPr],
+    available: &[RawPr],
+    repo: &str,
+    me: &str,
+    cfg: &BoardConfig,
+    all_repos: bool,
+) -> (Vec<BoardRow>, bool) {
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+    for pr in requested.iter().filter(|pr| !is_own_pr(pr, me)) {
+        if seen.insert(pr_identity(pr, repo)) {
+            rows.push(derive_review_row(
+                pr,
+                repo,
+                me,
+                cfg,
+                QueueProvenance::Requested,
+            ));
+        }
+    }
+    for pr in available
+        .iter()
+        .filter(|pr| !is_own_pr(pr, me) && pr.review_requests.total_count == 0)
+    {
+        if seen.insert(pr_identity(pr, repo)) {
+            rows.push(derive_review_row(
+                pr,
+                repo,
+                me,
+                cfg,
+                QueueProvenance::Available,
+            ));
+        }
+    }
+    let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
+    rows.truncate(MAX_EXPANDED_BOARD_ROWS);
+    rows.sort_by(board_order(Mode::Review, all_repos));
+    infer_branch_stacks(&mut rows);
+    (rows, overflow)
 }
 
 /// The full rows of `tracked.rows`, then the states of `tracked.status`.
@@ -670,7 +810,15 @@ pub fn fetch_more_board_scoped(
         fetched => fetched?,
     };
     // The rows already settled keep their turns; only the page's new rows ask.
-    settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
+    settle_turns(
+        transport,
+        mode,
+        scope.is_all(),
+        me,
+        cfg,
+        &mut fetched,
+        &mut |_| {},
+    );
     Ok(fetched)
 }
 

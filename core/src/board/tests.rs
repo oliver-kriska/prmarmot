@@ -2975,7 +2975,8 @@ fn the_all_repositories_review_queue_is_two_requests_and_a_small_one_is_resent_o
     assert!(!fetched.truncated);
 
     // Refused twice, the available half fails the refresh with core's
-    // sentence; the requested half's answer is not shown on its own.
+    // sentence; the requested half's answer is not the result (a front end
+    // may have shown it from `fetch_view_with_progress` meanwhile).
     let transport = SplitReviewQueue {
         asked: Mutex::new(Vec::new()),
         available_failures: Mutex::new(2),
@@ -2992,6 +2993,82 @@ fn the_all_repositories_review_queue_is_two_requests_and_a_small_one_is_resent_o
     .unwrap_err();
     assert_eq!(error.to_string(), crate::status::query_timeout_text());
     assert_eq!(transport.asked.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn progress_names_each_request_and_hands_over_the_requested_half_first() {
+    let transport = SplitReviewQueue {
+        asked: Mutex::new(Vec::new()),
+        available_failures: Mutex::new(0),
+    };
+    let mut events = Vec::new();
+    let fetched = fetch_view_with_progress(
+        &transport,
+        Mode::Review,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+        &RemoteFilter::default(),
+        Tracked::default(),
+        true,
+        &mut |event| {
+            let asked = transport.asked.lock().unwrap().len();
+            events.push((event, asked));
+        },
+    )
+    .unwrap();
+    let shape: Vec<String> = events
+        .iter()
+        .map(|(event, asked)| match event {
+            FetchProgress::Step { step, retry } => format!("{step:?} retry={retry} after {asked}"),
+            FetchProgress::Rows(board) => {
+                let numbers: Vec<u64> = board.rows.iter().map(|row| row.number).collect();
+                format!("rows {numbers:?} after {asked}")
+            }
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            "ReviewRequested retry=false after 0",
+            "rows [1] after 1",
+            "ReviewAvailable retry=false after 1",
+        ],
+        "the requested rows arrive before the second search is sent"
+    );
+    let numbers: Vec<u64> = fetched.rows.iter().map(|row| row.number).collect();
+    assert_eq!(numbers, vec![1, 2]);
+
+    // A full page GitHub gives up on: the step is sent again as a retry.
+    let transport = SplitReviewQueue {
+        asked: Mutex::new(Vec::new()),
+        available_failures: Mutex::new(0),
+    };
+    let mut steps = Vec::new();
+    fetch_view_with_progress(
+        &transport,
+        Mode::Review,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+        &RemoteFilter::default(),
+        Tracked::default(),
+        false,
+        &mut |event| {
+            if let FetchProgress::Step { step, retry } = event {
+                steps.push((step, retry));
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        steps,
+        vec![
+            (FetchStep::ReviewRequested, false),
+            (FetchStep::ReviewRequested, true),
+            (FetchStep::ReviewAvailable, true),
+        ]
+    );
 }
 
 #[test]

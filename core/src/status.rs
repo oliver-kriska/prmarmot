@@ -8,8 +8,9 @@
 //!
 //! Nothing here reads a clock. Elapsed seconds arrive as a parameter.
 
-use crate::board::{BoardRow, Category, Mode};
+use crate::board::{BoardRow, Category, FetchStep, Mode};
 use crate::github::access::AccessGaps;
+use crate::github::query::SMALL_PAGE_SIZE;
 use crate::layout::group_label;
 
 /// Whether a row of this category can count toward the header's "need you",
@@ -694,6 +695,52 @@ pub fn queue_sync_text(
     }
 }
 
+/// The status while a refresh runs, once it knows which request it waits
+/// for ([`FetchStep`]): what it is loading and for how many seconds, so a
+/// search GitHub takes 10 s over reads as progress, not a hang. `retry` is a
+/// full page GitHub gave up on, asked again with fewer rows. A board already
+/// on screen keeps its "synced" anchor, as in [`queue_sync_text`].
+pub fn fetch_progress_text(
+    mode: Mode,
+    all_repos: bool,
+    step: FetchStep,
+    retry: bool,
+    elapsed_secs: u64,
+    synced_secs_ago: Option<i64>,
+) -> String {
+    let verb = if synced_secs_ago.is_some() {
+        "Updating"
+    } else {
+        "Loading"
+    };
+    let doing = match step {
+        FetchStep::Search | FetchStep::ReviewRequested if retry => {
+            format!("GitHub took too long; asking for {SMALL_PAGE_SIZE} PRs at a time")
+        }
+        FetchStep::Search => {
+            let what = match (mode, all_repos) {
+                (Mode::Authored, true) => "pull requests involving you",
+                (Mode::Authored, false) => "your open PRs",
+                (Mode::Review, _) => "review queue",
+                (Mode::AllOpen, _) => "open PRs",
+            };
+            format!("{verb} {what}")
+        }
+        FetchStep::ReviewRequested => format!("{verb} review requests (1 of 2)"),
+        FetchStep::ReviewAvailable => format!("{verb} PRs available to review (2 of 2)"),
+        FetchStep::Turns => "Checking who answered last on open threads".to_owned(),
+    };
+    let mut text = if elapsed_secs == 0 {
+        format!("{doing}…")
+    } else {
+        format!("{doing}… {elapsed_secs} s")
+    };
+    if let Some(secs) = synced_secs_ago {
+        text.push_str(&format!(" · synced {}", relative(secs)));
+    }
+    text
+}
+
 /// A visible warning once the displayed snapshot is at least one configured
 /// refresh interval old. It remains true even if a refresh fails or pauses,
 /// and applies to empty snapshots too. No snapshot is still initial loading.
@@ -1344,6 +1391,51 @@ mod tests {
                  Fine-grained tokens never see check runs; a classic token with repo and \
                  read:org does."
             )
+        );
+    }
+
+    #[test]
+    fn fetch_progress_names_the_request_and_counts_seconds() {
+        assert_eq!(
+            fetch_progress_text(
+                Mode::Review,
+                true,
+                FetchStep::ReviewRequested,
+                false,
+                0,
+                None
+            ),
+            "Loading review requests (1 of 2)…"
+        );
+        assert_eq!(
+            fetch_progress_text(
+                Mode::Review,
+                true,
+                FetchStep::ReviewAvailable,
+                false,
+                7,
+                None
+            ),
+            "Loading PRs available to review (2 of 2)… 7 s"
+        );
+        assert_eq!(
+            fetch_progress_text(
+                Mode::Authored,
+                false,
+                FetchStep::Search,
+                false,
+                3,
+                Some(240)
+            ),
+            format!("Updating your open PRs… 3 s · synced {}", relative(240))
+        );
+        assert_eq!(
+            fetch_progress_text(Mode::Authored, true, FetchStep::Search, true, 11, None),
+            "GitHub took too long; asking for 30 PRs at a time… 11 s"
+        );
+        assert_eq!(
+            fetch_progress_text(Mode::Review, false, FetchStep::Turns, false, 12, None),
+            "Checking who answered last on open threads… 12 s"
         );
     }
 }
