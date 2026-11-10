@@ -566,6 +566,29 @@ pub fn queue_sync_text(
     core_status::queue_sync_text(mode.into(), all_repos, syncing, synced_secs_ago)
 }
 
+/// The status while a fetch runs, once a [`crate::FetchObserver`] has been
+/// told its step: what it loads and for how many seconds ("Loading review
+/// requests (1 of 2)… 4 s"). `retry` is the step's own flag; a board already
+/// on screen passes its `synced_secs_ago` to keep the "synced" anchor.
+#[uniffi::export]
+pub fn fetch_progress_text(
+    mode: Mode,
+    all_repos: bool,
+    step: crate::types::FetchStep,
+    retry: bool,
+    elapsed_secs: u64,
+    synced_secs_ago: Option<i64>,
+) -> String {
+    core_status::fetch_progress_text(
+        mode.into(),
+        all_repos,
+        step.into(),
+        retry,
+        elapsed_secs,
+        synced_secs_ago,
+    )
+}
+
 /// What to show before a queue's first rows ever arrive.
 #[uniffi::export]
 pub fn queue_loading_text(mode: Mode, all_repos: bool) -> String {

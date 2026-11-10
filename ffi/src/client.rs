@@ -15,7 +15,29 @@ use prmarmot_core::search::RemoteFilter;
 
 use crate::error::FfiError;
 use crate::transport::{self, GithubTransport, TokenSource};
-use crate::types::{Board, BoardScope, BoardSettings, FilterChip, Mode, PullRequest, RateLimit};
+use crate::types::{
+    Board, BoardScope, BoardSettings, FetchStep, FilterChip, Mode, PullRequest, RateLimit,
+};
+
+/// Told what a running fetch is doing, so the iPad can say "Loading review
+/// requests (1 of 2)… 4 s" ([`crate::fetch_progress_text`]) and show rows
+/// before the last request answers. Implemented in Swift. Called from the
+/// fetch's own async task — in request order, never from the fetch thread —
+/// and only while that fetch runs; hop to the main actor before touching UI.
+/// Hold the store weakly (the cycle rule in `ffi/README.md`).
+#[uniffi::export(with_foreign)]
+pub trait FetchObserver: Send + Sync {
+    /// A request is about to go out. `retry` is true when GitHub gave up on
+    /// the full page and this asks again with fewer rows.
+    fn step(&self, step: FetchStep, retry: bool);
+    /// Rows a later step will add to or refine: the requested half of the
+    /// all-repositories review queue, and every view's rows before
+    /// [`FetchStep::Turns`]. Never the result — that is what the method
+    /// returns. Show them only to a view with no rows yet, and count,
+    /// observe, cache or notify nothing from them (the desktop's rule).
+    /// Not called once `reset` has run since the fetch began.
+    fn rows(&self, board: Board);
+}
 
 /// What became of a PR that is watched or snoozed but not on the board.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -221,31 +243,40 @@ impl BoardClient {
         now_epoch: i64,
         tracked_ids: Vec<String>,
     ) -> Result<TrackedBoard, FfiError> {
-        let cfg = settings.to_core()?;
-        let core_mode: core_board::Mode = mode.into();
-        let core_scope: core_board::BoardScope = scope.into();
-        let viewer = self.config.viewer.clone();
-        let generation = self.generation();
-        let small_pages = self.small_pages(core_mode);
-        let gave_up = Arc::new(AtomicBool::new(false));
-        let flag = gave_up.clone();
-        let fetched = self
-            .run(move |core| {
-                core_board::fetch_view(
-                    core,
-                    core_mode,
-                    &core_scope,
-                    &viewer,
-                    &cfg,
-                    &RemoteFilter::default(),
-                    core_board::Tracked::rows(&tracked_ids),
-                    small_pages,
-                )
-                .map_err(|error| note_give_up(&flag, error))
-            })
-            .await;
-        let fetched = self.settled(core_mode, generation, &gave_up, fetched)?;
-        self.tracked_board(mode, fetched, now_epoch, &settings, generation)
+        self.fetch_tracking(
+            mode,
+            scope.into(),
+            Vec::new(),
+            settings,
+            now_epoch,
+            tracked_ids,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::fetch_board_tracking`], telling `observer` which request it
+    /// waits for and handing it rows as soon as part of the board is known.
+    /// Sends exactly the same requests.
+    pub async fn fetch_board_tracking_with_progress(
+        &self,
+        mode: Mode,
+        scope: BoardScope,
+        settings: BoardSettings,
+        now_epoch: i64,
+        tracked_ids: Vec<String>,
+        observer: Arc<dyn FetchObserver>,
+    ) -> Result<TrackedBoard, FfiError> {
+        self.fetch_tracking(
+            mode,
+            scope.into(),
+            Vec::new(),
+            settings,
+            now_epoch,
+            tracked_ids,
+            Some(observer),
+        )
+        .await
     }
 
     /// All open for one repository, with the `label:` and `author:` chips in
@@ -262,29 +293,39 @@ impl BoardClient {
         now_epoch: i64,
         tracked_ids: Vec<String>,
     ) -> Result<TrackedBoard, FfiError> {
-        let cfg = settings.to_core()?;
-        let remote = RemoteFilter::from_chips(&core_chips(&filter));
-        let viewer = self.config.viewer.clone();
-        let generation = self.generation();
-        let small_pages = self.small_pages(core_board::Mode::AllOpen);
-        let gave_up = Arc::new(AtomicBool::new(false));
-        let flag = gave_up.clone();
-        let fetched = self
-            .run(move |core| {
-                core_board::fetch_all_open(
-                    core,
-                    &repository,
-                    &viewer,
-                    &cfg,
-                    &remote,
-                    core_board::Tracked::rows(&tracked_ids),
-                    small_pages,
-                )
-                .map_err(|error| note_give_up(&flag, error))
-            })
-            .await;
-        let fetched = self.settled(core_board::Mode::AllOpen, generation, &gave_up, fetched)?;
-        self.tracked_board(Mode::AllOpen, fetched, now_epoch, &settings, generation)
+        self.fetch_tracking(
+            Mode::AllOpen,
+            core_board::BoardScope::Repository(repository),
+            filter,
+            settings,
+            now_epoch,
+            tracked_ids,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::fetch_all_open`] with progress, as
+    /// [`Self::fetch_board_tracking_with_progress`].
+    pub async fn fetch_all_open_with_progress(
+        &self,
+        repository: String,
+        filter: Vec<FilterChip>,
+        settings: BoardSettings,
+        now_epoch: i64,
+        tracked_ids: Vec<String>,
+        observer: Arc<dyn FetchObserver>,
+    ) -> Result<TrackedBoard, FfiError> {
+        self.fetch_tracking(
+            Mode::AllOpen,
+            core_board::BoardScope::Repository(repository),
+            filter,
+            settings,
+            now_epoch,
+            tracked_ids,
+            Some(observer),
+        )
+        .await
     }
 
     /// Every repository this account is involved in, for the picker. A REST
@@ -359,6 +400,74 @@ impl BoardClient {
             work,
         )
         .await
+    }
+
+    /// The tracked fetches, with or without an observer: core's
+    /// `fetch_view_with_progress`, which for All open is the same search and
+    /// follow-up as `fetch_all_open` (the chips go only with All open).
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_tracking(
+        &self,
+        mode: Mode,
+        scope: core_board::BoardScope,
+        filter: Vec<FilterChip>,
+        settings: BoardSettings,
+        now_epoch: i64,
+        tracked_ids: Vec<String>,
+        observer: Option<Arc<dyn FetchObserver>>,
+    ) -> Result<TrackedBoard, FfiError> {
+        let cfg = settings.to_core()?;
+        let core_mode: core_board::Mode = mode.into();
+        let remote = RemoteFilter::from_chips(&core_chips(&filter));
+        let viewer = self.config.viewer.clone();
+        let generation = self.generation();
+        let small_pages = self.small_pages(core_mode);
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let flag = gave_up.clone();
+        let stale_after_days = settings.stale_after_days;
+        let on_progress = |event: core_board::FetchProgress| {
+            let Some(observer) = &observer else {
+                return;
+            };
+            match event {
+                core_board::FetchProgress::Step { step, retry } => {
+                    observer.step(step.into(), retry);
+                }
+                core_board::FetchProgress::Rows(fetched) => {
+                    // Rows of a board the caller has left are not shown.
+                    if self.generation() != generation {
+                        return;
+                    }
+                    if let Ok(early) = board(mode, *fetched, now_epoch, stale_after_days) {
+                        observer.rows(early);
+                    }
+                }
+            }
+        };
+        let fetched = transport::run_with_progress(
+            self.transport.clone(),
+            self.tokens.clone(),
+            &self.config.host,
+            &self.config.user_agent,
+            move |core, report| {
+                core_board::fetch_view_with_progress(
+                    core,
+                    core_mode,
+                    &scope,
+                    &viewer,
+                    &cfg,
+                    &remote,
+                    core_board::Tracked::rows(&tracked_ids),
+                    small_pages,
+                    report,
+                )
+                .map_err(|error| note_give_up(&flag, error))
+            },
+            on_progress,
+        )
+        .await;
+        let fetched = self.settled(core_mode, generation, &gave_up, fetched)?;
+        self.tracked_board(mode, fetched, now_epoch, &settings, generation)
     }
 
     /// Which `reset` a fetch starting now belongs to.

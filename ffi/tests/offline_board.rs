@@ -1248,3 +1248,114 @@ fn a_view_github_gave_up_on_at_both_sizes_still_starts_small_next_time() {
         ["full", "small", "small", "small", "full", "small"]
     );
 }
+
+/// Records what a fetch reported, and can reset the client the moment the
+/// first request is announced — a scope switch mid-fetch.
+struct Recorder {
+    events: Mutex<Vec<String>>,
+    reset_on_first_step: Mutex<Option<Arc<BoardClient>>>,
+}
+
+impl prmarmot_ffi::FetchObserver for Recorder {
+    fn step(&self, step: prmarmot_ffi::FetchStep, retry: bool) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("step {step:?} retry={retry}"));
+        if let Some(client) = self.reset_on_first_step.lock().unwrap().take() {
+            client.reset();
+        }
+    }
+
+    fn rows(&self, board: prmarmot_ffi::Board) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("rows {}", board.rows.len()));
+    }
+}
+
+fn recorder() -> Arc<Recorder> {
+    Arc::new(Recorder {
+        events: Mutex::new(Vec::new()),
+        reset_on_first_step: Mutex::new(None),
+    })
+}
+
+#[test]
+fn progress_names_each_request_and_hands_over_the_requested_half_first() {
+    let transport = Offline::review_fixture();
+    let client = client(transport.clone());
+    let observer = recorder();
+    let tracked = futures::executor::block_on(client.fetch_board_tracking_with_progress(
+        Mode::Review,
+        BoardScope::AllRepositories,
+        settings(),
+        NOW,
+        Vec::new(),
+        observer.clone(),
+    ))
+    .unwrap();
+    let events = observer.events.lock().unwrap().clone();
+    assert_eq!(
+        events[..3],
+        [
+            "step ReviewRequested retry=false",
+            "rows 12",
+            "step ReviewAvailable retry=false",
+        ],
+        "the requested rows arrive before the second search: {events:?}"
+    );
+    assert_eq!(tracked.board.rows.len(), 12);
+    // The same requests as without an observer.
+    let asked = transport.requests().len();
+    let plain = Offline::review_fixture();
+    futures::executor::block_on(self::client(plain.clone()).fetch_board_tracking(
+        Mode::Review,
+        BoardScope::AllRepositories,
+        settings(),
+        NOW,
+        Vec::new(),
+    ))
+    .unwrap();
+    assert_eq!(plain.requests().len(), asked);
+    // Held only for the fetch: nothing keeps the observer afterwards.
+    assert_eq!(Arc::strong_count(&observer), 1);
+}
+
+#[test]
+fn rows_of_a_board_left_mid_fetch_are_not_handed_over() {
+    let client = client(Offline::review_fixture());
+    let observer = recorder();
+    *observer.reset_on_first_step.lock().unwrap() = Some(client.clone());
+    futures::executor::block_on(client.fetch_board_tracking_with_progress(
+        Mode::Review,
+        BoardScope::AllRepositories,
+        settings(),
+        NOW,
+        Vec::new(),
+        observer.clone(),
+    ))
+    .unwrap();
+    let events = observer.events.lock().unwrap().clone();
+    assert!(
+        events.iter().all(|event| !event.starts_with("rows")),
+        "a reset since the fetch began drops its early rows: {events:?}"
+    );
+    assert!(events.iter().any(|event| event.contains("ReviewAvailable")));
+}
+
+#[test]
+fn progress_wording_is_cores() {
+    assert_eq!(
+        prmarmot_ffi::fetch_progress_text(
+            Mode::Review,
+            true,
+            prmarmot_ffi::FetchStep::ReviewAvailable,
+            false,
+            7,
+            None
+        ),
+        "Loading PRs available to review (2 of 2)… 7 s"
+    );
+}

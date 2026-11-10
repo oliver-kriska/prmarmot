@@ -41,6 +41,44 @@ impl From<Mode> for core_board::Mode {
     }
 }
 
+/// Which request a running fetch waits for — core's `FetchStep`. Reported to
+/// a [`crate::FetchObserver`] and worded by [`crate::fetch_progress_text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FetchStep {
+    /// The view's one search: My PRs, All open, or one repository's review
+    /// queue.
+    Search,
+    /// The review queue across all repositories, first of its two requests:
+    /// the PRs that ask for your review.
+    ReviewRequested,
+    /// Its second: the PRs open to review that ask nobody.
+    ReviewAvailable,
+    /// The rows are in; asking who spoke last on their open threads.
+    Turns,
+}
+
+impl From<core_board::FetchStep> for FetchStep {
+    fn from(step: core_board::FetchStep) -> Self {
+        match step {
+            core_board::FetchStep::Search => Self::Search,
+            core_board::FetchStep::ReviewRequested => Self::ReviewRequested,
+            core_board::FetchStep::ReviewAvailable => Self::ReviewAvailable,
+            core_board::FetchStep::Turns => Self::Turns,
+        }
+    }
+}
+
+impl From<FetchStep> for core_board::FetchStep {
+    fn from(step: FetchStep) -> Self {
+        match step {
+            FetchStep::Search => Self::Search,
+            FetchStep::ReviewRequested => Self::ReviewRequested,
+            FetchStep::ReviewAvailable => Self::ReviewAvailable,
+            FetchStep::Turns => Self::Turns,
+        }
+    }
+}
+
 /// How much of GitHub a board covers. Independent of [`Mode`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BoardScope {

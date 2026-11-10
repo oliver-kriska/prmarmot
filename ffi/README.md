@@ -65,8 +65,8 @@ final class URLSessionTransport: GithubTransport {
 
 | Direction | What |
 |---|---|
-| Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `unresolvedFact`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `viewTitle`, `queueEmpty`, `emptyActionLabel`, `noLoadedMatchText`, `pausedText`, `shouldNotify`, `watchedStatusNotice`, `deviceCodeExpiredText`, `deviceRequestDeclinedText`, `selectedCountText`, `selectionTitle`, `maxOpenTogether`, `selectionDoneText`, `defaultBoardSettings`, `issueLinkProblem`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `rateLimitedWaitSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
+| Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. `FetchObserver.step` and `FetchObserver.rows` — synchronous, returning nothing, called only during a `…WithProgress` fetch. Nothing else. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `fetchBoardTracking`, `fetchBoardTrackingWithProgress`, `fetchAllOpen`, `fetchAllOpenWithProgress`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `unresolvedFact`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `viewTitle`, `queueEmpty`, `emptyActionLabel`, `noLoadedMatchText`, `pausedText`, `fetchProgressText`, `shouldNotify`, `watchedStatusNotice`, `deviceCodeExpiredText`, `deviceRequestDeclinedText`, `selectedCountText`, `selectionTitle`, `maxOpenTogether`, `selectionDoneText`, `defaultBoardSettings`, `issueLinkProblem`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `rateLimitedWaitSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
 
 `reset` is safe to call while a fetch is in flight: a page that was already on
 its way when the account changed is dropped rather than remembered, so a
@@ -156,6 +156,17 @@ runs core's own `fetch_board_scoped` unchanged, and an async loop on this side
 ferries each request out to Swift and the answer back. No runtime, no
 `block_on`, and no shared executor to deadlock. One thread per fetch, alive
 only for the length of that fetch.
+
+A `…WithProgress` fetch sends its progress down the same channel as its
+requests, so the loop calls `FetchObserver` in request order and never from
+the worker thread: `step` just before each request, `rows` with the part of the
+board already known (the requested half of the all-repositories review queue,
+and every view's rows before the open-thread follow-up). `rows` is dropped once
+`reset` has run since the fetch began. UniFFI calls the observer on a
+background thread; hop to the main actor, ignore a callback for a fetch that is
+no longer current, and show early rows only to a view with none — never count,
+observe, cache or notify from them. The observer is held for that one fetch
+only, but keep the store `weak` in it all the same.
 
 ## Panics abort
 

@@ -160,6 +160,14 @@ enum Outgoing {
     Rest(RestRequest),
 }
 
+/// What the fetch thread sends the async loop: a request to serve, or word
+/// of its progress for a [`crate::FetchObserver`]. One channel, so progress
+/// reaches Swift in order with the requests and from the same loop.
+enum Wire {
+    Call(Call<Outgoing>),
+    Progress(prmarmot_core::board::FetchProgress),
+}
+
 /// One blocking call waiting on an async answer. Generic over the request so
 /// the GraphQL and the form-POST bridges are the same machinery twice, not two
 /// different ideas.
@@ -168,14 +176,19 @@ struct Call<Req> {
     reply: async_channel::Sender<Answer>,
 }
 
-/// The blocking half: hand the request to the async loop and wait.
-fn ask<Req>(calls: &async_channel::Sender<Call<Req>>, request: Req) -> Answer {
+/// The blocking half: hand the request to the async loop and wait. `wrap`
+/// puts the call in whatever the channel carries.
+fn ask<Req, M>(
+    calls: &async_channel::Sender<M>,
+    request: Req,
+    wrap: impl FnOnce(Call<Req>) -> M,
+) -> Answer {
     let (reply, answers) = async_channel::bounded(1);
     // A closed channel means the async side gave up (the task was cancelled);
     // the worker should stop with an error rather than hang.
     let cancelled = || GhError::Network("the request was cancelled".into());
     calls
-        .send_blocking(Call { request, reply })
+        .send_blocking(wrap(Call { request, reply }))
         .map_err(|_| cancelled())?;
     answers.recv_blocking().map_err(|_| cancelled())?
 }
@@ -183,7 +196,7 @@ fn ask<Req>(calls: &async_channel::Sender<Call<Req>>, request: Req) -> Answer {
 /// The `prmarmot-core` transport the worker thread sees. Every call blocks
 /// until [`run`]'s loop has been round the foreign transport and back.
 struct Bridged {
-    calls: async_channel::Sender<Call<Outgoing>>,
+    calls: async_channel::Sender<Wire>,
     url: String,
     host: String,
     token: String,
@@ -205,6 +218,7 @@ impl CoreTransport for Bridged {
                 body,
                 user_agent: self.user_agent.clone(),
             }),
+            Wire::Call,
         )
     }
 }
@@ -223,7 +237,16 @@ impl CoreRestTransport for Bridged {
                 token: self.token.clone(),
                 user_agent: self.user_agent.clone(),
             }),
+            Wire::Call,
         )
+    }
+}
+
+impl Bridged {
+    /// Pass a fetch's progress to the loop. A loop that has gone (the task
+    /// was cancelled) drops it; the next request then fails the fetch.
+    fn report(&self, event: prmarmot_core::board::FetchProgress) {
+        let _ = self.calls.send_blocking(Wire::Progress(event));
     }
 }
 
@@ -242,6 +265,7 @@ impl CoreAuthTransport for BridgedAuth {
                 body: form_encode(fields),
                 user_agent: self.user_agent.clone(),
             },
+            |call| call,
         )
     }
 }
@@ -264,7 +288,51 @@ where
     F: FnOnce(&dyn CoreTransport) -> Result<T, GhError> + Send + 'static,
     T: Send + 'static,
 {
-    run_wire(transport, tokens, host, user_agent, move |wire| work(wire)).await
+    run_wire(
+        transport,
+        tokens,
+        host,
+        user_agent,
+        move |wire| work(wire),
+        |_| {},
+    )
+    .await
+}
+
+/// [`run`] for a fetch that reports its progress: `work` gets a reporter to
+/// hand core's `fetch_view_with_progress`, and `on_progress` is called with
+/// each event on this async side — in order with the requests, from the loop
+/// that calls the foreign transport, never from the fetch thread.
+pub(crate) async fn run_with_progress<T, F, P>(
+    transport: Arc<dyn GithubTransport>,
+    tokens: Arc<dyn TokenSource>,
+    host: &str,
+    user_agent: &str,
+    work: F,
+    on_progress: P,
+) -> Result<T, FfiError>
+where
+    F: FnOnce(
+            &dyn CoreTransport,
+            &mut dyn FnMut(prmarmot_core::board::FetchProgress),
+        ) -> Result<T, GhError>
+        + Send
+        + 'static,
+    T: Send + 'static,
+    P: FnMut(prmarmot_core::board::FetchProgress) + Send,
+{
+    run_wire(
+        transport,
+        tokens,
+        host,
+        user_agent,
+        move |wire| {
+            let mut report = |event| wire.report(event);
+            work(wire, &mut report)
+        },
+        on_progress,
+    )
+    .await
 }
 
 /// The same, for the one operation that talks REST: walking `user/repos` to
@@ -280,29 +348,39 @@ where
     F: FnOnce(&dyn CoreRestTransport) -> Result<T, GhError> + Send + 'static,
     T: Send + 'static,
 {
-    run_wire(transport, tokens, host, user_agent, move |wire| work(wire)).await
+    run_wire(
+        transport,
+        tokens,
+        host,
+        user_agent,
+        move |wire| work(wire),
+        |_| {},
+    )
+    .await
 }
 
 /// The machinery both of those are. The worker thread gets one object that is
 /// core's GraphQL transport and its REST transport at once; which half the
 /// caller uses is the caller's business.
-async fn run_wire<T, F>(
+async fn run_wire<T, F, P>(
     transport: Arc<dyn GithubTransport>,
     tokens: Arc<dyn TokenSource>,
     host: &str,
     user_agent: &str,
     work: F,
+    mut on_progress: P,
 ) -> Result<T, FfiError>
 where
     F: FnOnce(&Bridged) -> Result<T, GhError> + Send + 'static,
     T: Send + 'static,
+    P: FnMut(prmarmot_core::board::FetchProgress) + Send,
 {
     // One token per fetch: a refresh mid-board would be worse than a retry.
     let token = tokens.token().await?;
     let url = graphql_url(host);
     let user_agent = user_agent.to_owned();
 
-    let (calls, requests) = async_channel::bounded::<Call<Outgoing>>(1);
+    let (calls, requests) = async_channel::bounded::<Wire>(1);
     let (finished, outcome) = async_channel::bounded::<Result<T, GhError>>(1);
     let host = host.to_owned();
 
@@ -328,10 +406,15 @@ where
             message: format!("could not start the fetch: {e}"),
         })?;
 
-    while let Ok(call) = requests.recv().await {
-        let answer = serve(transport.as_ref(), call.request).await;
-        if call.reply.send(answer).await.is_err() {
-            break;
+    while let Ok(wire) = requests.recv().await {
+        match wire {
+            Wire::Call(call) => {
+                let answer = serve(transport.as_ref(), call.request).await;
+                if call.reply.send(answer).await.is_err() {
+                    break;
+                }
+            }
+            Wire::Progress(event) => on_progress(event),
         }
     }
 
