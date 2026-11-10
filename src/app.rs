@@ -1820,7 +1820,8 @@ impl RootView {
         let table_focused = self.table.focus_handle(cx).contains_focused(window, cx);
         let modifiers = event.keystroke.modifiers;
         // ⌘A (Ctrl+A on Linux) over the table: every PR on screen.
-        if !in_text_input && table_focused && modifiers.secondary() && event.keystroke.key == "a" {
+        if !in_text_input && table_focused && modifiers.secondary(cx) && event.keystroke.key == "a"
+        {
             self.select_all_rows(cx);
             cx.stop_propagation();
             return;
@@ -2528,7 +2529,6 @@ impl Focusable for RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
         // Body state from truth, not `generation` (which also bumps on a switch
         // to an unseen queue and on a repo change): a queue has loaded ONLY
         // once a fetch succeeded (`last_synced`). Otherwise show the real
@@ -2706,7 +2706,6 @@ impl Render for RootView {
                         .child(settings),
                 )
             })
-            .children(dialog_layer)
     }
 }
 

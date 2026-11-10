@@ -207,6 +207,9 @@ impl RootView {
                         prompt.borrow_mut().status = answer;
                     }
                     cx.notify();
+                    // The dialog is drawn by the component layer from a
+                    // shared cell, which view retention does not track.
+                    cx.refresh_windows();
                 });
             })
             .detach();

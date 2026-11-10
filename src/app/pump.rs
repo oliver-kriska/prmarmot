@@ -43,6 +43,9 @@ impl RootView {
                     return;
                 }
                 cx.notify();
+                // The wait ages are the table's own render, which a notify
+                // of this view alone does not rebuild under view retention.
+                this.table.update(cx, |_, cx| cx.notify());
             });
         })
         .detach();

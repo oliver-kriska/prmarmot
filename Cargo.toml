@@ -19,12 +19,16 @@ perf = ["gpui/profiler"]
 # `http`: the update check asks GitHub directly when there is no `gh`.
 prmarmot-core = { path = "core", features = ["http"] }
 prmarmot-local = { path = "local", features = ["http"] }
-# GPUI Kit 0.6 uses the published gpui-pre runtime and platform split.
-gpui = { package = "gpui-pre", version = "=0.3.5" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.5", features = ["font-kit", "wayland", "x11"] }
-gpui-component = "=0.6.4"
+# GPUI Fast (github.com/longbridge/gpui-fast): GPUI with retained views and
+# scroll layers, which cut a scrolled frame from ~6.9 to ~2.4 ms of main-thread
+# CPU. gpui-component's `gpui-fast` feature builds the components on it; the
+# four pins move together. Render code that reads state outside entities and
+# globals (the clock, an Rc<RefCell>) must notify the view that draws it.
+gpui = { package = "gpui-fast", version = "=0.1.14" }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.14", features = ["font-kit", "wayland", "x11"] }
+gpui-component = { version = "=0.9.1", features = ["gpui-fast"] }
 # Already used by gpui-component; expose its plain selectable-text primitive.
-gpui-base = "=0.6.4"
+gpui-base = { version = "=0.9.1", features = ["gpui-fast"] }
 chrono = "0.4"
 # Config file (Spotlight launches have no env vars / cwd).
 toml = "1.1"

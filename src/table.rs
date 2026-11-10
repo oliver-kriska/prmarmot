@@ -743,10 +743,10 @@ pub enum ClickIntent {
 }
 
 impl ClickIntent {
-    fn from_modifiers(modifiers: Modifiers) -> Self {
+    fn from_modifiers(modifiers: Modifiers, cx: &App) -> Self {
         if modifiers.shift {
             Self::Range
-        } else if modifiers.secondary() {
+        } else if modifiers.secondary(cx) {
             Self::Toggle
         } else {
             Self::Plain
@@ -2838,8 +2838,11 @@ impl TableDelegate for BoardTableDelegate {
                         row.border_b_1().border_color(theme.border)
                     })
                     // The click's modifiers, for the `SelectRow` it becomes.
-                    .on_mouse_down(MouseButton::Left, move |event, _, _| {
-                        intent.set(Some((row_ix, ClickIntent::from_modifiers(event.modifiers))));
+                    .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                        intent.set(Some((
+                            row_ix,
+                            ClickIntent::from_modifiers(event.modifiers, cx),
+                        )));
                     })
             }
             None => tr,
