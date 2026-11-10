@@ -133,7 +133,8 @@ values in the code. New features get the next free number in their area.
     to at most 320 px, taking room the Note doesn't need and never the Title's.
   - A label more than half of at least ten rows carry, such as `cla-signed`, is drawn after the row's other labels,
     so the chip that fits tells rows apart. **+n** still lists every hidden label as a filter.
-  - It loads 60 PRs per page, and **Load more** fetches up to five pages, like the other views.
+  - It loads 60 PRs per page and goes on to the next pages by itself, up to 300 PRs, like the other views
+    (F-refresh-4).
   - Other people's PRs stay quiet: changed markers and notifications cover only PRs you watch, your own, those
     asking for your review, and ones another view already follows, and the Dock badge never counts this view.
 
@@ -504,7 +505,12 @@ values in the code. New features get the next free number in their area.
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
   page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
-  footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _since v0.12.0_
+  footer says how many arrived ("60 more PRs loaded, sorted into their sections"). _since v0.12.0_ The app no
+  longer waits for you to ask: after page one, every view loads the next pages by itself, one request after
+  another, until every PR is in or the search holds 300 (also when GitHub answers only 30 at a time). The header
+  says "Loading more PRs (60 of 119 so far)…" meanwhile, and a refresh loads as many pages again. Only past 300,
+  or when GitHub refuses a page, does the partial-results notice stay, with **Load more** to retry. The CLI still
+  loads the pages `--pages` asks for. _unreleased_
 - **F-refresh-5** Refreshes pause while fewer than 50 points remain, leaving the rest of the hourly budget to your
   own tools, and the header says so. A rate-limit wait is always between 60 seconds and 15 minutes, never until a
   far-off reset. _since v0.1.0_ When GitHub refuses a request, the wait is the `retry-after` it asked for, or else

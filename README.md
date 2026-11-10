@@ -920,12 +920,14 @@ spread over many repositories can take longer. When GitHub gives up on a page,
 PR Marmot asks again at once for 30 PRs, and that view loads 30 at a time,
 Load more included, until you quit or change the repository.
 
-A **partial results** notice means GitHub has another page. **Load more** can
-advance each active search to a maximum of five pages: at most 300 authored
-results or 600 review candidates before filtering and deduplication. An
-available-candidate page can add no visible rows after filtering. Refreshing,
-including automatic refresh, returns to page one; a failed page request keeps
-the rows already loaded.
+After the first page, the app loads the next pages by itself, one request
+after another, until every PR is in or a search holds 300 results (600 review
+candidates before filtering and deduplication). Each refresh, automatic ones
+included, loads them again. A **partial results** notice remains only past
+that cap or when GitHub refuses a page; **Load more** then retries, and a
+failed page keeps the rows already loaded. An available-candidate page can add
+no visible rows after filtering. `prmarmot-cli` loads only the pages
+`--pages` asks for.
 
 Pickup age comes from each PR's latest 10 review-request and ready-for-review
 timeline events, fetched in the same request (the review-queue refresh costs 8
