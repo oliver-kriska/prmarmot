@@ -2330,6 +2330,65 @@ impl BoardTableDelegate {
         }
     }
 
+    /// What a screen reader reads for one cell: the words the cell draws,
+    /// whole where the cell shortens them, from the same core sources (its
+    /// tooltip's text where the cell itself shows only a glyph). Plain text a
+    /// cell draws never reaches the accessibility tree by itself, so without
+    /// this every cell is announced empty. Header rows have none; their row
+    /// keeps the "… section" name `render_tr` gives it.
+    pub fn cell_text(&self, row_ix: usize, col_ix: usize) -> Option<String> {
+        let row = self.row(row_ix)?;
+        let text = match self.kinds.get(col_ix).copied().flatten()? {
+            ColumnKind::Pr => {
+                let mut parts = vec![format!("#{}", row.number)];
+                parts.extend(self.changed.get(&row.id).map(|tip| tip.to_string()));
+                if self.watched.contains(&row.id) {
+                    parts.push("watched".into());
+                }
+                parts.join(", ")
+            }
+            ColumnKind::Repo => row.repo.clone(),
+            ColumnKind::Author => row.author.clone().unwrap_or_else(|| "?".into()),
+            ColumnKind::Title => {
+                let mut text = match &row.issue {
+                    Some(issue) => format!("{issue} {}", row.title),
+                    None => row.title.clone(),
+                };
+                if let Some(stack) = &row.stack {
+                    text.push_str(", ");
+                    text.push_str(&prmarmot_core::cells::stack_hover(stack));
+                }
+                text
+            }
+            // The Details panel's "CI" fact, so "—" is not read as a dash.
+            ColumnKind::Ci => format!("CI {}", row.ci.as_str()),
+            ColumnKind::Review => match review_cell(row) {
+                ReviewCell::Reviewed { hover, .. } | ReviewCell::Requested { hover, .. } => hover,
+                ReviewCell::NotRequested { text } => text,
+            },
+            ColumnKind::Labels => row.labels.join(", "),
+            ColumnKind::Unresolved => match row.unresolved {
+                0 => String::new(),
+                n if row.unresolved_capped => format!("{n}+ unresolved"),
+                n => format!("{n} unresolved"),
+            },
+            ColumnKind::Note => {
+                let NoteParts {
+                    primary,
+                    tail,
+                    wait,
+                    size,
+                    ..
+                } = self.note_parts(row);
+                let mut text = primary + &tail;
+                text.extend(wait.map(|(label, _)| label));
+                text.extend(size);
+                text
+            }
+        };
+        (!text.is_empty()).then_some(text)
+    }
+
     /// A number that changes whenever the shown rows do, so a measurement of
     /// them can be reused until then.
     pub fn display_version(&self) -> u64 {
@@ -2479,6 +2538,12 @@ pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -
 }
 
 impl TableDelegate for BoardTableDelegate {
+    // The row's own name is the framework's default: these, joined with
+    // commas, so a selected row is read with its title, status and note.
+    fn cell_label(&self, row_ix: usize, col_ix: usize, _cx: &App) -> Option<SharedString> {
+        self.cell_text(row_ix, col_ix).map(SharedString::from)
+    }
+
     fn context_menu(
         &mut self,
         row_ix: usize,
@@ -3165,6 +3230,36 @@ mod tests {
             &d.display[3],
             DisplayRow::Header { label, .. } if label == "other/widgets · Stack #7"
         ));
+    }
+
+    #[test]
+    fn cells_are_named_for_screen_readers_and_headers_are_not() {
+        let mut pr = action_row(vec![Blocker::MergeConflict], "merge conflict");
+        pr.number = 7;
+        pr.issue = Some("DEMO-7".into());
+        pr.title = "Introduce workspace search".into();
+        pr.labels = vec!["bug".into(), "feature".into()];
+        pr.ci = Ci::None;
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(vec![pr]);
+        assert!(d.is_header(0));
+        let header: Vec<_> = (0..d.columns.len())
+            .filter_map(|c| d.cell_text(0, c))
+            .collect();
+        assert!(header.is_empty(), "a header row keeps its section name");
+        let text = |kind: ColumnKind| {
+            let col = d.kinds.iter().position(|k| *k == Some(kind)).unwrap();
+            d.cell_text(1, col)
+        };
+        assert_eq!(text(ColumnKind::Pr).as_deref(), Some("#7"));
+        assert_eq!(
+            text(ColumnKind::Title).as_deref(),
+            Some("DEMO-7 Introduce workspace search")
+        );
+        // The dash the cell draws is read as the Details panel's word.
+        assert_eq!(text(ColumnKind::Ci).as_deref(), Some("CI none"));
+        assert_eq!(text(ColumnKind::Labels).as_deref(), Some("bug, feature"));
+        assert!(text(ColumnKind::Note).is_some_and(|note| note.contains("conflict")));
     }
 
     #[test]

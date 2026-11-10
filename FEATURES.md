@@ -82,7 +82,12 @@ values in the code. New features get the next free number in their area.
   binoculars icon in the PR cell toggles watch. _since v0.3.0; watch and snooze since v0.6.0_ The icon is drawn
   for a watched PR, and for any other PR only while the pointer is on its row, it is the selected row, or it is
   part of a multi-selection; a board with nothing watched shows no icons. Each row and each icon has a name for
-  the screen reader ("Pull request #415", "Watch #415"). _since v0.20.0_
+  the screen reader ("Pull request #415", "Watch #415"). _since v0.20.0_ A screen reader reads a row as its
+  cells in order, each cell's words whole ("#415, demo-labs/atlas, DEMO-415 Introduce workspace search, CI pass,
+  alex approved, feature, resolve 1 comment"); a header row keeps its section name. Details' facts are read as
+  text ("Author: demo-user"), its label and run chips as buttons and links, and every toolbar and Settings control
+  has a name (the pinned repositories, Search, Details, Needs you, the section-order arrows, the On/Off switches by
+  their setting). _unreleased_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
   - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.1_

@@ -715,6 +715,7 @@ impl SettingsView {
                                     .small()
                                     .ghost()
                                     .icon(IconName::ArrowUp)
+                                    .accessibility_label(format!("Move {name} up"))
                                     .tooltip(format!("Move {name} up"))
                                     .disabled(ix == 0)
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -727,6 +728,7 @@ impl SettingsView {
                                     .small()
                                     .ghost()
                                     .icon(IconName::ArrowDown)
+                                    .accessibility_label(format!("Move {name} down"))
                                     .tooltip(format!("Move {name} down"))
                                     .disabled(ix == last)
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1022,6 +1024,7 @@ impl Render for SettingsView {
                             .child(
                                 segment(Button::new("settings-notifications"), self.notifications, cx)
                                     .small()
+                                    .accessibility_label("Desktop notifications")
                                     .label(if self.notifications { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.notifications = !this.notifications;
@@ -1036,6 +1039,7 @@ impl Render for SettingsView {
                             .child(
                                 segment(Button::new("settings-notification-sound"), self.notification_sound, cx)
                                     .small()
+                                    .accessibility_label("Notification sound")
                                     .disabled(!self.notifications)
                                     .label(if self.notification_sound { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1051,6 +1055,7 @@ impl Render for SettingsView {
                             .child(
                                 segment(Button::new("settings-dock-badge"), self.dock_badge, cx)
                                     .small()
+                                    .accessibility_label("Dock attention badge")
                                     .label(if self.dock_badge { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.dock_badge = !this.dock_badge;
@@ -1065,6 +1070,7 @@ impl Render for SettingsView {
                             .child(
                                 segment(Button::new("settings-automatic-update-checks"), self.automatic_update_checks, cx)
                                     .small()
+                                    .accessibility_label("Check for updates automatically")
                                     .label(if self.automatic_update_checks { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.automatic_update_checks =

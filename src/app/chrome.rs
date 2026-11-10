@@ -43,6 +43,8 @@ impl RootView {
                                 .is_some_and(|current| repo.eq_ignore_ascii_case(current));
                             Button::new(("pinned-repo", ix))
                                 .small()
+                                // A child element, not a label: name it.
+                                .accessibility_label(repo.clone())
                                 .child(div().max_w(px(160.)).truncate().child(repo.clone()))
                                 // Ghosts, the current repository in the one
                                 // "on" recipe (both skins since the
@@ -105,6 +107,7 @@ impl RootView {
                         // (one keycap everywhere, 2026-10-21).
                         .when(glacier, |button| button.outline())
                         .child(hinted_label("Search", "/", cx))
+                        .accessibility_label("Search")
                         .map(|button| crate::skin::quiet(button, cx))
                         .tooltip(match (state.mode, cfg!(target_os = "macos")) {
                             (Mode::AllOpen, true) => "Filter open PRs (/ or ⌘F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
@@ -279,7 +282,9 @@ impl RootView {
                         if self.details_open {
                             button.label("Hide details")
                         } else {
-                            button.child(hinted_label("Details", "Space", cx))
+                            button
+                                .child(hinted_label("Details", "Space", cx))
+                                .accessibility_label("Details")
                         }
                     })
                     .map(|button| crate::skin::quiet(button, cx))
@@ -1096,6 +1101,13 @@ pub(super) fn needs_you_control(
         .when(!lit, |capsule| capsule.text_color(theme.muted_foreground))
         .when(on, |capsule| capsule.border_1().border_color(theme.link))
         .hover(|style| style.bg(theme.muted))
+        // Exposed as the toggle it is, like the quick filters beside it.
+        .role(gpui::Role::CheckBox)
+        .aria_toggled(if on {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
         .aria_label(name)
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .when(on, |capsule| {

@@ -47,6 +47,9 @@ impl RootView {
                     let (dot, _) = crate::table::note_tone_colors(tone, theme);
                     rows.push(
                         h_flex()
+                            .id(("detail-fact", ix))
+                            .role(gpui::Role::Label)
+                            .aria_value(field.value.clone())
                             .items_start()
                             .gap_1p5()
                             .pb(px(6.))
@@ -73,6 +76,9 @@ impl RootView {
                 }
                 (_, None) => rows.push(
                     div()
+                        .id(("detail-fact", ix))
+                        .role(gpui::Role::Label)
+                        .aria_value(field.value.clone())
                         .pb(px(6.))
                         .border_b_1()
                         .border_color(theme.border)
@@ -86,6 +92,9 @@ impl RootView {
                     let links = field.links;
                     group.push(
                         h_flex()
+                            .id(("detail-fact", ix))
+                            .role(gpui::Role::Label)
+                            .aria_value(format!("{label}: {}", field.value))
                             .items_start()
                             .gap_2()
                             .pb(px(6.))
@@ -116,6 +125,8 @@ impl RootView {
                                                 let url = link.url;
                                                 label_chip(theme, crate::skin::glacier(cx), cx)
                                                     .id(("detail-link", ix * 64 + lx))
+                                                    .role(gpui::Role::Link)
+                                                    .aria_label(tip.clone())
                                                     .cursor_pointer()
                                                     .text_color(theme.secondary_foreground)
                                                     .hover(|style| {
@@ -156,8 +167,11 @@ impl RootView {
             state.is_watched(&row.id),
         )];
         closing.extend(state.snooze_description(&row.id));
-        rows.extend(closing.into_iter().map(|line| {
+        rows.extend(closing.into_iter().enumerate().map(|(ix, line)| {
             div()
+                .id(("detail-closing", ix))
+                .role(gpui::Role::Label)
+                .aria_value(line.clone())
                 .text_size(type_size::SMALL)
                 .text_color(theme.muted_foreground)
                 .child(line)
@@ -210,6 +224,8 @@ impl RootView {
                                 let tip = format!("Filter by {}", target.term());
                                 label_chip(theme, crate::skin::glacier(cx), cx)
                                     .id(("detail-label", ix))
+                                    .role(gpui::Role::Button)
+                                    .aria_label(tip.clone())
                                     .cursor_pointer()
                                     .text_color(theme.secondary_foreground)
                                     .hover(|style| {
