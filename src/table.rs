@@ -35,8 +35,8 @@ use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AF
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
 use prmarmot_core::size::ChangeSize;
 use prmarmot_core::status::EmptyAction;
-use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::design::type_size;
@@ -369,6 +369,79 @@ impl CellFits {
         self.elided
             .insert(key, (text.to_owned(), room, output.clone()));
         output
+    }
+}
+
+/// Text widths `content_need` measured, kept between calls so a keystroke or
+/// a refresh lays out only text it has not seen, and otherwise sums cached
+/// numbers. A width depends on the text, the font (family, features,
+/// fallbacks, weight, style — so the skin's title weight and the theme's
+/// font) and the font size (the rem size); an entry is keyed by all of them,
+/// the font and size as a face. Bounded by [`MAX_TEXT_WIDTHS`] entries with
+/// FIFO eviction and [`MAX_FACES`] faces, past which it starts over.
+#[derive(Default)]
+struct TextWidths {
+    /// The (font, size) each face was measured at, and the weight that gives
+    /// that font over the window's text style, for a miss.
+    faces: Vec<(gpui::Font, Pixels, Option<FontWeight>)>,
+    /// Per face: text → width in px, as `measure_width_weighted` returns it.
+    widths: Vec<HashMap<String, f32>>,
+    /// Every entry of `widths`, oldest first, for eviction.
+    order: VecDeque<(usize, String)>,
+}
+
+/// About ten distinct strings per row on a 600-row board, with room to
+/// spare for a second view; past this the oldest entry goes first.
+const MAX_TEXT_WIDTHS: usize = 8192;
+/// Faces seen since the last start-over: a rem or theme font change adds
+/// one; past this the cache starts over.
+const MAX_FACES: usize = 8;
+
+impl TextWidths {
+    /// Start over once [`MAX_FACES`] faces are held. Called before resolving
+    /// a call's faces, so no face index taken afterwards goes stale.
+    fn check(&mut self) {
+        if self.faces.len() >= MAX_FACES {
+            self.faces.clear();
+            self.widths.clear();
+            self.order.clear();
+        }
+    }
+
+    /// The face cells measure at with `weight`, as `measure_width_weighted`
+    /// would resolve it now.
+    fn face(&mut self, window: &Window, weight: Option<FontWeight>) -> usize {
+        let font = cell_text_style(window, weight).font();
+        let size = cell_font_px(window);
+        if let Some(ix) = self
+            .faces
+            .iter()
+            .position(|(f, s, _)| *s == size && *f == font)
+        {
+            return ix;
+        }
+        self.faces.push((font, size, weight));
+        self.widths.push(HashMap::new());
+        self.faces.len() - 1
+    }
+
+    /// The width of `text` in `face`, laid out only on a miss.
+    fn width(&mut self, window: &mut Window, face: usize, text: &str) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        if let Some(width) = self.widths[face].get(text) {
+            return *width;
+        }
+        let width = f32::from(measure_width_weighted(window, text, self.faces[face].2));
+        self.widths[face].insert(text.to_owned(), width);
+        self.order.push_back((face, text.to_owned()));
+        while self.order.len() > MAX_TEXT_WIDTHS {
+            if let Some((face, text)) = self.order.pop_front() {
+                self.widths[face].remove(&text);
+            }
+        }
+        width
     }
 }
 
@@ -767,6 +840,8 @@ pub struct BoardTableDelegate {
     /// GitHub has another page for this view, for the empty board's copy.
     can_load_more: bool,
     fits: CellFits,
+    /// Widths `content_need` measured, reused across display changes.
+    text_widths: RefCell<TextWidths>,
     /// What each of `columns` shows, read once per column set.
     kinds: Vec<Option<ColumnKind>>,
     /// Display index of the header whose Copy menu is open, so its button
@@ -811,6 +886,7 @@ impl BoardTableDelegate {
             click_intent: Rc::new(Cell::new(None)),
             can_load_more: false,
             fits: CellFits::default(),
+            text_widths: RefCell::default(),
             copy_menu_open: Rc::new(Cell::new(None)),
             caret: None,
         }
@@ -2262,14 +2338,20 @@ impl BoardTableDelegate {
 
     /// The widest Title and Note on the board, measured as `title_cell` and
     /// `note_cell` draw them (the same weight, tag, prefix, dot or capsule,
-    /// tail, wait and size), over the rows on screen.
+    /// tail, wait and size), over the rows on screen. Each text is laid out
+    /// once and its width kept (`TextWidths`), so a repeat call over the
+    /// same texts only sums cached numbers.
     pub fn content_need(&self, window: &mut Window, cx: &App) -> ContentNeed {
         let theme = cx.theme();
         let glacier = crate::skin::glacier(cx);
         let title_weight = glacier.then_some(FontWeight::MEDIUM);
         let mut need = ContentNeed::default();
-        let mut titles = Vec::new();
-        let mut notes = Vec::new();
+        let mut titles = Vec::with_capacity(self.display.len());
+        let mut notes = Vec::with_capacity(self.display.len());
+        let mut cache = self.text_widths.borrow_mut();
+        cache.check();
+        let title_face = cache.face(window, title_weight);
+        let plain_face = cache.face(window, None);
         for display_ix in 0..self.display.len() {
             let Some(row) = self.row(display_ix) else {
                 continue;
@@ -2278,16 +2360,14 @@ impl BoardTableDelegate {
                 .stack
                 .as_ref()
                 .map(|s| prmarmot_core::cells::stack_prefix(s, self.stack_ends_at(display_ix)))
-                .map(|prefix| {
-                    f32::from(measure_width_weighted(window, &prefix, title_weight)) + GAP_1
-                })
+                .map(|prefix| cache.width(window, title_face, &prefix) + GAP_1)
                 .unwrap_or(0.0);
             let issue_w = row
                 .issue
                 .as_deref()
-                .map(|s| f32::from(measure_width_weighted(window, s, title_weight)) + GAP_1)
+                .map(|s| cache.width(window, title_face, s) + GAP_1)
                 .unwrap_or(0.0);
-            let title_w = f32::from(measure_width_weighted(window, &row.title, title_weight));
+            let title_w = cache.width(window, title_face, &row.title);
             titles.push(issue_w + stack_w + title_w + CELL_PADDING + ELIDE_SAFETY);
 
             let parts = self.note_parts(row);
@@ -2299,17 +2379,17 @@ impl BoardTableDelegate {
             } else {
                 0.0
             };
-            let primary_w = f32::from(measure_width(window, &parts.primary));
+            let primary_w = cache.width(window, plain_face, &parts.primary);
             // The phrase Note never gives up (`note_floor_phrase`); a calm
             // note's whole sentence can be as wide as a title.
-            let head_w = f32::from(measure_width(window, note_floor_phrase(&parts.primary)));
-            let tail_w = f32::from(measure_width(window, &parts.tail));
+            let head_w = cache.width(window, plain_face, note_floor_phrase(&parts.primary));
+            let tail_w = cache.width(window, plain_face, &parts.tail);
             let wait_w = match &parts.wait {
-                Some((label, _)) => f32::from(measure_width(window, label)),
+                Some((label, _)) => cache.width(window, plain_face, label),
                 None => 0.0,
             };
             let size_w = match &parts.size {
-                Some(label) => f32::from(measure_width(window, label)),
+                Some(label) => cache.width(window, plain_face, label),
                 None => 0.0,
             };
             let fixed = CELL_PADDING + 8.0 + dot_region + ELIDE_SAFETY;
