@@ -396,6 +396,8 @@ impl RootView {
             (err, theme.danger)
         } else if let Some(paused) = state.pause_text() {
             (paused, theme.warning)
+        } else if let Some(progress) = state.fetch_progress_text() {
+            (progress, theme.muted_foreground)
         } else {
             (
                 queue_sync_text(
@@ -945,6 +947,68 @@ impl RootView {
                     .child("Typing in search, the repository picker, or Settings never triggers dashboard shortcuts. Arrow keys, Enter, and Space act on the focused control."))
                 .child(h_flex().mt_3().justify_end().child(crate::skin::quiet(Button::new("close-shortcuts"), cx)
                     .label("Done").on_click(|_, window, cx| window.close_dialog(cx))))
+                .on_close(move |_, window, cx| focus.focus(window, cx))
+        });
+    }
+
+    /// PR Marmot → About PR Marmot: the version, and where the project lives.
+    pub(super) fn show_about(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.table.focus_handle(cx);
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let link = |id: &'static str, label: &'static str, url: &'static str, cx: &App| {
+                crate::skin::quiet(Button::new(id), cx)
+                    .label(label)
+                    .on_click(move |_, _, cx| {
+                        crate::open::open_web_url(cx, url);
+                    })
+            };
+            let focus = focus.clone();
+            dialog
+                .w(px(380.))
+                .close_button(false)
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .child(gpui::img("branding/mascot.png").w(px(58.)).h(px(64.)).flex_shrink_0())
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(type_size::DISPLAY)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("PR Marmot"),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt_3()
+                        .text_size(type_size::BODY)
+                        .child("A desktop dashboard for GitHub pull requests. Free and open source under the MIT licence."),
+                )
+                .child(
+                    h_flex()
+                        .mt_3()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(link("about-website", "Website", crate::WEBSITE_URL, cx))
+                        .child(link("about-source", "Source code", "https://github.com/oliver-kriska/prmarmot", cx))
+                        .child(link("about-notes", "Release notes", crate::RELEASE_NOTES_URL, cx)),
+                )
+                .child(
+                    h_flex().mt_3().justify_end().child(
+                        Button::new("about-done")
+                            .primary()
+                            .label("Done")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+                )
                 .on_close(move |_, window, cx| focus.focus(window, cx))
         });
     }

@@ -13,8 +13,9 @@ use prmarmot_core::attention::{
     ObservationKind, SnapshotNamespace, MAX_SNAPSHOTS,
 };
 use prmarmot_core::board::{
-    carry_forward_conflicts, fetch_more_board_scoped, fetch_view, BoardConfig, BoardFetch,
-    BoardPagination, BoardRow, BoardScope, Mode, Tracked, TrackedPr, TrackedPrStatus,
+    carry_forward_conflicts, fetch_more_board_scoped, fetch_view_with_progress, BoardConfig,
+    BoardFetch, BoardPagination, BoardRow, BoardScope, FetchProgress, FetchStep, Mode, Tracked,
+    TrackedPr, TrackedPrStatus,
 };
 use prmarmot_core::github::access::AccessGaps;
 use prmarmot_core::github::gh_cli::RepoDiscovery;
@@ -230,6 +231,13 @@ pub struct AppState {
     /// without diffing (and to gate their reactions — the PRFlow observer-loop
     /// lesson).
     pub generation: u64,
+    /// `rows` are part of a first load still running ([`FetchProgress::Rows`]):
+    /// shown so a view with nothing yet is not blank for the 10 s GitHub can
+    /// take, but not the board — nothing is observed, counted or saved from
+    /// them, and they go when the view is left. See [`Self::showing_preview`].
+    preview: bool,
+    /// [`Self::prefetch_other_view`] has run (or had nothing to do) this run.
+    prefetched: bool,
     /// The generation a Load more produced and how many rows it added, so the
     /// window can say so once.
     pub loaded_more: Option<(u64, usize)>,
@@ -321,6 +329,9 @@ struct FetchSlot {
     /// When the last refresh started, so the timer and a switch back do
     /// not ask again right after one.
     started: Option<Instant>,
+    /// The request the running refresh waits for, and whether it is a retry
+    /// with fewer rows; `None` before the first is sent and for Load more.
+    step: Option<(FetchStep, bool)>,
 }
 
 /// The cached queues. Past [`MAX_CACHED_QUEUES`], the one shown least
@@ -486,6 +497,8 @@ impl AppState {
             access: AccessGaps::default(),
             pagination: BoardPagination::default(),
             generation: 0,
+            preview: false,
+            prefetched: false,
             loaded_more: None,
             backoff_until: None,
             pause_reason: PauseReason::RateLimited,
@@ -522,8 +535,16 @@ impl AppState {
     /// Move the active queue's rows into the cache before we leave it, so
     /// returning to it restores instantly.
     fn stash_current(&mut self) {
+        let rows = std::mem::take(&mut self.rows);
+        self.preview = false;
         let queue = CachedQueue {
-            rows: std::mem::take(&mut self.rows),
+            // Rows of a load that has not finished are not kept: the load
+            // lands in the cache when it does.
+            rows: if self.last_synced.is_some() {
+                rows
+            } else {
+                Vec::new()
+            },
             last_synced: self.last_synced,
             truncated: self.truncated,
             pagination: std::mem::take(&mut self.pagination),
@@ -572,6 +593,7 @@ impl AppState {
         self.cancel_retry();
         let key = (self.scope.clone(), self.mode);
         let queue = self.cache.remove(&key).unwrap_or_default();
+        self.preview = false;
         self.rows = queue.rows;
         self.last_synced = queue.last_synced;
         self.truncated = queue.truncated;
@@ -607,6 +629,7 @@ impl AppState {
         let slot = self.slot_mut(&(self.scope.clone(), mode));
         slot.epoch += 1;
         slot.in_flight = false;
+        slot.step = None;
     }
 
     /// Drop whatever every running fetch brings back.
@@ -614,6 +637,7 @@ impl AppState {
         for slot in self.slots.values_mut() {
             slot.epoch += 1;
             slot.in_flight = false;
+            slot.step = None;
         }
     }
 
@@ -684,7 +708,7 @@ impl AppState {
                         let attention = AttentionState::load(namespace.clone());
                         // The board as the last run left it, so the first
                         // frame has rows while the refresh runs.
-                        let board = board_cache::load(&namespace, env!("CARGO_PKG_VERSION"));
+                        let board = board_cache::load(&namespace);
                         (connection, attention, board)
                     })
                 })
@@ -1129,10 +1153,41 @@ impl AppState {
 
     /// Kick off one fetch unless one is in flight or we are backing off.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.setup != SetupStatus::Ready || self.syncing() {
+        self.fetch_queue(self.mode, cx);
+    }
+
+    /// Once a run, after the open view's first board: load My PRs or the
+    /// Review queue — whichever is not open — in the background when it has
+    /// no saved board, so the first switch to it shows rows at once instead
+    /// of waiting out its searches. Sent after the open view's answer, never
+    /// beside it, and without followed PRs (the open view's refresh carries
+    /// those).
+    fn prefetch_other_view(&mut self, cx: &mut Context<Self>) {
+        if self.prefetched {
             return;
         }
-        if self.mode == Mode::AllOpen && self.scope.is_all() {
+        self.prefetched = true;
+        let other = match self.mode {
+            Mode::Authored => Mode::Review,
+            Mode::Review => Mode::Authored,
+            Mode::AllOpen => return,
+        };
+        let key = (self.scope.clone(), other);
+        if self.cache.contains_key(&key) {
+            return; // its saved board shows at once; the switch refreshes it
+        }
+        self.fetch_queue(other, cx);
+    }
+
+    /// One fetch of `mode` in the open scope: the open view's refresh, or the
+    /// background load of [`Self::prefetch_other_view`].
+    fn fetch_queue(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        let current = mode == self.mode;
+        let key = (self.scope.clone(), mode);
+        if self.setup != SetupStatus::Ready || self.slot(&key).in_flight {
+            return;
+        }
+        if mode == Mode::AllOpen && self.scope.is_all() {
             return; // unreachable from the UI; the body says to pick one
         }
         let Some(me) = self.me.clone() else {
@@ -1141,19 +1196,20 @@ impl AppState {
         if !self.budget_allows(cx) {
             return;
         }
-        let mode = self.mode;
-        let key = self.current_key();
         let epoch = {
             let slot = self.slot_mut(&key);
             slot.in_flight = true;
             slot.started = Some(Instant::now());
+            slot.step = None;
             slot.epoch
         };
-        self.error = None;
-        // A scheduled retry is this refresh now; the attempt count stays so
-        // a run of failures still ends.
-        self.retry_epoch += 1;
-        self.retry_at = None;
+        if current {
+            self.error = None;
+            // A scheduled retry is this refresh now; the attempt count stays
+            // so a run of failures still ends.
+            self.retry_epoch += 1;
+            self.retry_at = None;
+        }
         cx.notify();
 
         let transport = self.transport.clone();
@@ -1166,13 +1222,18 @@ impl AppState {
         };
         let sent_filter = filter.clone();
         const MAX_TRACKED_PER_REFRESH: usize = 50;
-        let (tracked_ids, tracked_total) = self
-            .attention
-            .as_ref()
-            .map(|attention| attention.tracked_ids(MAX_TRACKED_PER_REFRESH, self.tracked_cursor))
-            .unwrap_or_default();
+        let (tracked_ids, tracked_total) = if current {
+            self.attention
+                .as_ref()
+                .map(|attention| {
+                    attention.tracked_ids(MAX_TRACKED_PER_REFRESH, self.tracked_cursor)
+                })
+                .unwrap_or_default()
+        } else {
+            (Vec::new(), self.tracked_total)
+        };
         self.tracked_total = tracked_total;
-        if tracked_total > 0 {
+        if current && tracked_total > 0 {
             self.tracked_cursor = (self.tracked_cursor + tracked_ids.len()) % tracked_total;
         }
         // A followed PR the board already shows needs only its state, as does
@@ -1196,30 +1257,70 @@ impl AppState {
         // A view GitHub could not answer in time keeps its smaller pages; the
         // flag lives in the view's pagination, so it lasts until a scope
         // change resets it or the app quits.
-        let small_pages = self.pagination.small_pages();
+        let small_pages = if current {
+            self.pagination.small_pages()
+        } else {
+            self.cache
+                .get_mut(&key)
+                .is_some_and(|queue| queue.pagination.small_pages())
+        };
 
+        // The seconds in the progress line: one repaint a second while this
+        // refresh runs, and none once it ends — never a running animation.
+        let ticking = key.clone();
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let running = this.update(cx, |state, cx| {
+                let slot = state.slot(&ticking);
+                let running = slot.in_flight && slot.epoch == epoch;
+                if running && slot.step.is_some() && ticking == state.current_key() {
+                    cx.notify();
+                }
+                running
+            });
+            if !running.unwrap_or(false) {
+                break;
+            }
+        })
+        .detach();
+
+        // At most a handful of events a refresh (`FetchProgress`).
+        let (progress_tx, progress_rx) = async_channel::bounded::<FetchProgress>(8);
+        let preview_filter = sent_filter.clone();
         cx.spawn(async move |this, cx| {
-            let fetched = cx
-                .background_executor()
-                .spawn(async move {
-                    // The `gh` subprocess blocks; that is fine on the
-                    // background pool for a call made every few minutes.
-                    let tracked = Tracked {
-                        rows: &tracked_rows,
-                        status: &tracked_status,
-                    };
-                    fetch_view(
-                        transport.as_ref(),
-                        mode,
-                        &scope,
-                        &me,
-                        &config,
-                        &filter,
-                        tracked,
-                        small_pages,
-                    )
-                })
-                .await;
+            let fetching = cx.background_executor().spawn(async move {
+                // The `gh` subprocess blocks; that is fine on the
+                // background pool for a call made every few minutes.
+                let tracked = Tracked {
+                    rows: &tracked_rows,
+                    status: &tracked_status,
+                };
+                // A full channel drops the event: the result still lands.
+                let mut report = |event: FetchProgress| {
+                    let _ = progress_tx.try_send(event);
+                };
+                fetch_view_with_progress(
+                    transport.as_ref(),
+                    mode,
+                    &scope,
+                    &me,
+                    &config,
+                    &filter,
+                    tracked,
+                    small_pages,
+                    &mut report,
+                )
+            });
+            // Ends when the fetch drops its sender, i.e. when it returns.
+            while let Ok(event) = progress_rx.recv().await {
+                let shown = this.update(cx, |state, cx| {
+                    state.fetch_progress(&key, epoch, event, &preview_filter, cx);
+                });
+                if shown.is_err() {
+                    break;
+                }
+            }
+            let fetched = fetching.await;
 
             let _ = this.update(cx, |state, cx| {
                 let Some(slot) = state.slots.get_mut(&key) else {
@@ -1229,15 +1330,91 @@ impl AppState {
                     return; // the filter, config or sign-in changed; a newer fetch owns it
                 }
                 slot.in_flight = false;
+                slot.step = None;
                 state.fetched_this_run = true;
                 match fetched {
-                    Ok(board) => state.accept_refresh(key, board, sent_filter, cx),
+                    Ok(board) => {
+                        let opened = key == state.current_key();
+                        state.accept_refresh(key, board, sent_filter, cx);
+                        if opened {
+                            state.prefetch_other_view(cx);
+                        }
+                    }
                     Err(error) => state.fetch_failed(key, error, cx),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// What a running refresh reported: the request it now waits for, or rows
+    /// to show early. Early rows go only to the open view while it has never
+    /// loaded — a board already on screen stays until the whole answer
+    /// replaces it, rather than losing half its rows for a few seconds.
+    fn fetch_progress(
+        &mut self,
+        key: &QueueKey,
+        epoch: u64,
+        event: FetchProgress,
+        sent_filter: &RemoteFilter,
+        cx: &mut Context<Self>,
+    ) {
+        let current = *key == self.current_key();
+        let Some(slot) = self.slots.get_mut(key) else {
+            return;
+        };
+        if slot.epoch != epoch || !slot.in_flight {
+            return;
+        }
+        match event {
+            FetchProgress::Step { step, retry } => slot.step = Some((step, retry)),
+            FetchProgress::Rows(board) => {
+                if !current || self.last_synced.is_some() {
+                    return;
+                }
+                let mut board = *board;
+                self.keep_known_conflicts(&mut board.rows, key.1);
+                self.rows = board.rows;
+                self.truncated = board.truncated;
+                self.total = board.total;
+                self.access = board.access;
+                self.rows_filter = sent_filter.clone();
+                self.preview = true;
+                self.generation += 1;
+            }
+        }
+        if current {
+            cx.notify();
+        }
+    }
+
+    /// The open view shows rows from a first load that is still running, or
+    /// whose rest failed.
+    pub fn showing_preview(&self) -> bool {
+        self.preview && self.last_synced.is_none() && !self.rows.is_empty()
+    }
+
+    /// The open view's progress line while a refresh runs and has said which
+    /// request it waits for; `None` otherwise.
+    pub fn fetch_progress_text(&self) -> Option<String> {
+        let slot = self.slot(&self.current_key());
+        if !slot.in_flight {
+            return None;
+        }
+        let (step, retry) = slot.step?;
+        let elapsed = slot
+            .started
+            .map_or(0, |started| started.elapsed().as_secs());
+        Some(prmarmot_core::status::fetch_progress_text(
+            self.mode,
+            self.scope.is_all(),
+            step,
+            retry,
+            elapsed,
+            self.last_synced
+                .map(|synced| (Local::now() - synced).num_seconds()),
+        ))
     }
 
     /// A refresh's answer: observed, then shown, or kept in the cache when
@@ -1277,6 +1454,7 @@ impl AppState {
         let synced = Some(Local::now());
         if key == self.current_key() {
             self.retry_attempts = 0; // loaded: the next failure starts over
+            self.preview = false;
             self.rows = board.rows;
             self.truncated = board.truncated;
             self.total = board.total;
@@ -1427,6 +1605,7 @@ impl AppState {
         let epoch = {
             let slot = self.slot_mut(&key);
             slot.in_flight = true;
+            slot.step = None;
             slot.epoch
         };
         self.error = None;

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import unittest
 
 
@@ -999,6 +1000,11 @@ def main():
             tag = "v99.0.0" if os.environ.get("PRMARMOT_DEMO_UPDATE_AVAILABLE") else "v0.0.0"
             print(release_line(tag))
         elif len(args) >= 2 and args[:2] == ["api", "graphql"]:
+            # scripts/demo.sh --slow-gh SECS: answer as slowly as GitHub's
+            # searches can, to watch the loading steps. Capped at a minute.
+            delay = float(os.environ.get("PRMARMOT_DEMO_GRAPHQL_DELAY") or 0)
+            if delay > 0:
+                time.sleep(min(delay, 60))
             marker = Path(os.environ["XDG_CONFIG_HOME"]) / "fail-next-graphql"
             if marker.exists():
                 marker.unlink()

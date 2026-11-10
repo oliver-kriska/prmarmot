@@ -5417,6 +5417,7 @@ dependencies = [
 name = "prmarmot"
 version = "0.20.0"
 dependencies = [
+ "async-channel",
  "chrono",
  "dirs 7.0.0",
  "gpui-base",
