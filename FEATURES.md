@@ -87,7 +87,7 @@ values in the code. New features get the next free number in their area.
   alex approved, feature, resolve 1 comment"); a header row keeps its section name. Details' facts are read as
   text ("Author: demo-user"), its label and run chips as buttons and links, and every toolbar and Settings control
   has a name (the pinned repositories, Search, Details, Needs you, the section-order arrows, the On/Off switches by
-  their setting). _unreleased_
+  their setting). _since v0.21.1_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
   - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.1_
