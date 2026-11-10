@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 pub const AUTOMATIC_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const RELEASE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 pub const UPGRADE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// `brew update` before the upgrade; it fetches the taps' and Homebrew's own
+/// indexes, so it gets less time than the download and install.
+pub const BREW_UPDATE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const REOPEN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_DIAGNOSTIC_BYTES: usize = 1_024;
 pub const MAX_STATE_BYTES: u64 = 16 * 1_024;
@@ -331,7 +334,7 @@ impl<S: ReleaseSource> UpdateChecker<S> {
             Some(lock) => lock,
             None => return Ok(AutomaticCheck::InProgressElsewhere),
         };
-        let mut state = load_update_state(&self.state_path)?;
+        let state = load_update_state(&self.state_path)?;
         if !automatic_check_due(state.last_attempt_unix, now_unix) {
             return Ok(AutomaticCheck::NotDue(
                 state
@@ -339,7 +342,34 @@ impl<S: ReleaseSource> UpdateChecker<S> {
                     .map(|result| recompare_cached_result(result, current)),
             ));
         }
+        self.check_holding_lock(state, now_unix, current, identity)
+    }
 
+    /// Check now, because the person asked ("Check for Updates…"): the daily
+    /// gate is skipped, but the lock is still taken and the attempt and its
+    /// result are recorded, so the next automatic check counts from here.
+    pub fn check_now(
+        &self,
+        now_unix: i64,
+        current_version: &str,
+        identity: &ReleaseIdentity,
+    ) -> Result<AutomaticCheck, UpdateError> {
+        let current = StableVersion::parse(current_version)?;
+        let _lock = match FileLock::acquire(check_lock_path(&self.state_path))? {
+            Some(lock) => lock,
+            None => return Ok(AutomaticCheck::InProgressElsewhere),
+        };
+        let state = load_update_state(&self.state_path)?;
+        self.check_holding_lock(state, now_unix, current, identity)
+    }
+
+    fn check_holding_lock(
+        &self,
+        mut state: UpdateState,
+        now_unix: i64,
+        current: StableVersion,
+        identity: &ReleaseIdentity,
+    ) -> Result<AutomaticCheck, UpdateError> {
         state.last_attempt_unix = Some(now_unix);
         save_toml_atomic(&self.state_path, &state)?;
 
@@ -764,7 +794,23 @@ pub struct UpgradeReceipt {
     pub completed_at_unix: i64,
     pub upgrade_succeeded: bool,
     pub reopen_succeeded: bool,
+    /// `brew update` before the upgrade succeeded. Receipts from helpers that
+    /// predate the refresh carry no field and read as refreshed.
+    #[serde(default = "refreshed_by_default")]
+    pub index_refreshed: bool,
     pub message: String,
+}
+
+fn refreshed_by_default() -> bool {
+    true
+}
+
+impl UpgradeReceipt {
+    /// Whether the next launch should tell the person about this upgrade:
+    /// anything short of a refreshed index, an upgrade and a reopen.
+    pub fn needs_attention(&self) -> bool {
+        !self.upgrade_succeeded || !self.reopen_succeeded || !self.index_refreshed
+    }
 }
 
 /// Helper entry point: wait for the parent, upgrade, write the receipt, and
@@ -786,6 +832,22 @@ pub fn run_upgrade_helper_at(
     let _lock_cleanup = RemoveOnDrop(invocation.lock_path.clone());
     let _executable_cleanup = RemoveOnDrop(invocation.staged_helper_path());
     waiter.wait_for_exit(invocation.parent_pid)?;
+    // Homebrew refreshes its index at most once a day before an upgrade
+    // (HOMEBREW_AUTO_UPDATE_SECS, default 86400), so a release from this
+    // morning would be "already installed". Refresh it first; when that fails
+    // (offline, a broken tap), the upgrade still runs on what Homebrew knows.
+    let refreshed = runner
+        .run(
+            &invocation.brew_path,
+            &["update".into(), "--quiet".into()],
+            BREW_UPDATE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| CommandOutput {
+            success: false,
+            code: None,
+            stdout: String::new(),
+            stderr: bounded_string(error.to_string()),
+        });
     let upgrade = runner
         .run(
             &invocation.brew_path,
@@ -802,8 +864,14 @@ pub fn run_upgrade_helper_at(
             stdout: String::new(),
             stderr: bounded_string(error.to_string()),
         });
-    let message = if upgrade.success {
+    let message = if upgrade.success && refreshed.success {
         "upgrade completed".to_owned()
+    } else if upgrade.success {
+        format!(
+            "upgrade completed, but brew update failed first, so a release newer than \
+             Homebrew's last index may not be installed: {}",
+            nonempty_diagnostic(&refreshed)
+        )
     } else {
         format!(
             "upgrade failed ({}): {}",
@@ -817,6 +885,7 @@ pub fn run_upgrade_helper_at(
         completed_at_unix,
         upgrade_succeeded: upgrade.success,
         reopen_succeeded: true,
+        index_refreshed: refreshed.success,
         message: bounded_string(message),
     };
     // Persist before launch so the new process cannot race receipt creation.
@@ -1295,6 +1364,54 @@ mod tests {
     }
 
     #[test]
+    fn check_now_skips_the_daily_gate_and_records_the_attempt() {
+        let dir = temp_dir("check-now");
+        let path = dir.join("updates.toml");
+        let calls = Arc::new(Mutex::new(0));
+        let checker = UpdateChecker::new(
+            &path,
+            FakeSource {
+                calls: calls.clone(),
+                result: Ok(fake_release("2.0.0")),
+            },
+        );
+        // An automatic check an hour ago would make the next one wait a day.
+        assert!(matches!(
+            checker
+                .automatic_check(true, 100, "1.0.0", &identity())
+                .unwrap(),
+            AutomaticCheck::Completed { .. }
+        ));
+        assert!(matches!(
+            checker
+                .automatic_check(true, 3_700, "1.0.0", &identity())
+                .unwrap(),
+            AutomaticCheck::NotDue(_)
+        ));
+        // Asking asks GitHub anyway, and works with automatic checks off.
+        assert!(matches!(
+            checker.check_now(3_700, "1.0.0", &identity()).unwrap(),
+            AutomaticCheck::Completed {
+                result: CheckResult::Available { .. },
+                ..
+            }
+        ));
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(
+            load_update_state(&path).unwrap().last_attempt_unix,
+            Some(3_700)
+        );
+        assert!(matches!(
+            checker.check_now(3_800, "2.0.0", &identity()).unwrap(),
+            AutomaticCheck::Completed {
+                result: CheckResult::UpToDate { .. },
+                ..
+            }
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn persisted_future_attempt_suppresses_request_after_clock_rollback() {
         let dir = temp_dir("future-attempt");
         let path = dir.join("updates.toml");
@@ -1484,6 +1601,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let runner = FakeRunner {
             outputs: Mutex::new(VecDeque::from([
+                Ok(command_output(true, 0, "")),
                 Ok(command_output(false, 1, "tap failed")),
                 Err(UpdateError::CommandFailed("open failed".into())),
             ])),
@@ -1508,8 +1626,61 @@ mod tests {
         assert!(!lock_path.exists());
         assert_eq!(load_upgrade_receipt(&receipt_path).unwrap(), Some(receipt));
         let calls = calls.lock().unwrap();
-        assert_eq!(calls[0].1, ["upgrade", "--cask", "product"]);
-        assert_eq!(calls[1].1, ["-a", "Product App"]);
+        assert_eq!(calls[0].1, ["update", "--quiet"]);
+        assert_eq!(calls[1].1, ["upgrade", "--cask", "product"]);
+        assert_eq!(calls[2].1, ["-a", "Product App"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn receipt_from_an_older_helper_reads_as_refreshed() {
+        let dir = temp_dir("old-receipt");
+        let path = dir.join("receipt.toml");
+        fs::write(
+            &path,
+            "completed_at_unix = 1\nupgrade_succeeded = true\nreopen_succeeded = true\n\
+             message = \"upgrade completed\"\n",
+        )
+        .unwrap();
+        let receipt = load_upgrade_receipt(&path).unwrap().unwrap();
+        assert!(receipt.index_refreshed);
+        assert!(!receipt.needs_attention());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn helper_upgrades_even_when_brew_update_fails_and_says_so() {
+        let dir = temp_dir("helper-update-fails");
+        let receipt_path = dir.join("receipt.toml");
+        let waited = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner {
+            outputs: Mutex::new(VecDeque::from([
+                Ok(command_output(false, 1, "offline")),
+                Ok(command_output(true, 0, "")),
+                Ok(command_output(true, 0, "")),
+            ])),
+            calls: calls.clone(),
+            waited: waited.clone(),
+            receipt_before_reopen: None,
+        };
+        let invocation = HelperInvocation {
+            parent_pid: 55,
+            brew_path: PathBuf::from("/brew"),
+            identity: UpgradeIdentity::new("product", "Product App").unwrap(),
+            receipt_path,
+            lock_path: dir.join("helper.lock"),
+            open_path: PathBuf::from("/open"),
+        };
+        let receipt =
+            run_upgrade_helper_at(&invocation, &runner, &DelayedWaiter(waited), 500).unwrap();
+        assert!(receipt.upgrade_succeeded);
+        assert!(!receipt.index_refreshed);
+        assert!(receipt.needs_attention());
+        assert!(receipt.message.contains("brew update failed"));
+        assert!(receipt.message.contains("offline"));
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[1].1, ["upgrade", "--cask", "product"]);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1529,7 +1700,8 @@ mod tests {
             ) -> Result<CommandOutput, UpdateError> {
                 let mut calls = self.calls.lock().unwrap();
                 *calls += 1;
-                if *calls == 2 {
+                // update, upgrade, then the reopen.
+                if *calls == 3 {
                     assert!(load_upgrade_receipt(&self.receipt_path).unwrap().is_some());
                     fs::remove_file(&self.receipt_path).unwrap();
                 }

@@ -21,6 +21,17 @@ while [[ ${1:-} == --* ]]; do
   case "$1" in
     --fail-once) FAIL_ONCE=true ;;
     --update-available) UPDATE_AVAILABLE=true ;;
+    --update-homebrew)
+      # The update offered as to a Homebrew install: the command to run.
+      UPDATE_AVAILABLE=true
+      export PRMARMOT_DEMO_HOMEBREW=1
+      ;;
+    --slow-gh)
+      # Every GraphQL answer waits this many seconds (at most 60), as
+      # GitHub's searches can, to watch the loading steps and early rows.
+      export PRMARMOT_DEMO_GRAPHQL_DELAY="${2:?--slow-gh needs a number of seconds}"
+      shift
+      ;;
     --update-failed) UPDATE_FAILED=true ;;
     --dark) THEME=dark ;;
     --width)

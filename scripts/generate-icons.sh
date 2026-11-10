@@ -25,4 +25,7 @@ for size in 16 32 128 256 512; do
   cp "$ASSETS/icon-$((size * 2)).png" "$WORK/prmarmot.iconset/icon_${size}x${size}@2x.png"
 done
 iconutil -c icns "$WORK/prmarmot.iconset" -o "$ASSETS/prmarmot.icns"
-echo "Generated PNG sizes 16–1024 and prmarmot.icns from the branding SVG sources"
+# The Dock icon the running app shows while it is drawn light.
+rsvg-convert --width 1024 --height 1024 "$ASSETS/icon-light.svg" \
+  --output "$ASSETS/icon-light-1024.png"
+echo "Generated PNG sizes 16–1024, prmarmot.icns and icon-light-1024.png from the branding SVG sources"

@@ -43,8 +43,8 @@ async-channel = "2"
 # blocks a thread until the person acts) and its typed authorization status.
 mac-usernotifications = "=0.3.1"
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSPasteboard", "NSAccessibility", "NSWorkspace"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSString"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSImage", "NSPasteboard", "NSAccessibility", "NSWorkspace"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSData", "NSString"] }
 
 # Desktop notifications elsewhere (freedesktop D-Bus).
 [target.'cfg(not(target_os = "macos"))'.dependencies]

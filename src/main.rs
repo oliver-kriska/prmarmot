@@ -31,6 +31,9 @@ use crate::app::RootView;
 use crate::state::{AppState, AttentionPreferences, ConfiguredConnector};
 
 const RELEASE_REPO: &str = "oliver-kriska/prmarmot";
+const WEBSITE_URL: &str = "https://prmarmot.dev";
+const RELEASE_NOTES_URL: &str = "https://github.com/oliver-kriska/prmarmot/releases";
+const REPORT_PROBLEM_URL: &str = "https://github.com/oliver-kriska/prmarmot/issues/new/choose";
 const CASK_TOKEN: &str = "prmarmot";
 const APPLICATION_NAME: &str = "prmarmot";
 
@@ -54,7 +57,40 @@ fn install_app_menu(cx: &mut App) {
             app::OpenSettings,
             None,
         ),
+        // The View menu's keys; the bare 1 / 2 / 3 and r keep working.
+        KeyBinding::new(
+            if macos { "cmd-1" } else { "ctrl-1" },
+            app::ShowFirstView,
+            None,
+        ),
+        KeyBinding::new(
+            if macos { "cmd-2" } else { "ctrl-2" },
+            app::ShowReviewQueue,
+            None,
+        ),
+        KeyBinding::new(
+            if macos { "cmd-3" } else { "ctrl-3" },
+            app::ShowAllOpen,
+            None,
+        ),
+        KeyBinding::new(
+            if macos { "cmd-r" } else { "ctrl-r" },
+            app::RefreshBoard,
+            None,
+        ),
     ]);
+    if macos {
+        cx.bind_keys([KeyBinding::new("cmd-m", app::MinimizeWindow, None)]);
+    }
+    cx.on_action(|_: &app::OpenWebsite, cx: &mut App| {
+        open::open_web_url(cx, WEBSITE_URL);
+    });
+    cx.on_action(|_: &app::OpenReleaseNotes, cx: &mut App| {
+        open::open_web_url(cx, RELEASE_NOTES_URL);
+    });
+    cx.on_action(|_: &app::ReportProblem, cx: &mut App| {
+        open::open_web_url(cx, REPORT_PROBLEM_URL);
+    });
     cx.on_action(|_: &Quit, cx: &mut App| {
         // Application quit does not call the individual window-close callback.
         for handle in cx.windows() {
@@ -62,11 +98,30 @@ fn install_app_menu(cx: &mut App) {
         }
         cx.quit();
     });
+    // Remembered values are written by a background thread; however the app
+    // quits (the Dock's Quit included), what is queued lands first. The
+    // flush runs before the future, so GPUI's shutdown timeout can't cut it.
+    cx.on_app_quit(|_| {
+        config::flush_config_writes();
+        async {}
+    })
+    .detach();
+    set_app_menus(cx, Mode::Authored, true);
+}
+
+/// The menu bar. The View menu names the first view as the window does
+/// ("Involving me" across all repositories, "My PRs" for one), ticks the open
+/// view, and greys All open where it cannot load; the window calls this again
+/// when either changes.
+pub(crate) fn set_app_menus(cx: &mut App, mode: Mode, all_repos: bool) {
     use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
     cx.set_menus(vec![
         Menu {
             name: "PR Marmot".into(),
             items: vec![
+                MenuItem::action("About PR Marmot", app::ShowAbout),
+                MenuItem::action("Check for Updates…", app::CheckForUpdates),
+                MenuItem::separator(),
                 MenuItem::action("Settings…", app::OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Quit PR Marmot", Quit),
@@ -87,6 +142,43 @@ fn install_app_menu(cx: &mut App) {
                 MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
                 MenuItem::separator(),
                 MenuItem::action("Find", app::FocusSearch),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action(
+                    prmarmot_core::status::view_title(Mode::Authored, all_repos, false),
+                    app::ShowFirstView,
+                )
+                .checked(mode == Mode::Authored),
+                MenuItem::action("Review queue", app::ShowReviewQueue)
+                    .checked(mode == Mode::Review),
+                MenuItem::action("All open", app::ShowAllOpen)
+                    .checked(mode == Mode::AllOpen)
+                    .disabled(all_repos),
+                MenuItem::separator(),
+                MenuItem::action("Refresh", app::RefreshBoard),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", app::MinimizeWindow),
+                MenuItem::action("Zoom", app::ZoomWindow),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![
+                MenuItem::action("Keyboard Shortcuts", app::ShowShortcuts),
+                MenuItem::separator(),
+                MenuItem::action("PR Marmot Website", app::OpenWebsite),
+                MenuItem::action("Release Notes", app::OpenReleaseNotes),
+                MenuItem::action("Report a Problem…", app::ReportProblem),
             ],
             disabled: false,
         },
@@ -153,27 +245,6 @@ fn main() {
     // Before anything else: a Dock-launched app has no terminal, so a panic
     // leaves a one-line record (never its message) under the state directory.
     prmarmot_local::panic_log::install(env!("CARGO_PKG_VERSION"));
-    // The staged helper is this same executable. Dispatch its fixed protocol
-    // before normal CLI parsing or any GPUI/platform initialization.
-    match updates::HelperInvocation::parse_cli_args(std::env::args_os().skip(1)) {
-        Ok(Some(invocation)) => {
-            if let Err(error) = updates::run_upgrade_helper(
-                &invocation,
-                &updates::SystemCommandRunner,
-                &updates::SystemParentWaiter,
-            ) {
-                eprintln!("prmarmot update helper: {error}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("prmarmot update helper: {error}");
-            std::process::exit(2);
-        }
-    }
-
     let (scope_arg, mode_arg) = match parse_args() {
         Ok(parsed) => parsed,
         Err(msg) => {
@@ -298,6 +369,9 @@ fn main() {
         });
 }
 
+/// What an update helper reported. The app no longer starts one (a Homebrew
+/// install is shown the command instead); this reads the receipt a v0.20 or
+/// older app's helper writes while upgrading to this version.
 fn consume_update_failure(paths: &config::UpdatePaths) -> Option<String> {
     let receipt = match updates::load_upgrade_receipt(&paths.upgrade_receipt) {
         Ok(receipt) => receipt,
@@ -312,7 +386,7 @@ fn consume_update_failure(paths: &config::UpdatePaths) -> Option<String> {
         }
     }
     receipt
-        .filter(|receipt| !receipt.upgrade_succeeded || !receipt.reopen_succeeded)
+        .filter(updates::UpgradeReceipt::needs_attention)
         .map(|receipt| receipt.message)
 }
 

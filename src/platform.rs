@@ -435,6 +435,42 @@ fn set_badge(count: usize) {
 #[cfg(not(target_os = "macos"))]
 fn set_badge(_count: usize) {}
 
+/// The Dock icon follows the look the window is drawn in: the light tile on
+/// a light board, the bundle's own slate tile on a dark one. Called from
+/// `ThemePref::apply`, so "system" follows macOS as the board does. The
+/// bundle icon (Finder, Launchpad, the Dock when PR Marmot is not running)
+/// stays the slate one.
+#[cfg(target_os = "macos")]
+pub fn set_app_icon(dark: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    // The bundle's icon is the dark one, so a launch starts out dark.
+    static SHOWING_DARK: AtomicBool = AtomicBool::new(true);
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if SHOWING_DARK.swap(dark, Ordering::Relaxed) == dark {
+        return;
+    }
+    let app = NSApplication::sharedApplication(mtm);
+    if dark {
+        // None restores the bundle's icon.
+        unsafe { app.setApplicationIconImage(None) };
+        return;
+    }
+    let data = NSData::with_bytes(include_bytes!("../assets/branding/icon-light-1024.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&image)) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_app_icon(_dark: bool) {}
+
 /// Put a rich HTML flavour and its plain-text alternative on the clipboard in
 /// one write, so each destination reads the one it renders best. GPUI's
 /// clipboard is plain-text only, hence the direct pasteboard call. Returns

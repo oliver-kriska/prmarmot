@@ -51,9 +51,28 @@ mod pump;
 mod setup;
 mod updates;
 
-// `FocusSearch` (⌘F / Ctrl-F, Edit → Find) and `OpenSettings` (⌘, / Ctrl-,,
-// PR Marmot → Settings…) are bound in `main`.
-gpui::actions!(prmarmot, [CloseDetails, FocusSearch, OpenSettings]);
+// `FocusSearch` (⌘F / Ctrl-F, Edit → Find), `OpenSettings` (⌘, / Ctrl-,,
+// PR Marmot → Settings…) and the menu bar's commands are bound in `main`.
+gpui::actions!(
+    prmarmot,
+    [
+        CloseDetails,
+        FocusSearch,
+        OpenSettings,
+        ShowAbout,
+        CheckForUpdates,
+        ShowFirstView,
+        ShowReviewQueue,
+        ShowAllOpen,
+        RefreshBoard,
+        MinimizeWindow,
+        ZoomWindow,
+        ShowShortcuts,
+        OpenWebsite,
+        OpenReleaseNotes,
+        ReportProblem,
+    ]
+);
 
 const ALL_REPOS_LABEL: &str = "All repositories";
 
@@ -208,6 +227,8 @@ pub struct RootView {
     search: Entity<InputState>,
     /// The view the search box's placeholder was last written for.
     placeholder_mode: Mode,
+    /// The (view, all repositories) the menu bar was last built for.
+    menus_for: Option<(Mode, bool)>,
     /// The words typed in the search box.
     filter_text: String,
     /// The search box's chips, ANDed with the typed words.
@@ -422,6 +443,7 @@ impl RootView {
             pinned_repos: launch.pinned_repos,
             search_open: false,
             placeholder_mode: mode,
+            menus_for: None,
             discovering_repos: false,
             repos_discovered: false,
             repo_status: String::new(),
@@ -464,8 +486,8 @@ impl RootView {
                 available: None,
                 error: launch.update_failure,
                 check_pending: false,
-                starting: false,
                 check_task: None,
+                manual: None,
             },
             config_warnings: launch.config_warnings,
             notification_help_shown: false,
@@ -1160,6 +1182,17 @@ impl RootView {
     /// data query, column set, and persisted preference in lockstep. The
     /// outgoing queue's selection is remembered and the incoming queue's is
     /// restored by the generation observer once its rows land.
+    /// `r` and View → Refresh: fetch again, or retry sign-in when it failed.
+    fn refresh_board(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            if s.setup == SetupStatus::Ready {
+                s.refresh(cx)
+            } else {
+                s.validate_setup(cx)
+            }
+        });
+    }
+
     fn select_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         let current = self.state.read(cx).mode;
         if current == mode {
@@ -1827,13 +1860,7 @@ impl RootView {
                 cx.stop_propagation();
             }
             "space" if table_focused => self.toggle_details(window, cx),
-            "r" => self.state.update(cx, |s, cx| {
-                if s.setup == SetupStatus::Ready {
-                    s.refresh(cx)
-                } else {
-                    s.validate_setup(cx)
-                }
-            }),
+            "r" => self.refresh_board(cx),
             "v" if !platform => {
                 let state = self.state.read(cx);
                 let mode = match state.mode {
@@ -2362,6 +2389,11 @@ impl RootView {
             // The view can change without a window at hand (a scope change
             // falls back from All open), so the placeholder follows it here.
             let mode = state.read(cx).mode;
+            let menus = (mode, state.read(cx).scope.is_all());
+            if this.menus_for != Some(menus) {
+                this.menus_for = Some(menus);
+                crate::set_app_menus(cx, menus.0, menus.1);
+            }
             if this.placeholder_mode != mode {
                 this.placeholder_mode = mode;
                 this.search.update(cx, |input, cx| {
@@ -2503,20 +2535,25 @@ impl Render for RootView {
         // reason it's not showing rows — paused for back-off, a first-fetch
         // error, or still loading — never a stale "Loading…" over an error or
         // a premature "empty" over a fetch in flight (critique #6).
-        let body = {
-            let s = self.state.read(cx);
-            if s.setup != SetupStatus::Ready {
-                BodyState::Setup(s.setup.clone())
-            } else if s.last_synced.is_some() {
-                BodyState::Loaded
-            } else if let Some(paused) = s.pause_text() {
-                BodyState::Paused(paused)
-            } else if let Some(err) = s.error_text() {
-                BodyState::Failed(format!("Couldn't load — {err}"))
-            } else {
-                BodyState::Loading(queue_loading_text(s.mode, s.scope.is_all()).to_string())
-            }
-        };
+        let body =
+            {
+                let s = self.state.read(cx);
+                if s.setup != SetupStatus::Ready {
+                    BodyState::Setup(s.setup.clone())
+                } else if s.last_synced.is_some() || s.showing_preview() {
+                    // Early rows of a first load stay up when its rest fails;
+                    // the status line says why.
+                    BodyState::Loaded
+                } else if let Some(paused) = s.pause_text() {
+                    BodyState::Paused(paused)
+                } else if let Some(err) = s.error_text() {
+                    BodyState::Failed(format!("Couldn't load — {err}"))
+                } else {
+                    BodyState::Loading(s.fetch_progress_text().unwrap_or_else(|| {
+                        queue_loading_text(s.mode, s.scope.is_all()).to_string()
+                    }))
+                }
+            };
         let glacier = crate::skin::glacier(cx);
         if glacier && matches!(body, BodyState::Loaded) {
             self.fit_to_content(window, cx);
@@ -2585,6 +2622,31 @@ impl Render for RootView {
                     this.show_config(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.check_for_updates_now(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowAbout, window, cx| {
+                if !window.has_active_dialog(cx) {
+                    this.show_about(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| {
+                if !window.has_active_dialog(cx) {
+                    this.show_shortcuts(window, cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &ShowFirstView, _, cx| this.select_mode(Mode::Authored, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowReviewQueue, _, cx| this.select_mode(Mode::Review, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowAllOpen, _, cx| this.select_mode(Mode::AllOpen, cx)),
+            )
+            .on_action(cx.listener(|this, _: &RefreshBoard, _, cx| this.refresh_board(cx)))
+            .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
+            .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
             .on_key_down(cx.listener(Self::handle_key_down))
             .when(glacier, |root| root.child(crate::skin::Chrome::grain(cx)))
             .child(

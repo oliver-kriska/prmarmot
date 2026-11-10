@@ -81,6 +81,7 @@ impl ThemePref {
         // Every change/sync above resets colors to the built-in palette;
         // layer the look on top: colours, geometry, skin.
         let dark = Theme::global(cx).mode.is_dark();
+        crate::platform::set_app_icon(dark);
         let font_family = Theme::global(cx).font_family.clone();
         let (skin, user, built_in) = {
             let look = crate::skin::look(cx);
