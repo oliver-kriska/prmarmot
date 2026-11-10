@@ -104,6 +104,31 @@ fn stored_account(auth: &AuthSettings) -> Option<StoredAccount> {
     })
 }
 
+/// The Account block before the keychain has answered: a session that
+/// connected with a stored token (not `PRMARMOT_TOKEN`) has that token
+/// stored, so it is known without asking. The keychain can take 2–10 ms after
+/// a while idle (measured 2026-11-09), too long for the window's thread;
+/// [`SettingsView::new`] reads it in the background and corrects this.
+fn assumed_account(
+    live: Option<&(Connection, String)>,
+    auth: &AuthSettings,
+) -> Option<StoredAccount> {
+    let (via, login) = live?;
+    if auth.inline_token.is_some() {
+        return None;
+    }
+    let how = match via {
+        Connection::GhCli => return None,
+        Connection::Device => "signed in with GitHub",
+        Connection::Token => "a personal access token",
+    };
+    Some(StoredAccount {
+        who: login.clone(),
+        how,
+        place: token_store(auth.store).describe(),
+    })
+}
+
 /// The Account block's sentence: which sign-in is live, and whether a stored
 /// token sits unused beside the GitHub CLI login. `live` is what the app
 /// connected with; `None` before it has. `inline` is a `PRMARMOT_TOKEN`.
@@ -203,6 +228,9 @@ pub struct SettingsView {
     live: Option<(Connection, String)>,
     /// What happened after a Disconnect.
     account_message: Option<String>,
+    /// Bumped by Disconnect, so a keychain read that started before it does
+    /// not bring the removed token back.
+    account_epoch: u64,
 }
 
 impl SettingsView {
@@ -212,6 +240,13 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The dialog shows the file as it is on disk, edits made outside the
+        // app included, so it is read here rather than taken from the app.
+        // A remembered value still queued (a view switch a moment ago) is
+        // written first, so the file read is current; nothing queued, no wait.
+        // A write that hangs is waited on for a quarter second at most: the
+        // window must not freeze for a config file.
+        config::flush_config_writes_within(std::time::Duration::from_millis(250));
         let file = config::load();
         let env = EnvOverrides::current();
 
@@ -229,7 +264,21 @@ impl SettingsView {
             let mut warnings = Vec::new();
             prmarmot_local::config::auth_settings(&file, None, None, &mut warnings)
         };
-        let account = stored_account(&auth);
+        let account = assumed_account(live.as_ref(), &auth);
+        let reading = auth.clone();
+        cx.spawn(async move |this, cx| {
+            let stored = cx
+                .background_executor()
+                .spawn(async move { stored_account(&reading) })
+                .await;
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                if this.account_epoch == 0 && this.account != stored {
+                    this.account = stored;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         let section_order = prmarmot_local::config::section_order(&file);
         let details_position = prmarmot_local::config::details_position(&file);
         let look = Rc::new(crate::skin::Look::from_file(&file));
@@ -302,6 +351,7 @@ impl SettingsView {
             account,
             live,
             account_message: None,
+            account_epoch: 0,
         };
         cx.subscribe_in(
             &this.colors_select,
@@ -588,6 +638,7 @@ impl SettingsView {
     fn disconnect(&mut self, cx: &mut Context<Self>) {
         match token_store(self.auth.store).delete(&self.auth.host) {
             Ok(()) => {
+                self.account_epoch += 1;
                 self.account = None;
                 let what = match self.live {
                     Some((Connection::GhCli, _)) => {
@@ -1199,6 +1250,32 @@ fn validate_issue_link(pattern: &str, url: &str) -> Result<Option<(String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_opens_with_the_token_it_connected_with_without_asking_the_keychain() {
+        let auth = |inline: Option<&str>| AuthSettings {
+            host: "github.com".into(),
+            client_id: "id".into(),
+            mode: Default::default(),
+            store: Default::default(),
+            inline_token: inline.map(str::to_owned),
+        };
+        let device = (Connection::Device, "octocat".to_owned());
+        let assumed = assumed_account(Some(&device), &auth(None)).unwrap();
+        assert_eq!(assumed.who, "octocat");
+        assert_eq!(assumed.how, "signed in with GitHub");
+        let pat = (Connection::Token, "octocat".to_owned());
+        assert_eq!(
+            assumed_account(Some(&pat), &auth(None)).unwrap().how,
+            "a personal access token"
+        );
+        // The GitHub CLI or PRMARMOT_TOKEN say nothing about what is stored:
+        // the background read answers that.
+        let gh = (Connection::GhCli, "octocat".to_owned());
+        assert_eq!(assumed_account(Some(&gh), &auth(None)), None);
+        assert_eq!(assumed_account(Some(&pat), &auth(Some("t"))), None);
+        assert_eq!(assumed_account(None, &auth(None)), None);
+    }
 
     #[test]
     fn the_account_block_names_the_live_sign_in_and_an_unused_token() {
