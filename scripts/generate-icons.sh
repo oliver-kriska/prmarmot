@@ -25,7 +25,11 @@ for size in 16 32 128 256 512; do
   cp "$ASSETS/icon-$((size * 2)).png" "$WORK/prmarmot.iconset/icon_${size}x${size}@2x.png"
 done
 iconutil -c icns "$WORK/prmarmot.iconset" -o "$ASSETS/prmarmot.icns"
-# The Dock icon the running app shows while it is drawn light.
-rsvg-convert --width 1024 --height 1024 "$ASSETS/icon-light.svg" \
-  --output "$ASSETS/icon-light-1024.png"
-echo "Generated PNG sizes 16–1024, prmarmot.icns and icon-light-1024.png from the branding SVG sources"
+# The Dock icon the running app shows while it is drawn light. The app embeds
+# the 256 px one: the Dock draws at most 128 pt, and macOS keeps the image it
+# is given decoded (the 1024 px one held 32 MB of the app's footprint).
+for size in 256 1024; do
+  rsvg-convert --width "$size" --height "$size" "$ASSETS/icon-light.svg" \
+    --output "$ASSETS/icon-light-$size.png"
+done
+echo "Generated PNG sizes 16–1024, prmarmot.icns and icon-light-{256,1024}.png from the branding SVG sources"

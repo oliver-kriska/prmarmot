@@ -462,7 +462,9 @@ pub fn set_app_icon(dark: bool) {
         unsafe { app.setApplicationIconImage(None) };
         return;
     }
-    let data = NSData::with_bytes(include_bytes!("../assets/branding/icon-light-1024.png"));
+    // 256 px is the Dock's largest tile (128 pt at 2x). macOS keeps the image
+    // decoded for as long as it is the icon: the 1024 px one held 32 MB.
+    let data = NSData::with_bytes(include_bytes!("../assets/branding/icon-light-256.png"));
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
         unsafe { app.setApplicationIconImage(Some(&image)) };
     }

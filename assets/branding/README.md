@@ -10,7 +10,8 @@ direction, not embedded or traced Painter bitmaps.
 - `icon.svg`: app tile, source for `icon-{64,128,256,512,1024}.png`.
 - `icon-small.svg`: optically enlarged and simplified app tile, source for
   `icon-{16,32}.png`. **Use this source at physical export sizes ≤32px.**
-- `icon-light.svg`: the same tile in pale slate, source for `icon-light-1024.png`.
+- `icon-light.svg`: the same tile in pale slate, source for `icon-light-{256,1024}.png`
+  (the app embeds the 256 px one; the 1024 px one held 32 MB of its footprint).
   The running app shows it in the Dock while the board is drawn light (the
   Appearance setting, or macOS under System); the bundle icon stays the slate one.
 - `mark.svg`: single-color untiled logo mark, for display at 48px or larger.
