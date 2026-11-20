@@ -3727,6 +3727,46 @@ mod tests {
     }
 
     #[test]
+    fn recent_first_lists_the_most_recently_updated_first_and_keeps_stacks_whole() {
+        let updated = |number, at: &str| BoardRow {
+            updated_at: Some(at.into()),
+            ..row(number, Category::Action)
+        };
+        let layer = |mut r: BoardRow, position| {
+            r.stack = Some(prmarmot_core::board::StackInfo {
+                number: 72,
+                size: 2,
+                position: Some(position),
+                base_ref_name: "main".into(),
+                branch: None,
+            });
+            r
+        };
+        let rows = || {
+            vec![
+                updated(5, "2026-11-01T10:00:00Z"),
+                updated(4, "2026-11-19T10:00:00Z"),
+                layer(updated(3, "2026-10-01T10:00:00Z"), 1),
+                layer(updated(2, "2026-11-20T10:00:00Z"), 2),
+                updated(1, "2026-11-10T10:00:00Z"),
+            ]
+        };
+        let numbers = |d: &BoardTableDelegate| -> Vec<u64> {
+            (0..d.display_len())
+                .filter_map(|i| d.row(i))
+                .map(|r| r.number)
+                .collect()
+        };
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_rows(rows());
+        assert_eq!(numbers(&d), [5, 4, 3, 2, 1]);
+        d.set_sort(Sort::Updated);
+        d.set_rows(rows());
+        // The stack leads, as its layer 2 is the newest, still in layer order.
+        assert_eq!(numbers(&d), [3, 2, 4, 1, 5]);
+    }
+
+    #[test]
     fn details_include_unelided_notes_and_deleted_reviewers() {
         let mut r = row(42, Category::Action);
         r.note = "merge conflict — rebase · CI failing · 3 unresolved".into();

@@ -175,6 +175,8 @@ impl From<AppConfig> for FileConfig {
             // The iPad keeps no collapsed sections yet; the desktop's live in
             // its own config.toml.
             collapsed_sections: BTreeMap::new(),
+            // Not offered on the iPad yet.
+            sort: BTreeMap::new(),
             // A desktop layout choice; the iPad has its own inspector.
             details_position: None,
             colors: None,

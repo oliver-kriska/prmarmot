@@ -63,7 +63,12 @@ _prmarmot_cli() {
             return
             ;;
         --sort)
-            COMPREPLY=($(compgen -W "wait smallest" -- "$cur"))
+            # Smallest first is the review queue's only.
+            if [[ $command == review* ]]; then
+                COMPREPLY=($(compgen -W "wait updated smallest" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "wait updated" -- "$cur"))
+            fi
             return
             ;;
         --timeout)
@@ -110,14 +115,14 @@ _prmarmot_cli() {
             fi
             ;;
         mine | authored)
-            words="$view --authored --changed --stale --agent --no-agent --filter --pages"
+            words="$view --authored --changed --stale --agent --no-agent --filter --sort --pages"
             ;;
         review | reviews)
             words="$view --changed --stale --agent --no-agent --filter --sort --pages"
             ;;
         all | all-open)
             # One repository only, so no --all-repos.
-            words="${view/ --all-repos/} --changed --stale --agent --no-agent --filter --pages"
+            words="${view/ --all-repos/} --changed --stale --agent --no-agent --filter --sort --pages"
             ;;
         pr)
             words="--format --json --no-color --help --host --auth"

@@ -1054,6 +1054,9 @@ pub enum Sort {
     #[default]
     Wait,
     Smallest,
+    /// Most recently updated on GitHub first inside every section, stacks
+    /// kept whole. Not offered on the iPad yet.
+    Updated,
 }
 
 impl From<Sort> for core_layout::Sort {
@@ -1061,6 +1064,7 @@ impl From<Sort> for core_layout::Sort {
         match sort {
             Sort::Wait => Self::Wait,
             Sort::Smallest => Self::Smallest,
+            Sort::Updated => Self::Updated,
         }
     }
 }

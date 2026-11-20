@@ -468,6 +468,39 @@ fn set_auth_host(doc: &mut toml_edit::DocumentMut, host: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Persist the order inside each section of `view` under `[sort]`. The
+/// default (`wait`) removes the view's entry, and the table goes once it is
+/// empty, so an untouched file stays as it was.
+pub fn persist_sort(view: &str, sort: prmarmot_core::layout::Sort) {
+    let view = view.to_owned();
+    persist(&format!("sort.{view}"), move |doc| {
+        set_sort(doc, &view, sort)
+    });
+}
+
+fn set_sort(
+    doc: &mut toml_edit::DocumentMut,
+    view: &str,
+    sort: prmarmot_core::layout::Sort,
+) -> Result<(), String> {
+    if sort == prmarmot_core::layout::Sort::Wait {
+        if let Some(table) = doc
+            .get_mut("sort")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            table.remove(view);
+            if table.is_empty() {
+                doc.remove("sort");
+            }
+        }
+        return Ok(());
+    }
+    table_mut(doc, "sort")
+        .ok_or_else(|| "sort in the config file is not a table".to_owned())?
+        .insert(view, toml_edit::value(sort.key()));
+    Ok(())
+}
+
 /// Persist which sections `view` shows collapsed under `[collapsed_sections]`.
 /// The default (only Snoozed) removes the view's entry, and the table goes
 /// once it is empty, so an untouched file stays as it was.
@@ -1105,6 +1138,21 @@ theme = \"dark\"\n",
             "{saved}"
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sort_is_written_per_view_and_the_default_removes_it() {
+        use prmarmot_core::layout::Sort;
+        let mut doc: toml_edit::DocumentMut = "# mine\ntheme = \"light\"\n".parse().unwrap();
+        set_sort(&mut doc, "my_prs", Sort::Updated).unwrap();
+        set_sort(&mut doc, "review", Sort::Smallest).unwrap();
+        let parsed: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(crate::config::view_sort(&parsed, "my_prs"), Sort::Updated);
+        assert_eq!(crate::config::view_sort(&parsed, "review"), Sort::Smallest);
+        assert_eq!(crate::config::view_sort(&parsed, "all_open"), Sort::Wait);
+        set_sort(&mut doc, "my_prs", Sort::Wait).unwrap();
+        set_sort(&mut doc, "review", Sort::Wait).unwrap();
+        assert_eq!(doc.to_string(), "# mine\ntheme = \"light\"\n");
     }
 
     #[test]

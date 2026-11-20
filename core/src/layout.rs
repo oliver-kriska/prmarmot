@@ -46,6 +46,47 @@ pub enum Sort {
     /// smallest size band first, then fewer changed lines, then the longest
     /// wait; rows without a size follow. Other sections sort as for `Wait`.
     Smallest,
+    /// Every view: inside each section the most recently updated PR on GitHub
+    /// comes first, before approved-first, wait and size. A stack or branch
+    /// tree stays whole, in layer order, where its most recently updated
+    /// member falls. Rows without an update time go last. Snoozed too.
+    Updated,
+}
+
+impl Sort {
+    /// Every sort, in the order a person is offered them.
+    pub const ALL: [Sort; 3] = [Sort::Wait, Sort::Smallest, Sort::Updated];
+
+    /// The one word for this sort in the CLI (`--sort`), its JSON and the
+    /// config file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Wait => "wait",
+            Self::Smallest => "smallest",
+            Self::Updated => "updated",
+        }
+    }
+
+    /// The sort `word` names, exactly as [`Sort::key`] writes it.
+    pub fn from_key(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|sort| sort.key() == word)
+    }
+
+    /// Whether `mode` offers this sort: Smallest is the Review queue's only.
+    pub fn applies_to(self, mode: Mode) -> bool {
+        self != Self::Smallest || mode == Mode::Review
+    }
+}
+
+/// When GitHub last updated `row`, for [`Sort::Updated`]: rows without a
+/// readable time sort after every row with one.
+fn recency(row: &BoardRow) -> (bool, std::cmp::Reverse<Option<DateTime<Utc>>>) {
+    let updated = row
+        .updated_at
+        .as_deref()
+        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&Utc));
+    (updated.is_none(), std::cmp::Reverse(updated))
 }
 
 /// One line of a board view: a header, or a PR as an index into the input rows.
@@ -91,7 +132,7 @@ pub fn layout(
 /// only emitted as rows when `show_snoozed` is set. Requested from you,
 /// Available to review, and Awaiting review list the longest pickup wait
 /// first, unless `sort` says otherwise; every other order within a section is
-/// the incoming one.
+/// the incoming one. [`Sort::Updated`] orders Snoozed as well.
 pub fn layout_ordered(
     rows: &[BoardRow],
     mode: Mode,
@@ -123,11 +164,14 @@ pub fn layout_collapsible<'a>(
 ) -> Vec<LayoutItem> {
     let mut display = Vec::with_capacity(rows.len() + 4);
     let mut order: Vec<usize> = (0..rows.len()).collect();
-    let snoozed_order: Vec<usize> = order
+    let mut snoozed_order: Vec<usize> = order
         .iter()
         .copied()
         .filter(|&ix| snoozed.contains(&rows[ix].id))
         .collect();
+    if sort == Sort::Updated {
+        snoozed_order.sort_by_key(|&ix| recency(&rows[ix]));
+    }
     order.retain(|&ix| !snoozed.contains(&rows[ix].id));
     let key = |row: &'a BoardRow| {
         let kind = section_kind(mode, row);
@@ -153,7 +197,21 @@ pub fn layout_collapsible<'a>(
             size.map(ChangeSize::band),
             size.map(ChangeSize::lines),
         );
-        (section, !approved_action, size, wait.is_none(), wait)
+        // Without the update sort every row ties here, and a stack takes
+        // the place of its first member in this order.
+        let recent = if sort == Sort::Updated {
+            recency(row)
+        } else {
+            (false, std::cmp::Reverse(None))
+        };
+        (
+            section,
+            recent,
+            !approved_action,
+            size,
+            wait.is_none(),
+            wait,
+        )
     };
     order.sort_by(|&a, &b| key(&rows[a]).cmp(&key(&rows[b])));
     let mut i = 0;
@@ -1037,6 +1095,156 @@ mod tests {
             Sort::Smallest,
         );
         assert_eq!(outline(&rows, &items), ["Awaiting review (2)", "2", "1"]);
+    }
+
+    #[test]
+    fn updated_lists_the_most_recently_updated_first_inside_every_section() {
+        let updated = |mut r: BoardRow, at: Option<&str>| {
+            r.updated_at = at.map(Into::into);
+            r
+        };
+        let waiting = |mut r: BoardRow, since: &str| {
+            r.waiting_since = Some(since.into());
+            r
+        };
+        let approved = |mut r: BoardRow| {
+            r.review_state = ReviewState::Approved;
+            r
+        };
+        // As board_order hands My PRs in one repository over: newest number
+        // first.
+        let rows = vec![
+            updated(row(20, Category::Action), Some("2026-11-01T10:00:00Z")),
+            updated(row(19, Category::Action), None),
+            updated(row(18, Category::Action), Some("2026-11-19T10:00:00Z")),
+            // Approved-first no longer leads inside Needs action...
+            approved(updated(
+                row(17, Category::Action),
+                Some("2026-11-02T10:00:00Z"),
+            )),
+            // ...and a stack whose newest member is layer 2 takes that
+            // member's place, its layers still in order.
+            stacked(
+                updated(row(16, Category::Action), Some("2026-11-03T10:00:00Z")),
+                "acme/widgets",
+                72,
+                3,
+                1,
+            ),
+            stacked(
+                updated(row(15, Category::Action), Some("2026-11-18T10:00:00Z")),
+                "acme/widgets",
+                72,
+                3,
+                2,
+            ),
+            stacked(
+                updated(row(14, Category::Action), Some("2026-10-01T10:00:00Z")),
+                "acme/widgets",
+                72,
+                3,
+                3,
+            ),
+            // The longest wait no longer leads Awaiting review.
+            waiting(
+                updated(row(13, Category::Await), Some("2026-11-05T10:00:00Z")),
+                "2026-09-01T10:00:00Z",
+            ),
+            waiting(
+                updated(row(12, Category::Await), Some("2026-11-10T10:00:00+02:00")),
+                "2026-10-01T10:00:00Z",
+            ),
+            updated(row(11, Category::Draft), Some("2026-11-01T10:00:00Z")),
+            updated(row(10, Category::Draft), Some("2026-11-02T10:00:00Z")),
+            // Snoozed follows the same rule.
+            updated(row(9, Category::Action), Some("2026-11-01T10:00:00Z")),
+            updated(row(8, Category::Action), None),
+            updated(row(7, Category::Action), Some("2026-11-20T10:00:00Z")),
+        ];
+        let snoozed: HashSet<String> = ["PR_9", "PR_8", "PR_7"].map(Into::into).into();
+        let items = layout(&rows, Mode::Authored, false, &snoozed, true, Sort::Updated);
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Needs action (7)",
+                "18",
+                "  Stack #72 · 3 layers",
+                "16",
+                "15",
+                "14",
+                "17",
+                "20",
+                "19",
+                "Awaiting review (2)",
+                "12",
+                "13",
+                "Drafts (2)",
+                "10",
+                "11",
+                "Snoozed (3)",
+                "7",
+                "9",
+                "8"
+            ]
+        );
+
+        // The default keeps the incoming order and the longest wait.
+        let items = layout(&rows, Mode::Authored, false, &snoozed, true, Sort::Wait);
+        assert_eq!(
+            outline(&rows, &items)[..10],
+            [
+                "Needs action (7)",
+                "17",
+                "20",
+                "19",
+                "18",
+                "  Stack #72 · 3 layers",
+                "16",
+                "15",
+                "14",
+                "Awaiting review (2)"
+            ]
+        );
+
+        // The review queue: recency before the wait, section order kept.
+        let rows = vec![
+            waiting(
+                updated(row(3, Category::Todo), Some("2026-11-01T10:00:00Z")),
+                "2026-09-01T10:00:00Z",
+            ),
+            waiting(
+                updated(row(2, Category::Todo), Some("2026-11-12T10:00:00Z")),
+                "2026-10-01T10:00:00Z",
+            ),
+            updated(row(1, Category::Done), Some("2026-11-20T10:00:00Z")),
+        ];
+        let items = layout(
+            &rows,
+            Mode::Review,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Updated,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            ["Requested from you (2)", "2", "3", "Reviewed (1)", "1"]
+        );
+    }
+
+    #[test]
+    fn sorts_have_one_word_each_and_smallest_is_the_review_queues() {
+        for sort in Sort::ALL {
+            assert_eq!(Sort::from_key(sort.key()), Some(sort));
+        }
+        assert_eq!(Sort::from_key("updated"), Some(Sort::Updated));
+        assert_eq!(Sort::from_key("Updated"), None);
+        assert!(Sort::Smallest.applies_to(Mode::Review));
+        assert!(!Sort::Smallest.applies_to(Mode::Authored));
+        assert!(!Sort::Smallest.applies_to(Mode::AllOpen));
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            assert!(Sort::Updated.applies_to(mode) && Sort::Wait.applies_to(mode));
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ impl RootView {
         let state = self.state.read(cx);
         // The pill and the Snoozed header's chevron are one switch.
         let snoozed_shown = !self.collapsed_here(state).contains(&SectionKind::Snoozed);
+        let sort = self.sort_here(state);
         let current_repo = state.scope.repository();
         let pinned = self
             .pinned_repos
@@ -212,24 +213,42 @@ impl RootView {
                     this.table.focus_handle(cx).focus(window, cx);
                 })),
             )
+            .child(
+                view_toggle(
+                    "recent-first",
+                    "Recent first",
+                    0,
+                    sort == Sort::Updated,
+                    None,
+                    cx,
+                )
+                .tooltip(if sort == Sort::Updated {
+                    "Listing the most recently updated PRs first in each section. Click to go back to the default order."
+                } else {
+                    "List the most recently updated PRs first in each section; sections and stacks stay as they are"
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_sort(Sort::Updated, cx);
+                    this.table.focus_handle(cx).focus(window, cx);
+                })),
+            )
             .when(state.mode == Mode::Review, |bar| {
                 bar.child(
                     view_toggle(
                         "smallest-first",
                         "Smallest first",
                         0,
-                        self.smallest_first,
+                        sort == Sort::Smallest,
                         None,
                         cx,
                     )
-                    .tooltip(if self.smallest_first {
+                    .tooltip(if sort == Sort::Smallest {
                         "Listing the smallest changes first. Click to list the longest wait first."
                     } else {
                         "List requested and available reviews by size: Small, then Medium, then Large"
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.smallest_first = !this.smallest_first;
-                        this.sync_table(cx);
+                        this.toggle_sort(Sort::Smallest, cx);
                         this.table.focus_handle(cx).focus(window, cx);
                     })),
                 )

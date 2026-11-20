@@ -310,6 +310,7 @@ fn main() {
         update_paths,
         section_order: prmarmot_local::config::section_order(&file),
         collapsed: app::collapsed_from(&file),
+        sorts: app::sorts_from(&file),
         details_position: prmarmot_local::config::details_position(&file),
     };
     let attention_preferences = AttentionPreferences::from_file(&file);

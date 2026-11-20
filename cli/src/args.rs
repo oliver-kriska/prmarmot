@@ -74,9 +74,11 @@ View options:
                             GitHub matches label: and author: across the whole
                             repository; other terms check only the loaded PRs
       --snoozed             Show snoozed PRs instead of collapsing them
-      --sort ORDER          review: wait (default: longest wait first) or smallest
-                            (Small, then Medium, then Large changes; see the
-                            size band in the README)
+      --sort ORDER          Order inside each section: wait (default: longest
+                            wait first), updated (most recently updated on
+                            GitHub first, stacks kept whole) or, in review,
+                            smallest (Small, then Medium, then Large changes;
+                            see the size band in the README)
       --pages N             Result pages to load per queue, 1-5 (default 1)
       --no-color            Plain text (also honors NO_COLOR)
 
@@ -163,7 +165,8 @@ pub struct ViewArgs {
     /// `--filter`: the app's search grammar over the loaded rows; All open
     /// also sends its `label:` and `author:` terms to GitHub.
     pub filter: Option<String>,
-    /// `--sort`: the order inside the review queue's pickup sections.
+    /// `--sort`: the order inside each section; `smallest` is the review
+    /// queue's only.
     pub sort: Sort,
     pub pages: u8,
     pub no_color: bool,
@@ -418,13 +421,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--no-agent" if !watch => agent = Some(false),
             "--filter" if !watch => filter = Some(value("--filter")?),
             "--pages" if !watch => pages = Some(parse_pages(&value("--pages")?)?),
-            "--sort" if watch => return Err("--sort applies to `review`, not `watch`".into()),
-            "--sort" if mode == Mode::Review => sort = parse_sort(&value("--sort")?)?,
+            "--sort" if watch => {
+                return Err("--sort applies to `mine`, `review` and `all`, not `watch`".into())
+            }
             "--sort" => {
-                return Err(format!(
-                    "--sort applies to `review`, not `{}`",
-                    command_name(mode)
-                ))
+                sort = parse_sort(&value("--sort")?)?;
+                if !sort.applies_to(mode) {
+                    return Err(format!(
+                        "--sort {} applies to `review`, not `{}`",
+                        sort.key(),
+                        command_name(mode)
+                    ));
+                }
             }
             "--interval" if watch => interval_secs = Some(parse_interval(&value("--interval")?)?),
             "--events" if watch => max_events = Some(parse_events(&value("--events")?)?),
@@ -663,11 +671,8 @@ fn parse_auth(mut tokens: impl Iterator<Item = String>) -> Result<Command, Strin
 }
 
 fn parse_sort(word: &str) -> Result<Sort, String> {
-    match word {
-        "wait" => Ok(Sort::Wait),
-        "smallest" => Ok(Sort::Smallest),
-        other => Err(format!("unknown sort: {other} (use wait or smallest)")),
-    }
+    Sort::from_key(word)
+        .ok_or_else(|| format!("unknown sort: {word} (use wait, updated or smallest)"))
 }
 
 fn parse_skill(mut tokens: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -882,21 +887,30 @@ mod tests {
     }
 
     #[test]
-    fn sort_orders_the_review_queue_only() {
+    fn sort_orders_every_board_and_smallest_only_the_review_queue() {
         assert_eq!(view("review").sort, Sort::Wait);
         assert_eq!(view("review --sort smallest").sort, Sort::Smallest);
         assert_eq!(view("review --sort=wait").sort, Sort::Wait);
+        assert_eq!(view("review --sort updated").sort, Sort::Updated);
+        assert_eq!(view("mine --sort updated").sort, Sort::Updated);
+        assert_eq!(view("mine --all-repos --sort=updated").sort, Sort::Updated);
+        assert_eq!(view("all --repo o/n --sort updated").sort, Sort::Updated);
+        assert_eq!(view("mine --sort wait").sort, Sort::Wait);
         assert_eq!(
             parse_str("review --sort size").unwrap_err(),
-            "unknown sort: size (use wait or smallest)"
+            "unknown sort: size (use wait, updated or smallest)"
         );
         assert_eq!(
             parse_str("mine --sort smallest").unwrap_err(),
-            "--sort applies to `review`, not `mine`"
+            "--sort smallest applies to `review`, not `mine`"
+        );
+        assert_eq!(
+            parse_str("all --repo o/n --sort smallest").unwrap_err(),
+            "--sort smallest applies to `review`, not `all`"
         );
         assert_eq!(
             parse_str("watch review --sort smallest").unwrap_err(),
-            "--sort applies to `review`, not `watch`"
+            "--sort applies to `mine`, `review` and `all`, not `watch`"
         );
     }
 
@@ -935,7 +949,7 @@ mod tests {
         );
         assert_eq!(
             parse_str("all --sort smallest").unwrap_err(),
-            "--sort applies to `review`, not `all`"
+            "--sort smallest applies to `review`, not `all`"
         );
         assert_eq!(
             parse_str("all --interval 60").unwrap_err(),

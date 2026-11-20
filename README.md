@@ -375,6 +375,11 @@ details_position = "auto"               # auto | bottom | right
 [collapsed_sections]
 review = ["snoozed", "done"]
 
+# Order inside each section, per view: updated (Recent first) or, for
+# review, smallest (Smallest first). A view left out lists the longest wait first.
+[sort]
+my_prs = "updated"
+
 # Suggestions used only in the authored-PR “no reviewers” note.
 default_reviewers = ["alice", "bob"]     # any repository without an entry below
 
@@ -562,8 +567,13 @@ Every feature, with its limits and the version it shipped in, is listed in
   and the SmartBear/Cisco finding that reviews catch less beyond 200–400 lines.
   **Smallest first** (Review queue toolbar) lists **Requested from you** and
   **Available to review** by band, then by changed lines, then longest wait;
-  PRs without a band come last, and other sections keep their order. It lasts
-  until you quit.
+  PRs without a band come last, and other sections keep their order.
+- **Recent first** (tools bar, every view) lists the most recently updated PR
+  on GitHub first inside each section, Snoozed included; the sections keep their
+  order, and a stack or branch tree stays whole, in layer order, where its most
+  recently updated member falls. In the Review queue it and **Smallest first**
+  turn each other off. Each view remembers its choice as `[sort]` in
+  `config.toml`.
 - **Changes:** a blue row marker survives restarts until you actually select the
   PR; hover it to see what changed (new commits, CI, reviews, requests, comments).
   **Changed** (with the count of changed PRs matching the search) filters the
@@ -694,6 +704,7 @@ prmarmot-cli review --stale            # only PRs that have waited too long for 
 prmarmot-cli review --agent            # only PRs a coding agent or bot opened (--no-agent: a person's)
 prmarmot-cli review --filter 'label:"help wanted" is:stale'   # the app's search, in the terminal
 prmarmot-cli review --sort smallest    # small changes first, by the app's size band
+prmarmot-cli mine --sort updated       # most recently updated first in each section, stacks kept
 prmarmot-cli all --repo acme/api --filter 'label:bug'   # every open bug PR in one repository
 prmarmot-cli review --json | jq '.sections[] | select(.key == "todo") | .prs[].url'
 prmarmot-cli watch review --events 1   # block until something in the queue changes
@@ -717,7 +728,9 @@ PRs you watch in the app. `--stale` keeps only PRs that have waited
 the **Size band** (`· Small`). In `review`, `--sort smallest` lists the pickup
 sections the
 way **Smallest first** does (`--sort wait`, the default, lists the longest wait
-first). `--snoozed` expands the Snoozed group, which is
+first). In `mine`, `review` and `all`, `--sort updated` lists the most recently
+updated PR first inside each section, the way **Recent first** does; stacks
+stay whole. `--snoozed` expands the Snoozed group, which is
 otherwise shown as a count. `--pages N` loads up to five result pages, the same
 cap as **Load more**.
 
@@ -740,7 +753,7 @@ piped. `--format markdown` gives one GitHub-flavored table per section with
 linked PRs. `--json` emits `prmarmot-cli/board@1`:
 
 - **Envelope:** `viewer`, `mode` (`authored`, `review`, or `all`), `scope`,
-  `sort` (`wait` or `smallest`), `count`, `total` (how many PRs GitHub's search
+  `sort` (`wait`, `smallest` or `updated`), `count`, `total` (how many PRs GitHub's search
   found, loaded or not; null for `review`), `truncated`,
   `more_pages_available`, `rate_limit`, and `sections`.
 - **Sections:** each has a stable `key` (`approved`, `action`, `await`, `todo`,

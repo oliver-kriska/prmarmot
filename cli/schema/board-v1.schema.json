@@ -31,8 +31,8 @@
     },
     "scope": { "$ref": "#/$defs/scope" },
     "sort": {
-      "enum": ["wait", "smallest"],
-      "description": "Order inside Requested from you and Available to review: `wait` (longest wait first) or `smallest` (`review --sort smallest`: size band, then changed lines, then wait; PRs without a size last). Section order never changes."
+      "enum": ["wait", "smallest", "updated"],
+      "description": "Order inside each section: `wait` (the default: longest wait first in the pickup sections, otherwise as loaded), `updated` (`--sort updated`: most recently updated on GitHub first in every section, Snoozed too; a stack stays whole, in layer order, where its most recently updated member falls; PRs without an update time last) or `smallest` (`review --sort smallest`: in Requested from you and Available to review, size band, then changed lines, then wait; PRs without a size last). Section order never changes."
     },
     "count": { "type": "integer", "minimum": 0, "description": "PRs listed, after filters; `count + filters.filtered_out` were loaded." },
     "total": {

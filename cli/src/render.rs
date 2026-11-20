@@ -52,13 +52,6 @@ pub fn scope_label(scope: &BoardScope) -> String {
     }
 }
 
-pub fn sort_key(sort: Sort) -> &'static str {
-    match sort {
-        Sort::Wait => "wait",
-        Sort::Smallest => "smallest",
-    }
-}
-
 pub fn scope_json(scope: &BoardScope) -> Value {
     match scope {
         BoardScope::AllRepositories => json!({ "type": "all" }),
@@ -698,7 +691,7 @@ pub fn board_json(view: &BoardView) -> Value {
         "mode": mode_key(view.mode),
         "view": view_title(view.mode, &view.scope, view.authored_only),
         "scope": scope_json(&view.scope),
-        "sort": sort_key(view.sort),
+        "sort": view.sort.key(),
         "count": view.rows.len(),
         "total": view.total,
         "filters": {
@@ -858,8 +851,10 @@ fn status_line(view: &BoardView) -> String {
         "synced {}",
         view.generated_at.with_timezone(&Local).format("%H:%M")
     ));
-    if view.sort == Sort::Smallest {
-        parts.push("smallest first".into());
+    match view.sort {
+        Sort::Wait => {}
+        Sort::Smallest => parts.push("smallest first".into()),
+        Sort::Updated => parts.push("recently updated first".into()),
     }
     if let Some(rate) = &view.rate {
         parts.push(format!("API {}/{}", rate.remaining, rate.limit));
@@ -2138,6 +2133,50 @@ mod tests {
         assert_eq!(
             filter_line(&view).as_deref(),
             Some("Filter: stale (3d+ waiting) · 0 hidden")
+        );
+    }
+
+    #[test]
+    fn my_prs_can_list_the_most_recently_updated_first() {
+        let updated = |number, at: &str| {
+            let mut pr = row(number, Category::Action);
+            pr.updated_at = Some(at.into());
+            pr
+        };
+        let fetch = fetch_of(vec![
+            updated(3, "2026-11-01T10:00:00Z"),
+            updated(2, "2026-11-19T10:00:00Z"),
+            updated(1, "2026-11-10T10:00:00Z"),
+        ]);
+        let mut view = build(
+            fetch,
+            &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+            Mode::Authored,
+            BoardScope::Repository("acme/widgets".into()),
+            "me".into(),
+            Filters::default(),
+            Utc::now(),
+        );
+        let order = |view: &BoardView| -> Vec<u64> {
+            view.layout(false)
+                .iter()
+                .filter_map(|item| match item {
+                    LayoutItem::Row(ix) => Some(view.rows[*ix].number),
+                    LayoutItem::Header { .. } => None,
+                })
+                .collect()
+        };
+        assert_eq!(order(&view), [3, 2, 1]);
+        view.sort = Sort::Updated;
+        assert_eq!(order(&view), [2, 1, 3]);
+        assert_eq!(board_json(&view)["sort"], "updated");
+        let text = table(&view, 120, Paint::new(false), false);
+        assert!(
+            text.lines()
+                .next()
+                .unwrap()
+                .ends_with(" · recently updated first"),
+            "{text}"
         );
     }
 

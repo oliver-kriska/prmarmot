@@ -142,6 +142,8 @@ pub struct Launch {
     pub section_order: SectionOrder,
     /// `[collapsed_sections]` from the file, per view.
     pub collapsed: CollapsedSections,
+    /// `[sort]` from the file, per view.
+    pub sorts: ViewSorts,
     /// `details_position` from the file.
     pub details_position: DetailsPosition,
 }
@@ -160,6 +162,18 @@ pub fn collapsed_from(file: &prmarmot_local::config::FileConfig) -> CollapsedSec
     prmarmot_local::config::COLLAPSE_VIEWS
         .into_iter()
         .map(|view| (view, prmarmot_local::config::collapsed_sections(file, view)))
+        .collect()
+}
+
+/// The order inside each section, per `[collapsed_sections]` view name; a
+/// view left out lists the longest wait first. Bounded by the four views.
+pub type ViewSorts = HashMap<&'static str, Sort>;
+
+/// Every view's `[sort]` as the file says.
+pub fn sorts_from(file: &prmarmot_local::config::FileConfig) -> ViewSorts {
+    prmarmot_local::config::COLLAPSE_VIEWS
+        .into_iter()
+        .map(|view| (view, prmarmot_local::config::view_sort(file, view)))
         .collect()
 }
 
@@ -287,9 +301,9 @@ pub struct RootView {
     collapsed: CollapsedSections,
     /// Where Details opens (`details_position`, Settings).
     details_position: DetailsPosition,
-    /// Review queue: list the smallest changes first instead of the longest
-    /// wait.
-    smallest_first: bool,
+    /// The order inside each section, per view (`[sort]`): Recent first in
+    /// every view, Smallest first in the Review queue, one at a time.
+    sorts: ViewSorts,
     /// The order sections come in, in every view (`section_order`, Settings).
     section_order: SectionOrder,
     /// The quick filters' and the header's numbers over the loaded rows,
@@ -476,7 +490,7 @@ impl RootView {
             needs_you_only: false,
             collapsed: launch.collapsed,
             details_position: launch.details_position,
-            smallest_first: false,
+            sorts: launch.sorts,
             section_order: launch.section_order,
             counts: QuickCounts::default(),
             suppress_ack_for: None,
@@ -579,6 +593,33 @@ impl RootView {
             .get(view)
             .map(Vec::as_slice)
             .unwrap_or(&DEFAULT_COLLAPSED)
+    }
+
+    /// The order inside each section of the view on screen: its saved sort
+    /// when the view offers it, else the longest wait first.
+    pub(super) fn sort_here(&self, state: &AppState) -> Sort {
+        let view = collapse_view(state.mode, state.scope.is_all());
+        self.sorts
+            .get(view)
+            .copied()
+            .filter(|sort| sort.applies_to(state.mode))
+            .unwrap_or_default()
+    }
+
+    /// Turn `sort` on for the view on screen, or off (back to the longest
+    /// wait) when it is already on, and remember it in `[sort]`. One sort is
+    /// on at a time, so Recent first and Smallest first turn each other off.
+    pub(super) fn toggle_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let view = collapse_view(state.mode, state.scope.is_all());
+        let next = if self.sort_here(state) == sort {
+            Sort::Wait
+        } else {
+            sort
+        };
+        self.sorts.insert(view, next);
+        crate::config::persist_sort(view, next);
+        self.sync_table(cx);
     }
 
     /// Collapse or expand one section of the view on screen, from its
@@ -749,6 +790,7 @@ impl RootView {
             }
         }
         self.visible_count = rows.len();
+        let sort = self.sort_here(state);
         let can_load_more = state.pagination_can_load_more();
         let switching = self.pending_restore.take();
         let target_url = match &switching {
@@ -767,11 +809,7 @@ impl RootView {
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_stale_after_days(stale.after_days);
-            table.delegate_mut().set_sort(if self.smallest_first {
-                Sort::Smallest
-            } else {
-                Sort::Wait
-            });
+            table.delegate_mut().set_sort(sort);
             table
                 .delegate_mut()
                 .set_section_order(self.section_order.clone());
@@ -913,9 +951,14 @@ impl RootView {
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
                 let collapsed = collapsed_from(&file);
-                if this.section_order != sections || this.collapsed != collapsed {
+                let sorts = sorts_from(&file);
+                if this.section_order != sections
+                    || this.collapsed != collapsed
+                    || this.sorts != sorts
+                {
                     this.section_order = sections;
                     this.collapsed = collapsed;
+                    this.sorts = sorts;
                     this.sync_table(cx);
                 }
                 let position = prmarmot_local::config::details_position(&file);

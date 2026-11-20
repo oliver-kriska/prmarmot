@@ -65,7 +65,8 @@ complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l stale -d 'Only P
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l agent -d 'Only PRs opened by a coding agent or bot'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l no-agent -d 'Only PRs a person opened'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l filter -x -a 'label: author: repo: is:stale is:agent is:human' -d 'Only PRs matching a search query'
-complete -c prmarmot-cli -n "__prmarmot_cli_command review reviews" -l sort -x -a 'wait smallest' -d 'Longest wait or smallest change first'
+complete -c prmarmot-cli -n "__prmarmot_cli_command review reviews" -l sort -x -a 'wait updated smallest' -d 'Longest wait, most recently updated or smallest change first'
+complete -c prmarmot-cli -n "__prmarmot_cli_command mine authored all all-open" -l sort -x -a 'wait updated' -d 'Longest wait or most recently updated first'
 complete -c prmarmot-cli -n "__prmarmot_cli_command $boards" -l pages -x -a '1 2 3 4 5' -d 'Result pages to load per queue'
 
 # pr

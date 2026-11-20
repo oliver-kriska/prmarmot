@@ -174,10 +174,10 @@ mod tests {
                 &["prmarmot-cli", "all", "--"],
                 concat!(
                     "--repo --format --json --watched --snoozed --no-color --help ",
-                    "--host --auth --changed --stale --agent --no-agent --filter --pages"
+                    "--host --auth --changed --stale --agent --no-agent --filter --sort --pages"
                 ),
             ),
-            // One repository, and neither --authored nor --sort.
+            // One repository, and no --authored.
             (&["prmarmot-cli", "all-open", "--au"], "--auth"),
             (
                 &["prmarmot-cli", "watch", "--pr", "o/n#1", "--un"],
@@ -202,6 +202,8 @@ mod tests {
             (&["prmarmot-cli", "review", "--auth"], "--auth"),
             (&["prmarmot-cli", "review", "--so"], "--sort"),
             (&["prmarmot-cli", "review", "--sort", "s"], "smallest"),
+            (&["prmarmot-cli", "mine", "--sort", "u"], "updated"),
+            (&["prmarmot-cli", "all", "--sort", "u"], "updated"),
             (
                 &["prmarmot-cli", "skill", "install", "--agent", "a"],
                 "agents all",
@@ -250,7 +252,7 @@ mod tests {
         ] {
             assert!(all.contains(&flag.to_owned()), "all lacks {flag}: {all:?}");
         }
-        for flag in ["--all-repos", "--authored", "--sort", "--interval"] {
+        for flag in ["--all-repos", "--authored", "--interval"] {
             assert!(
                 !all.contains(&flag.to_owned()),
                 "all offers {flag}: {all:?}"
@@ -271,12 +273,17 @@ mod tests {
         assert!(!offers("prmarmot-cli review --")
             .unwrap()
             .contains(&"--authored".to_owned()));
-        assert!(!offers("prmarmot-cli mine --")
+        assert!(offers("prmarmot-cli mine --")
             .unwrap()
             .contains(&"--sort".to_owned()));
         assert_eq!(
             offers("prmarmot-cli review --sort ").unwrap(),
-            ["smallest", "wait"]
+            ["smallest", "updated", "wait"]
+        );
+        // Smallest first is the review queue's only.
+        assert_eq!(
+            offers("prmarmot-cli mine --sort ").unwrap(),
+            ["updated", "wait"]
         );
         assert_eq!(
             offers("prmarmot-cli completions ").unwrap(),

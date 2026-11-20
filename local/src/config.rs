@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use prmarmot_core::board::{BoardConfig, BoardScope, IssueLinkRule, Mode};
 use prmarmot_core::github::rate_limit::{DEFAULT_REFRESH_SECS, MIN_REFRESH_SECS};
-use prmarmot_core::layout::{collapsible_section, SectionKind, SectionOrder, COLLAPSIBLE_SECTIONS};
+use prmarmot_core::layout::{
+    collapsible_section, SectionKind, SectionOrder, Sort, COLLAPSIBLE_SECTIONS,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -85,6 +87,11 @@ pub struct FileConfig {
     /// only Snoozed collapsed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collapsed_sections: BTreeMap<String, Vec<String>>,
+    /// `[sort]`: per view (the `[collapsed_sections]` names), the order
+    /// inside each section: `updated`, or `smallest` in `review`. A view
+    /// left out lists the longest wait first (`wait`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sort: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_link: Option<IssueLinkSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +118,7 @@ impl Default for FileConfig {
             default_reviewers: Vec::new(),
             repo_reviewers: BTreeMap::new(),
             collapsed_sections: BTreeMap::new(),
+            sort: BTreeMap::new(),
             issue_link: None,
             window: None,
             notifications: true,
@@ -309,6 +317,7 @@ pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     board_rules(file, &EnvOverrides::current(), &mut warnings);
     warnings.extend(SectionOrder::from_keys(&file.section_order).1);
     collapsed_section_warnings(file, &mut warnings);
+    sort_warnings(file, &mut warnings);
     warnings.extend(details_position_warning(file));
     warnings.extend(look_warnings(file));
     auth_settings(file, None, None, &mut warnings);
@@ -526,6 +535,54 @@ pub fn collapsed_sections(file: &FileConfig, view: &str) -> Vec<SectionKind> {
         }
     }
     kinds
+}
+
+/// The mode a `[collapsed_sections]` / `[sort]` view name shows.
+fn view_mode(view: &str) -> Option<Mode> {
+    match view {
+        "my_prs" | "involving_me" => Some(Mode::Authored),
+        "review" => Some(Mode::Review),
+        "all_open" => Some(Mode::AllOpen),
+        _ => None,
+    }
+}
+
+/// The order inside each section of `view`: what `[sort]` names for it,
+/// when that view offers it, or the longest wait first.
+pub fn view_sort(file: &FileConfig, view: &str) -> Sort {
+    file.sort
+        .get(view)
+        .and_then(|word| Sort::from_key(word.trim()))
+        .filter(|sort| view_mode(view).is_some_and(|mode| sort.applies_to(mode)))
+        .unwrap_or_default()
+}
+
+fn sort_warnings(file: &FileConfig, warnings: &mut Vec<String>) {
+    for (view, word) in &file.sort {
+        let Some(mode) = view_mode(view) else {
+            warnings.push(format!(
+                "ignoring [sort] {view:?}: use {}",
+                COLLAPSE_VIEWS.join(", ")
+            ));
+            continue;
+        };
+        match Sort::from_key(word.trim()) {
+            Some(sort) if sort.applies_to(mode) => {}
+            Some(sort) => warnings.push(format!(
+                "ignoring [sort] {view} = {:?}: {} is the review queue's only",
+                sort.key(),
+                sort.key()
+            )),
+            None => warnings.push(format!(
+                "ignoring [sort] {view} = {word:?}: use wait or updated{}",
+                if mode == Mode::Review {
+                    ", or smallest"
+                } else {
+                    ""
+                }
+            )),
+        }
+    }
 }
 
 fn collapsed_section_warnings(file: &FileConfig, warnings: &mut Vec<String>) {
@@ -869,6 +926,27 @@ mod tests {
             ignored_values(&side),
             ["ignoring details_position = \"side\": use auto, bottom or right"]
         );
+    }
+
+    #[test]
+    fn sort_is_read_per_view_and_smallest_only_for_the_review_queue() {
+        assert_eq!(view_sort(&FileConfig::default(), "my_prs"), Sort::Wait);
+        let file: FileConfig = toml::from_str(
+            "[sort]\nmy_prs = \"updated\"\nreview = \"smallest\"\nall_open = \"smallest\"\ninvolving_me = \"newest\"\nnope = \"updated\"\n",
+        )
+        .unwrap();
+        assert_eq!(view_sort(&file, "my_prs"), Sort::Updated);
+        assert_eq!(view_sort(&file, "review"), Sort::Smallest);
+        assert_eq!(view_sort(&file, "all_open"), Sort::Wait);
+        assert_eq!(view_sort(&file, "involving_me"), Sort::Wait);
+        let warnings = ignored_values(&file);
+        for expected in [
+            "ignoring [sort] \"nope\": use my_prs, involving_me, review, all_open",
+            "ignoring [sort] all_open = \"smallest\": smallest is the review queue's only",
+            "ignoring [sort] involving_me = \"newest\": use wait or updated",
+        ] {
+            assert!(warnings.contains(&expected.to_string()), "{warnings:?}");
+        }
     }
 
     #[test]

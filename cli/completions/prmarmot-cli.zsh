@@ -66,13 +66,15 @@ _prmarmot-cli() {
           case $line[1] in
             mine|authored)
               board+=('--authored[with --all-repos: only PRs you authored]')
+              board+=('--sort=[order inside each section, longest wait or most recently updated first]:order:(wait updated)')
               ;;
             review|reviews)
-              board+=('--sort=[order inside the pickup sections, longest wait or smallest change first]:order:(wait smallest)')
+              board+=('--sort=[order inside each section, longest wait, most recently updated or smallest change first]:order:(wait updated smallest)')
               ;;
             *)
               # All open covers one repository.
               scope=('--repo=[one repository]:repository (OWNER/NAME): ')
+              board+=('--sort=[order inside each section, longest wait or most recently updated first]:order:(wait updated)')
               ;;
           esac
           _arguments -s $help $scope $view $board && ret=0
