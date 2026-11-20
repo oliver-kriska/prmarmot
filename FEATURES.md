@@ -201,12 +201,12 @@ values in the code. New features get the next free number in their area.
   band. The band is never turned into a time estimate. _since v0.8.0_
 - **F-note-8** Requested from you, Available to review, and Awaiting review list the longest wait first. In the
   Review queue, **Smallest first** sorts Requested from you and Available to review by size band, then changed lines,
-  then wait, with unsized PRs last. It lasts until you quit. _since v0.8.0_ **Recent first**, in the tools bar of
-  every view, lists the most recently updated PR on GitHub first inside each section, Snoozed too, ahead of
-  approved-first, the wait and the size. Section order stays. A stack or branch tree stays whole, in layer order,
-  where its most recently updated member falls, and a PR without an update time goes last. In the Review queue,
-  Recent first and Smallest first turn each other off. Both are now remembered for each view as `[sort]` in
-  config.toml (`updated`, or `smallest` for `review`). _unreleased_
+  then wait, with unsized PRs last. _since v0.8.0_ **Recent first**, in the tools bar of every view, lists the most
+  recently updated PR on GitHub first inside each section, Snoozed too, ahead of approved-first, the wait and the
+  size. Section order stays. A stack or branch tree stays whole, in layer order, where its most recently updated
+  member falls, and a PR without an update time goes last. In the Review queue, Recent first and Smallest first turn
+  each other off, and the one that is on is remembered for each view as `[sort]` in config.toml (`updated`, or
+  `smallest` for `review`). _since v0.21.3_
 - **F-note-9** The Review column shows each reviewer's standing review. A later comment doesn't cancel an approval
   or a change request, but a later change request or a dismissal does. _since v0.8.0_
 - **F-note-10** Reviews from the `github-actions` and `chatgpt-codex-connector` bots never count. _since v0.1.0_
@@ -597,7 +597,7 @@ values in the code. New features get the next free number in their area.
   single value that is ignored (a bad issue-link pattern, a `[repo_reviewers]` key that isn't `owner` or
   `owner/name`, `stale_after_days = 0`, an unknown `[auth]` `mode` or `store`, and _since v0.12.0_ a `section_order`
   entry that is not a section; _since v0.13.0_ a `[collapsed_sections]` view or section it doesn't know, and a
-  `details_position` other than `auto`, `bottom` or `right`; _unreleased_ a `[sort]` view or word it doesn't know,
+  `details_position` other than `auto`, `bottom` or `right`; _since v0.21.3_ a `[sort]` view or word it doesn't know,
   and `smallest` outside `review`), from the file or the environment.
   It shows four lines at most; the last counts the rest and lists them in its tooltip. _since v0.10.0_ A file it
   can't read is left alone too, and so is a key of the wrong kind (`window = 900`), which no longer stops the app
@@ -753,7 +753,7 @@ values in the code. New features get the next free number in their area.
 - **F-cli-4** `--stale` keeps PRs that have waited too long. `--sort smallest` or `--sort wait` orders the pickup
   sections, and Notes end with the wait and the size band. _since v0.8.0_ `--sort updated` lists the most recently
   updated PRs first inside each section, as Recent first does (F-note-8), in `mine`, `review` and `all`; `smallest`
-  stays the review queue's, and `--json` says `"sort": "updated"`. _unreleased_ `--agent` keeps only PRs a coding agent or
+  stays the review queue's, and `--json` says `"sort": "updated"`. _since v0.21.3_ `--agent` keeps only PRs a coding agent or
   bot opened and `--no-agent` only a person's (F-search-9); `--json` says which in `filters.agent`. _since v0.15.1_
 - **F-cli-5** `--filter "<query>"` runs the desktop search grammar over the loaded PRs. _since v0.9.0_
 - **F-cli-6** Output formats: a width-aware table on a terminal, Markdown when piped, `--format markdown`, and
@@ -815,7 +815,7 @@ values in the code. New features get the next free number in their area.
     762 open" or "40 match". A footer names the terms that checked only the loaded PRs.
   - `--json` adds `total` and `mode: "all"`.
   - Without a repository it exits 2 before any request. `watch` doesn't take `all`, and `--sort smallest` and
-    `--authored` don't apply (`--sort updated` does, _unreleased_).
+    `--authored` don't apply (`--sort updated` does, _since v0.21.3_).
 
   _since v0.12.0_
 
