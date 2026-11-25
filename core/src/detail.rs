@@ -82,6 +82,24 @@ pub fn my_review_text(review: &ReviewVerdict) -> Option<&'static str> {
     }
 }
 
+/// Whether Details shows your standing review, so a `state:` match the
+/// Review column does not show (the column leaves your own review out) is
+/// explained. My PRs holds only your own PRs, which have no review of yours
+/// to show. The review queue holds only other people's. All open holds both,
+/// and the row does not say whose it is, so it shows only an approval or a
+/// change request: GitHub lets nobody give either on their own PR, while a
+/// reply in a thread there counts as a comment.
+fn shows_your_review(mode: Mode, review: &ReviewVerdict) -> bool {
+    match mode {
+        Mode::Authored => false,
+        Mode::Review => true,
+        Mode::AllOpen => matches!(
+            review,
+            ReviewVerdict::Approved | ReviewVerdict::ChangesRequested
+        ),
+    }
+}
+
 /// What a line of the panel is, so a front end can draw one differently —
 /// the labels as chips, the closing line muted — without reading its words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,11 +300,10 @@ pub fn detail_fields(
             },
         ),
     ]);
-    // Your own PR has no review of yours to show.
     if let Some(review) = row
         .my_review
         .as_ref()
-        .filter(|_| mode == Mode::Review)
+        .filter(|review| shows_your_review(mode, review))
         .and_then(my_review_text)
     {
         fields.push(field(
@@ -736,6 +753,26 @@ mod tests {
                 .any(|line| line == "Waiting for a reviewer for 3d (since 2026-09-02 11:30)"),
             "{two_hours_east:?}"
         );
+    }
+
+    #[test]
+    fn all_open_shows_your_approval_or_change_request() {
+        let mut pr = row();
+        pr.my_review = Some("APPROVED".into());
+        let lines = detail_lines(&pr, Mode::AllOpen, now(), 0);
+        assert!(
+            lines.iter().any(|line| line == "Your review: approved"),
+            "{lines:?}"
+        );
+        pr.my_review = Some("CHANGES_REQUESTED".into());
+        let lines = detail_lines(&pr, Mode::AllOpen, now(), 0);
+        assert!(lines
+            .iter()
+            .any(|line| line == "Your review: changes requested"));
+        // A comment may be a reply on your own PR, which All open cannot tell.
+        pr.my_review = Some("COMMENTED".into());
+        let lines = detail_lines(&pr, Mode::AllOpen, now(), 0);
+        assert!(!lines.iter().any(|line| line.starts_with("Your review")));
     }
 
     #[test]
