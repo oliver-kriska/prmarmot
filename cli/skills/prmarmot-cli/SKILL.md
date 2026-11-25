@@ -140,6 +140,12 @@ Other flags:
 - `--agent` / `--no-agent`: only PRs a coding agent or bot opened (GitHub's
   `Bot` accounts plus config `agent_authors`), or only a person's. The same
   split as `is:agent` / `is:human` in `--filter`.
+- `--filter 'state:approved'` (also `changes`, `commented`, `waiting`,
+  `none`): only PRs in that review state, the user's own standing approval or
+  change request included. `--filter 'ci:fail'` (also `pass`, `running`,
+  `none`, `hidden`): only PRs whose CI column says that. `is:draft` and
+  `is:conflict` keep drafts or PRs with a merge conflict. All of these are
+  checked on the loaded PRs, also in `all`.
 - `--sort smallest` (`review` only): list requested and available PRs by
   size band, then changed lines, then longest wait. The default is
   `--sort wait`. The envelope's `sort` says which order was used.

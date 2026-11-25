@@ -67,12 +67,17 @@ View options:
       --filter QUERY        Only PRs matching the app's search box: words match the
                             number, repository, title, author, labels, linked issue
                             and Note; label:NAME, author:LOGIN, repo:OWNER/NAME,
-                            is:stale, is:agent and is:human match a whole field;
-                            quote a value that has
-                            spaces; every term must match, except that one of
-                            several author: or repo: terms is enough. With `all`,
-                            GitHub matches label: and author: across the whole
-                            repository; other terms check only the loaded PRs
+                            is:stale, is:agent, is:human, is:draft and
+                            is:conflict match a whole field; state:approved,
+                            state:changes, state:commented, state:waiting and
+                            state:none match the PR's review state, your own
+                            standing review included; ci:pass, ci:fail,
+                            ci:running, ci:none and ci:hidden match the CI
+                            column; quote a value that has spaces; every term
+                            must match, except that one of several author:,
+                            repo:, state: or ci: terms is enough. With `all`, GitHub matches label: and
+                            author: across the whole repository; other terms
+                            check only the loaded PRs
       --snoozed             Show snoozed PRs instead of collapsing them
       --sort ORDER          Order inside each section: wait (default: longest
                             wait first), updated (most recently updated on

@@ -550,8 +550,9 @@ Every feature, with its limits and the version it shipped in, is listed in
 - **Folding:** click a section's header, or press `c`, to fold it; a folded
   section keeps its count and says what it holds ("1 failing CI · 1 merge
   conflict", "longest wait 4d"). Each view remembers what you folded.
-- **Quick filters:** **Needs you**, **Changed**, **Stale** and **Snoozed**
-  beside Search narrow the board with one click, each with its count.
+- **Quick filters:** **Needs you**, **Changed**, **Stale**, **Agents**,
+  **Approved** and **Snoozed** beside Search narrow the board with one click,
+  each with its count.
 - **Details beside the table:** on a window 1,480 px or wider, Details opens on
   the right as a list of labels and values; narrower, it opens below. Settings
   → **Details position** can pin it to either place.
@@ -596,15 +597,30 @@ Every feature, with its limits and the version it shipped in, is listed in
   - `label:NAME`, `author:LOGIN`, and `repo:OWNER/NAME` keep PRs whose label,
     author, or repository is exactly that, ignoring case. Quote values with
     spaces: `label:"help wanted"`. After a space or Enter a term becomes a
-    chip. Words, labels, and `is:stale` must all match; several `author:` or
-    `repo:` chips keep PRs matching any one of them, as GitHub does.
+    chip. Words, labels, and `is:` terms must all match; several `author:`,
+    `repo:`, `state:`, or `ci:` chips keep PRs matching any one of them, as
+    GitHub does for authors.
   - In **All open**, `label:` and `author:` chips are sent to GitHub's search
     (one request, after you stop typing), so `label:bug` finds every open bug
     PR in the repository and the header says "N match". `author:dependabot`
-    finds the bot's PRs too. Words and `is:stale` still check only the loaded
-    PRs, and while more are left to load a line under the header says so.
+    finds the bot's PRs too. Words, `is:`, `state:`, and `ci:` still check
+    only the loaded PRs, and while more are left to load a line under the
+    header says so.
   - `is:stale` keeps PRs that have waited `stale_after_days` or longer for a
     reviewer (see **Pickup age**).
+  - `state:approved`, `state:changes`, `state:commented`, `state:waiting`,
+    and `state:none` keep PRs in that review state, in every view. A change
+    request outweighs approvals, an approval outweighs comments, and your own
+    standing approval or change request counts: `state:approved` in All open
+    lists every approved PR you have loaded, the ones you approved included,
+    and Details shows "Your review: approved" on those. The **Approved**
+    button adds or removes the `state:approved` chip.
+    `state:changes_requested` and `state:requested` also work. The state is
+    checked on the loaded PRs, also in All open.
+  - `ci:pass`, `ci:fail`, `ci:running`, `ci:none`, and `ci:hidden` keep PRs
+    whose CI column says that (`ci:none` is the column's "—"). `is:draft`
+    keeps drafts, and `is:conflict` keeps PRs GitHub reports a merge conflict
+    on. All are checked on the loaded PRs.
   - `is:agent` keeps PRs a coding agent or bot opened, `is:human` the ones a
     person opened. GitHub's `Bot` accounts count (Copilot, Claude, Dependabot
     and the like); `agent_authors` in config.toml adds logins or `*` patterns
@@ -738,13 +754,16 @@ cap as **Load more**.
 same grammar the desktop search field uses, so a saved query means one thing in
 both places. Bare words match the number, repository, title, author, labels,
 linked issue and Note; `label:NAME`, `author:LOGIN`, `repo:OWNER/NAME`,
-`is:stale`, `is:agent` and `is:human` match a whole field; quote a value that has spaces
-(`label:"help wanted"`); every term must match, and matching ignores case.
-Several `author:` or `repo:` terms keep PRs matching any one of them, as
-GitHub's search does. `is:stale` uses the same `stale_after_days` as `--stale`.
+`is:stale`, `is:agent`, `is:human`, `is:draft` and `is:conflict` match a whole
+field; `state:approved`, `state:changes`, `state:commented`, `state:waiting` and
+`state:none` match the PR's review state, your own standing review included;
+`ci:pass`, `ci:fail`, `ci:running`, `ci:none` and `ci:hidden` match the CI
+column; quote a value that has spaces (`label:"help wanted"`); every term must
+match, and matching ignores case. Several `author:`, `repo:`, `state:` or `ci:`
+terms keep PRs matching any one of them, as GitHub's search does for authors. `is:stale` uses the same `stale_after_days` as `--stale`.
 In `all`, the `label:` and `author:` terms go to GitHub with the search, so
-they cover the whole repository; words and `is:stale` check only the loaded
-PRs, and the footer says so while more are left to load. The grammar lives in
+they cover the whole repository; words, `is:`, `state:` and `ci:` check only
+the loaded PRs, and the footer says so while more are left to load. The grammar lives in
 `prmarmot-core` and is pinned by a golden test, so the desktop app, the CLI and
 future front ends cannot drift on what a query means.
 

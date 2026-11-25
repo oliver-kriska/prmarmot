@@ -95,7 +95,7 @@ _prmarmot_cli() {
             ;;
         --filter)
             # A free-text query; offer the qualifier words as a starting point.
-            COMPREPLY=($(compgen -W "label: author: repo: is:stale is:agent is:human" -- "$cur"))
+            COMPREPLY=($(compgen -W "label: author: repo: is:stale is:agent is:human is:draft is:conflict state:approved state:changes state:commented state:waiting state:none ci:pass ci:fail ci:running ci:none ci:hidden" -- "$cur"))
             compopt -o nospace 2>/dev/null
             return
             ;;

@@ -110,9 +110,9 @@ pub struct Filters {
     /// What stale means, also for each PR's `stale` mark.
     pub stale_after_days: u64,
     /// `--filter`: the app's search grammar, from `prmarmot_core::search`.
-    /// Free words plus `label:`, `author:`, `repo:`, `is:stale`, `is:agent`
-    /// and `is:human`, ANDed,
-    /// except that one of several `author:` or `repo:` terms is enough.
+    /// Free words plus `label:`, `author:`, `repo:`, `is:`, `state:` and
+    /// `ci:`, ANDed, except that one of several `author:`, `repo:`, `state:`
+    /// or `ci:` terms is enough.
     pub query: Option<String>,
 }
 
@@ -642,6 +642,35 @@ pub mod tests {
         assert_eq!(filtered("author:bob", rows.clone()).rows.len(), 1);
         assert_eq!(filtered("author:bob number 1", rows.clone()).rows.len(), 0);
         assert_eq!(filtered("repo:acme/widgets", rows.clone()).rows.len(), 3);
+        // `state:` reads the reviews, the viewer's own approval included.
+        let mut approved = plain.clone();
+        approved.number = 4;
+        approved.my_review = Some(prmarmot_core::board::ReviewVerdict::Approved);
+        let with_approved = vec![labelled.clone(), approved];
+        let view = filtered("state:approved", with_approved.clone());
+        assert_eq!(view.rows.iter().map(|r| r.number).collect::<Vec<_>>(), [4]);
+        assert_eq!(
+            filtered("state:commented", with_approved.clone())
+                .rows
+                .len(),
+            1
+        );
+        // `ci:` reads the CI column, `is:draft` the draft flag.
+        let mut failing = plain.clone();
+        failing.number = 5;
+        failing.ci = prmarmot_core::board::Ci::Fail;
+        failing.draft = true;
+        let with_failing = vec![labelled.clone(), failing];
+        let numbers = |query: &str| -> Vec<u64> {
+            filtered(query, with_failing.clone())
+                .rows
+                .iter()
+                .map(|r| r.number)
+                .collect()
+        };
+        assert_eq!(numbers("ci:fail"), [5]);
+        assert_eq!(numbers("is:draft"), [5]);
+        assert_eq!(numbers("ci:fail is:conflict"), Vec::<u64>::new());
         assert_eq!(filtered("   ", rows).rows.len(), 3);
     }
 

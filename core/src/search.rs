@@ -1,8 +1,9 @@
-//! The board search grammar: free words plus `label:`, `author:`, `repo:` and
-//! `is:stale`, matched against rows already loaded. Words, labels and
-//! `is:stale` must all match; several authors, or several repositories, match
-//! any one of them — a PR has one of each, and GitHub's search reads them the
-//! same way, which All open relies on when it sends them there.
+//! The board search grammar: free words plus `label:`, `author:`, `repo:`,
+//! `is:`, `state:` and `ci:`, matched against rows already loaded. Words,
+//! labels and `is:` must all match; several authors, repositories, review
+//! states or CI states match any one of them — a PR has one of each, and
+//! GitHub's search reads authors the same way, which All open relies on when
+//! it sends them there.
 //!
 //! It lives in core, not in a front end, because otherwise the desktop app and
 //! the iPad would drift on what `label:"help wanted"` means. Drawing the chips
@@ -15,7 +16,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::attention::Marks;
-use crate::board::BoardRow;
+use crate::board::{effective_review_state, BoardRow, Ci, ReviewState};
 use crate::pickup::is_stale;
 
 /// A `key:value` search term. Each matches one field whole and ignoring
@@ -26,8 +27,17 @@ pub enum Qualifier {
     Author,
     Repo,
     /// `is:stale`: waited `stale_after_days` or longer for a reviewer;
-    /// `is:agent` / `is:human`: whether a coding agent or bot opened the PR.
+    /// `is:agent` / `is:human`: whether a coding agent or bot opened the PR;
+    /// `is:draft`: a draft; `is:conflict`: GitHub reports a merge conflict
+    /// (not a PR whose mergeability GitHub has not worked out yet).
     Is,
+    /// `state:approved`, `changes`, `commented`, `waiting` or `none`: the
+    /// PR's review state, your own standing verdict included
+    /// ([`effective_review_state`]).
+    State,
+    /// `ci:pass`, `fail`, `running`, `none` or `hidden`: what the CI column
+    /// shows for the PR.
+    Ci,
 }
 
 /// When the table is filtered, and how long a wait makes a PR stale.
@@ -44,11 +54,13 @@ impl StaleRule {
 }
 
 impl Qualifier {
-    const ALL: [Qualifier; 4] = [
+    const ALL: [Qualifier; 6] = [
         Qualifier::Label,
         Qualifier::Author,
         Qualifier::Repo,
         Qualifier::Is,
+        Qualifier::State,
+        Qualifier::Ci,
     ];
 
     pub fn key(self) -> &'static str {
@@ -57,6 +69,8 @@ impl Qualifier {
             Qualifier::Author => "author",
             Qualifier::Repo => "repo",
             Qualifier::Is => "is",
+            Qualifier::State => "state",
+            Qualifier::Ci => "ci",
         }
     }
 
@@ -82,8 +96,42 @@ impl Qualifier {
                 (same_text(value, "stale") && stale.is_stale(row))
                     || (same_text(value, "agent") && row.agent)
                     || (same_text(value, "human") && !row.agent)
+                    || (same_text(value, "draft") && row.draft)
+                    || (same_text(value, "conflict") && row.conflict)
             }
+            Qualifier::State => {
+                state_value(value).is_some_and(|state| effective_review_state(row) == state)
+            }
+            Qualifier::Ci => ci_value(value) == Some(row.ci),
         }
+    }
+}
+
+/// What a `state:` value names. `changes_requested` is GitHub's spelling of
+/// `changes`, and `requested` is the Review column's word for `waiting`; any
+/// other value matches no PR, as an unknown label does.
+fn state_value(value: &str) -> Option<ReviewState> {
+    match value.to_ascii_lowercase().as_str() {
+        "approved" => Some(ReviewState::Approved),
+        "changes" | "changes_requested" | "changes-requested" => Some(ReviewState::Changes),
+        "commented" => Some(ReviewState::Commented),
+        "waiting" | "requested" => Some(ReviewState::Waiting),
+        "none" => Some(ReviewState::None),
+        _ => None,
+    }
+}
+
+/// What a `ci:` value names: the CI column's words, plus `passing`,
+/// `failing` and `pending`, which mean the same. Any other value matches no
+/// PR.
+fn ci_value(value: &str) -> Option<Ci> {
+    match value.to_ascii_lowercase().as_str() {
+        "pass" | "passing" => Some(Ci::Pass),
+        "fail" | "failing" => Some(Ci::Fail),
+        "running" | "pending" => Some(Ci::Running),
+        "none" => Some(Ci::None),
+        "hidden" => Some(Ci::Hidden),
+        _ => None,
     }
 }
 
@@ -262,8 +310,10 @@ pub const MAX_REMOTE_TERMS: usize = 8;
 /// author is sent in both forms. The loaded rows are still filtered locally by
 /// every chip, so the result means exactly what the chips say.
 ///
-/// Free words, `repo:` and `is:stale` stay local: GitHub cannot answer them
-/// the same way (`is:stale` is PR Marmot's own rule).
+/// Free words, `repo:`, `is:`, `state:` and `ci:` stay local: GitHub cannot
+/// answer them the same way (`is:stale` is PR Marmot's own rule, and GitHub's
+/// `review:approved` follows the merge rules, measured 2026-11-25: it left out
+/// a PR whose approval stood and that a ruleset still held at REVIEW_REQUIRED).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct RemoteFilter {
     labels: Vec<String>,
@@ -318,7 +368,7 @@ impl RemoteFilter {
             Qualifier::Author => {
                 remote_author(&chip.value).is_some_and(|author| self.authors.contains(&author))
             }
-            Qualifier::Repo | Qualifier::Is => false,
+            Qualifier::Repo | Qualifier::Is | Qualifier::State | Qualifier::Ci => false,
         }
     }
 }
@@ -372,7 +422,7 @@ pub fn local_only_terms(text: &str, chips: &[FilterChip], remote: &RemoteFilter)
 
 /// Case-insensitive search across the fields users scan in the board: every
 /// free word must appear somewhere, every `label:` and `is:stale` must match
-/// its field exactly, and of several `author:` (or `repo:`) terms one must
+/// its field exactly, and of several `author:` (or `repo:`, `state:`, `ci:`) terms one must
 /// match. Filtering is local; it must not trigger GitHub requests on each
 /// keystroke.
 pub fn matches_filter(row: &BoardRow, query: &str, stale: StaleRule) -> bool {
@@ -439,7 +489,7 @@ impl Search {
 
     /// Case-insensitive search across the fields users scan in the board:
     /// every free word must appear somewhere, every `label:` and `is:stale`
-    /// must match its field exactly, and of several `author:` (or `repo:`)
+    /// must match its field exactly, and of several `author:` (or `repo:`, `state:`, `ci:`)
     /// terms one must match.
     pub fn matches(&self, row: &BoardRow, stale: StaleRule) -> bool {
         if self.terms.is_empty() {
@@ -453,7 +503,15 @@ impl Search {
                 .peekable();
             values.peek().is_none() || values.any(|(_, value)| qualifier.matches(row, value, stale))
         };
-        if !any_of(Qualifier::Author) || !any_of(Qualifier::Repo) {
+        if [
+            Qualifier::Author,
+            Qualifier::Repo,
+            Qualifier::State,
+            Qualifier::Ci,
+        ]
+        .into_iter()
+        .any(|qualifier| !any_of(qualifier))
+        {
             return false;
         }
         // Built only when a free word needs it.
@@ -474,7 +532,7 @@ impl Search {
                     .to_lowercase()
                 })
                 .contains(value.as_str()),
-            Some(Qualifier::Author | Qualifier::Repo) => true,
+            Some(Qualifier::Author | Qualifier::Repo | Qualifier::State | Qualifier::Ci) => true,
             Some(qualifier) => qualifier.matches(row, value, stale),
         })
     }
@@ -502,6 +560,9 @@ pub struct QuickCounts {
     pub stale: usize,
     /// Rows opened by a coding agent or bot (`is:agent`).
     pub agent: usize,
+    /// Rows whose review state is approved (`state:approved`), your own
+    /// standing approval included.
+    pub approved: usize,
     /// Watched or snoozed.
     pub followed: usize,
     /// The header's "need you": [`crate::status::need_you_count`].
@@ -525,6 +586,7 @@ pub fn query_board<'r>(
         counts.snoozed += usize::from(marks.is_snoozed(&row.id));
         counts.stale += usize::from(query.stale.is_stale(row));
         counts.agent += usize::from(row.agent);
+        counts.approved += usize::from(effective_review_state(row) == ReviewState::Approved);
         counts.followed += usize::from(marks.is_followed(&row.id));
     }
     let shown = rows
@@ -542,7 +604,7 @@ pub fn query_board<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Category, Ci, ReviewState};
+    use crate::board::{Category, Ci, ReviewState, ReviewSummary, ReviewVerdict};
 
     /// A minimal row; every test sets the fields it cares about.
     fn row(number: u64, category: Category) -> BoardRow {
@@ -796,6 +858,130 @@ mod tests {
         );
     }
 
+    fn review(login: &str, state: ReviewVerdict) -> ReviewSummary {
+        ReviewSummary {
+            login: Some(login.into()),
+            state,
+            submitted_at: Some("2026-09-10T10:00:00Z".into()),
+            bot: false,
+        }
+    }
+
+    #[test]
+    fn state_terms_match_one_review_state_per_pr_with_your_own_verdict_counted() {
+        // A review-queue row: `review_state` stays `None` there, so the
+        // filter reads the reviews themselves.
+        let mut r = row(11, Category::Todo);
+        r.review_state = ReviewState::None;
+        r.requested = vec!["oliver".into()];
+        assert!(filtered(&r, "state:waiting"));
+        assert!(filtered(&r, "state:requested"), "the column's word");
+        assert!(!filtered(&r, "state:none"));
+
+        r.reviews = vec![review("bob", ReviewVerdict::Approved)];
+        assert!(filtered(&r, "STATE:Approved"));
+        assert!(!filtered(&r, "state:waiting"), "one state per PR");
+
+        // A change request outweighs approvals, the viewer's included.
+        r.my_review = Some(ReviewVerdict::ChangesRequested);
+        assert!(filtered(&r, "state:changes"));
+        assert!(filtered(&r, "state:changes_requested"), "GitHub's spelling");
+        assert!(!filtered(&r, "state:approved"));
+
+        // Nobody else reviewed and nobody is asked: your approval makes it
+        // approved, and it is no longer none or waiting.
+        r.reviews.clear();
+        r.requested.clear();
+        r.my_review = Some(ReviewVerdict::Approved);
+        assert!(filtered(&r, "state:approved"));
+        assert!(!filtered(&r, "state:none"));
+        assert!(!filtered(&r, "state:waiting"));
+        assert_eq!(r.review_state, ReviewState::None, "the column is unchanged");
+
+        // Your comment alone changes nothing.
+        r.my_review = Some(ReviewVerdict::Commented);
+        assert!(filtered(&r, "state:none"));
+        r.reviews = vec![review("carol", ReviewVerdict::Commented)];
+        assert!(filtered(&r, "state:commented"));
+        // A bot's comment is not a reviewer's response.
+        r.reviews[0].bot = true;
+        assert!(filtered(&r, "state:none"));
+
+        // Several state: terms match any one; an unknown value matches none.
+        assert!(filtered(&r, "state:approved state:none"));
+        assert!(!filtered(&r, "state:approved state:changes"));
+        assert!(!filtered(&r, "state:lgtm"));
+        assert!(filtered(&r, "state:none change number"));
+
+        let chip = FilterChip::new(Qualifier::State, "approved");
+        assert_eq!(chip.term(), "state:approved");
+        let (chips, rest) = take_filter_chips("state:approved ", false);
+        assert_eq!((chips, rest.as_str()), (vec![chip.clone()], ""));
+        let remote = RemoteFilter::from_chips(std::slice::from_ref(&chip));
+        assert!(remote.is_empty() && !remote.sends(&chip), "checked locally");
+        assert_eq!(local_only_terms("", &[chip], &remote), ["state:approved"]);
+    }
+
+    #[test]
+    fn review_is_not_a_second_name_for_state() {
+        let terms = filter_terms("review:approved");
+        assert_eq!(terms[0].qualifier, None, "a free word, not a qualifier");
+    }
+
+    #[test]
+    fn ci_terms_match_the_ci_column_one_value_per_pr() {
+        let mut r = row(12, Category::Action);
+        for (ci, value) in [
+            (Ci::Pass, "pass"),
+            (Ci::Fail, "fail"),
+            (Ci::Running, "running"),
+            (Ci::None, "none"),
+            (Ci::Hidden, "hidden"),
+        ] {
+            r.ci = ci;
+            assert_eq!(ci.as_str(), value, "the column's word");
+            let matching: Vec<&str> = ["pass", "fail", "running", "none", "hidden"]
+                .into_iter()
+                .filter(|other| filtered(&r, &format!("ci:{other}")))
+                .collect();
+            assert_eq!(matching, [value], "exactly one value matches");
+        }
+        r.ci = Ci::Fail;
+        assert!(filtered(&r, "CI:Failing"));
+        assert!(filtered(&r, "ci:pass ci:fail"), "several ci: match any one");
+        assert!(!filtered(&r, "ci:green"));
+        r.ci = Ci::Running;
+        assert!(filtered(&r, "ci:pending"));
+        r.ci = Ci::Pass;
+        assert!(filtered(&r, "ci:passing"));
+        // ci: and state: are separate qualifiers, so both must hold.
+        r.my_review = Some(ReviewVerdict::Approved);
+        assert!(filtered(&r, "state:approved ci:pass"));
+        assert!(!filtered(&r, "state:approved ci:fail"));
+
+        let chip = FilterChip::new(Qualifier::Ci, "fail");
+        assert_eq!(chip.term(), "ci:fail");
+        let remote = RemoteFilter::from_chips(std::slice::from_ref(&chip));
+        assert!(!remote.sends(&chip), "checked locally");
+        assert_eq!(local_only_terms("", &[chip], &remote), ["ci:fail"]);
+    }
+
+    #[test]
+    fn is_draft_and_is_conflict_follow_the_board() {
+        let mut r = row(13, Category::Action);
+        assert!(!filtered(&r, "is:draft") && !filtered(&r, "is:conflict"));
+        r.draft = true;
+        assert!(filtered(&r, "is:draft"));
+        r.conflict = true;
+        assert!(filtered(&r, "is:draft is:conflict"), "is: terms all hold");
+        r.draft = false;
+        assert!(!filtered(&r, "is:draft is:conflict"));
+        // GitHub not having worked mergeability out yet is not a conflict.
+        r.conflict = false;
+        r.mergeable_unknown = true;
+        assert!(!filtered(&r, "is:conflict"));
+    }
+
     #[test]
     fn is_agent_and_is_human_split_the_rows_by_who_opened_them() {
         let mut r = row(9, Category::Todo);
@@ -875,6 +1061,7 @@ mod tests {
         mine.title = "Fix login".into();
         let mut asked = row(2, Category::Todo);
         asked.agent = true;
+        asked.my_review = Some(ReviewVerdict::Approved);
         let mut snoozed = row(3, Category::Todo);
         snoozed.title = "Fix logout".into();
         let waiting = row(4, Category::Await);
@@ -901,6 +1088,7 @@ mod tests {
                 snoozed: 1,
                 stale: 0,
                 agent: 1,
+                approved: 1,
                 followed: 2,
                 needs_you: 2,
             }

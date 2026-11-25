@@ -1472,33 +1472,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         // All open rows come from `derive_all_open_row`, which asks for one of
         // the other two; asked directly, a row reads as its author's.
         Mode::Authored | Mode::AllOpen => {
-            let appr = row
-                .reviews
-                .iter()
-                .filter(|r| r.state == ReviewVerdict::Approved)
-                .count();
-            // A bot's comments are not a reviewer's response: the PR still
-            // waits for the person asked. Its approval or change request is
-            // a verdict and counts like anyone's.
-            let cmt = row
-                .reviews
-                .iter()
-                .any(|r| r.state == ReviewVerdict::Commented && !r.bot);
-            let chg = row
-                .reviews
-                .iter()
-                .any(|r| r.state == ReviewVerdict::ChangesRequested);
-            row.review_state = if chg {
-                ReviewState::Changes
-            } else if appr > 0 {
-                ReviewState::Approved
-            } else if cmt {
-                ReviewState::Commented
-            } else if !row.requested.is_empty() {
-                ReviewState::Waiting
-            } else {
-                ReviewState::None
-            };
+            row.review_state = others_review_state(&row);
             classify_authored(&mut row, cfg);
         }
         Mode::Review => {
@@ -1847,6 +1821,49 @@ fn standing_review<'a>(reviews: &[&'a ReviewNode]) -> Option<&'a ReviewNode> {
         }
     }
     Some(last)
+}
+
+/// Other reviewers' standing reviews combined, the authored rule behind
+/// `review_state`: a change request wins, then any approval, then a person's
+/// comment, then a pending request. A bot's comments are not a reviewer's
+/// response: the PR still waits for the person asked. Its approval or change
+/// request is a verdict and counts like anyone's.
+fn others_review_state(row: &BoardRow) -> ReviewState {
+    let has = |state: ReviewVerdict| row.reviews.iter().any(|r| r.state == state);
+    if has(ReviewVerdict::ChangesRequested) {
+        ReviewState::Changes
+    } else if has(ReviewVerdict::Approved) {
+        ReviewState::Approved
+    } else if row
+        .reviews
+        .iter()
+        .any(|r| r.state == ReviewVerdict::Commented && !r.bot)
+    {
+        ReviewState::Commented
+    } else if !row.requested.is_empty() {
+        ReviewState::Waiting
+    } else {
+        ReviewState::None
+    }
+}
+
+/// The state the `state:` filter and the Approved quick filter read: [`others_review_state`] with the
+/// viewer's own standing verdict counted too. A change request wins whoever
+/// made it, then an approval whoever made it; the viewer's comment-only
+/// review changes nothing. Worked out from the row's reviews, requests and
+/// `my_review` rather than from `review_state`, so it means the same in every
+/// view, the review queue included (whose rows leave `review_state` at
+/// `None`). `review_state`, the Review column and categorization do not use
+/// it.
+pub fn effective_review_state(row: &BoardRow) -> ReviewState {
+    let others = others_review_state(row);
+    match row.my_review {
+        _ if others == ReviewState::Changes => ReviewState::Changes,
+        Some(ReviewVerdict::ChangesRequested) => ReviewState::Changes,
+        _ if others == ReviewState::Approved => ReviewState::Approved,
+        Some(ReviewVerdict::Approved) => ReviewState::Approved,
+        _ => others,
+    }
 }
 
 /// Standing review state per author, excluding the PR author and bots — the

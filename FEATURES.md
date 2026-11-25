@@ -324,7 +324,7 @@ values in the code. New features get the next free number in their area.
   - A test pins that GitHub's reading and the local one keep the same PRs.
   - `author:dependabot` also finds the bot's PRs (`author:app/dependabot`).
   - A changed filter costs one request, sent after typing pauses; refresh timing is unchanged.
-  - Words, `is:stale`, and anything past 8 labels or 8 authors check only the loaded PRs. While more are left to
+  - Words, `is:`, `state:`, `ci:`, and anything past 8 labels or 8 authors check only the loaded PRs. While more are left to
     load, a line under the header names those terms and offers Load more.
 
   _since v0.12.0_
@@ -337,10 +337,28 @@ values in the code. New features get the next free number in their area.
   _since v0.13.0_
   - **Agents** adds or removes the `is:agent` chip (F-search-3), as if typed, and counts the loaded PRs a coding
     agent or bot opened. _since v0.15.1_
+  - **Approved** adds or removes the `state:approved` chip (F-search-10), as if typed, and counts the loaded PRs
+    whose review state is approved, your own approvals included. _unreleased_
 - **F-search-9** A PR counts as agent-authored when GitHub says its author is a `Bot` account (Copilot, Claude,
   Dependabot and the like), or when its author matches `agent_authors` in config.toml: whole logins or `*`
   patterns (`copilot*`, `*[bot]`), ignoring case, for a person's account that an agent opens PRs from. The CLI's
   JSON carries `agent` on every PR, and PR Marmot for iPad gets the same rule and settings field. _since v0.15.1_
+- **F-search-10** `state:approved`, `state:changes`, `state:commented`, `state:waiting`, and `state:none` keep
+  PRs in that review state, in My PRs, the Review queue, and All open alike. A change request outweighs approvals,
+  and an approval outweighs comments; your own standing approval or change request counts, so `state:approved`
+  also finds the PRs you approved, while a comment-only review of yours changes nothing. Each PR has one review
+  state, so several `state:` chips keep PRs matching any one of them. `state:changes_requested` is the same as
+  `state:changes` and `state:requested` the same as `state:waiting`. The state is checked on the loaded PRs
+  only, also in All open: GitHub's `review:approved` follows the repository's merge rules and leaves out PRs whose
+  approval PR Marmot shows.
+  - Details shows "Your review: approved" (or "changes requested") in All open too, on PRs you approved or asked
+    changes on, so a match the Review column does not show is explained. The Review column is unchanged.
+
+  _unreleased_
+- **F-search-11** `ci:pass`, `ci:fail`, `ci:running`, `ci:none`, and `ci:hidden` keep PRs whose CI column says
+  that; each PR has one, so several `ci:` chips keep PRs matching any one of them. `is:draft` keeps drafts and
+  `is:conflict` the PRs GitHub reports a merge conflict on (not ones whose mergeability GitHub has not worked out
+  yet); like every `is:` term they must all match. Checked on the loaded PRs, in every view. _unreleased_
 
 ## Change tracking
 

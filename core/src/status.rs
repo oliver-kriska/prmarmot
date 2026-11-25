@@ -240,6 +240,9 @@ pub const STALE_TOGGLE_LABEL: &str = "Stale";
 /// The quick filter that adds or removes the `is:agent` search chip.
 pub const AGENT_TOGGLE_LABEL: &str = "Agents";
 
+/// The quick filter that adds or removes the `state:approved` search chip.
+pub const APPROVED_TOGGLE_LABEL: &str = "Approved";
+
 /// The Needs you toggle's tooltip. `count` is the header's "need you".
 pub fn needs_you_toggle_tooltip(on: bool, count: usize) -> String {
     quick_filter_tooltip(match (on, count) {
@@ -284,6 +287,17 @@ pub fn agent_toggle_tooltip(on: bool, count: usize) -> String {
         (true, _) => QUICK_FILTER_OFF,
         (false, 0) => "No loaded PR was opened by a coding agent or bot.",
         (false, _) => "Show only PRs opened by a coding agent or bot.",
+    })
+}
+
+/// The Approved toggle's tooltip: `state:approved`, said in words. `count`
+/// is how many loaded rows stand approved, your own approval included
+/// ([`crate::board::effective_review_state`]).
+pub fn approved_toggle_tooltip(on: bool, count: usize) -> String {
+    quick_filter_tooltip(match (on, count) {
+        (true, _) => QUICK_FILTER_OFF,
+        (false, 0) => "No loaded PR is approved.",
+        (false, _) => "Show only approved PRs, your own approvals included.",
     })
 }
 
@@ -1214,6 +1228,18 @@ mod tests {
             said("Show only PRs opened by a coding agent or bot.")
         );
         assert_eq!(agent_toggle_tooltip(true, 2), said("Turn off this filter."));
+        assert_eq!(
+            approved_toggle_tooltip(false, 0),
+            said("No loaded PR is approved.")
+        );
+        assert_eq!(
+            approved_toggle_tooltip(false, 3),
+            said("Show only approved PRs, your own approvals included.")
+        );
+        assert_eq!(
+            approved_toggle_tooltip(true, 3),
+            said("Turn off this filter.")
+        );
     }
 
     #[test]

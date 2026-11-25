@@ -113,8 +113,8 @@ impl RootView {
                         .tooltip(match (state.mode, cfg!(target_os = "macos")) {
                             (Mode::AllOpen, true) => "Filter open PRs (/ or ⌘F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
                             (Mode::AllOpen, false) => "Filter open PRs (/ or Ctrl F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
-                            (_, true) => "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, is:stale, or is:agent, or click a label, author, or repository.",
-                            (_, false) => "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, is:stale, or is:agent, or click a label, author, or repository.",
+                            (_, true) => "Filter loaded PRs (/ or ⌘F). Type label:, author:, repo:, is:, state:approved, or ci:fail, or click a label, author, or repository.",
+                            (_, false) => "Filter loaded PRs (/ or Ctrl F). Type label:, author:, repo:, is:, state:approved, or ci:fail, or click a label, author, or repository.",
                         })
                         .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
                 )
@@ -196,6 +196,21 @@ impl RootView {
                 .tooltip(agent_toggle_tooltip(agent_on, self.counts.agent))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_agent_filter(window, cx);
+                }))
+            })
+            .child({
+                let approved_on = self.approved_filtering();
+                view_toggle(
+                    "approved-filter",
+                    APPROVED_TOGGLE_LABEL,
+                    self.counts.approved,
+                    approved_on,
+                    None,
+                    cx,
+                )
+                .tooltip(approved_toggle_tooltip(approved_on, self.counts.approved))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_approved_filter(window, cx);
                 }))
             })
             .child(
@@ -940,6 +955,9 @@ impl RootView {
                 ("Search one label, author, or repo", "label: author: repo:"),
                 ("Search PRs waiting too long for a reviewer", "is:stale"),
                 ("Search PRs a coding agent or bot opened, or a person", "is:agent is:human"),
+                ("Search PRs by review state, your own review included", "state:approved"),
+                ("Search PRs by CI state", "ci:fail"),
+                ("Search drafts, or PRs with a merge conflict", "is:draft is:conflict"),
                 ("Remove the last search filter", "⌫ in empty search"),
                 ("Toggle selected PR details", "Space"),
                 ("Cycle theme", "t"),

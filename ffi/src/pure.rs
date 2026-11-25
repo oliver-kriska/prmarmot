@@ -19,8 +19,8 @@ use prmarmot_core::status as core_status;
 use crate::error::FfiError;
 use crate::types::{
     instant, into_rows, BoardItem, ChangeSize, Ci, CiCell, FilterChip, FilterQualifier, Mode,
-    NotePresentation, PullRequest, RateLimit, ReviewCell, SectionKind, ShareFormat, SharePayload,
-    SizeBand, Sort, StackRef, Tone,
+    NotePresentation, PullRequest, RateLimit, ReviewCell, ReviewState, SectionKind, ShareFormat,
+    SharePayload, SizeBand, Sort, StackRef, Tone,
 };
 
 /// Lay out a board: section headers in their fixed order, stack sub-groups,
@@ -212,8 +212,11 @@ pub fn section_order_entries(keys: Vec<String>) -> Vec<SectionOrderEntry> {
 ///
 /// The grammar is the desktop search box's: bare words match the number,
 /// repository, title, author, labels, linked issue and Note; `label:NAME`,
-/// `author:LOGIN`, `repo:OWNER/NAME` and `is:stale` match a whole field;
-/// values with spaces are quoted; every term must match, and case is ignored.
+/// `author:LOGIN`, `repo:OWNER/NAME`, `is:stale`, `is:agent`, `is:human`,
+/// `is:draft`, `is:conflict`, `state:STATE` and `ci:STATE` match a whole
+/// field; values with spaces are quoted; every term must match, except that
+/// one of several `author:`, `repo:`, `state:` or `ci:` terms is enough, and
+/// case is ignored.
 #[uniffi::export]
 pub fn search(
     rows: Vec<PullRequest>,
@@ -488,6 +491,29 @@ pub fn agent_toggle_label() -> String {
 #[uniffi::export]
 pub fn agent_toggle_text(on: bool, count: u32) -> String {
     core_status::agent_toggle_tooltip(on, count as usize)
+}
+
+/// The Approved quick filter's label; it adds or removes the
+/// `state:approved` chip.
+#[uniffi::export]
+pub fn approved_toggle_label() -> String {
+    core_status::APPROVED_TOGGLE_LABEL.into()
+}
+
+/// What the Approved quick filter says it will do. `count` is how many
+/// loaded rows `effective_review_state` calls approved.
+#[uniffi::export]
+pub fn approved_toggle_text(on: bool, count: u32) -> String {
+    core_status::approved_toggle_tooltip(on, count as usize)
+}
+
+/// The review state the `state:` filter reads: a change request wins,
+/// then an approval, whoever gave it (you included); otherwise the Review
+/// column's state. Count the rows where it is `Approved` for the Approved
+/// quick filter's number. `review_state` on the row stays the column's.
+#[uniffi::export]
+pub fn effective_review_state(pr: PullRequest) -> ReviewState {
+    prmarmot_core::board::effective_review_state(&pr.into_row()).into()
 }
 
 /// "3 new commits since your review", "20+ new commits since your review";

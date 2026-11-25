@@ -1156,15 +1156,22 @@ pub(crate) fn instant(epoch_secs: i64) -> Result<DateTime<Utc>, FfiError> {
         .ok_or_else(|| FfiError::invalid(format!("{epoch_secs} is not a point in time")))
 }
 
-/// The four search qualifiers. A chip in the search field is one of these
-/// plus a value.
+/// The search qualifiers. A chip in the search field is one of these plus a
+/// value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum FilterQualifier {
     Label,
     Author,
     Repo,
-    /// Only `is:stale` is defined today.
+    /// `is:stale`, `is:agent`, `is:human`, `is:draft` and `is:conflict`.
     Is,
+    /// `state:approved`, `changes`, `commented`, `waiting` or `none`: the
+    /// review state, your own standing verdict included
+    /// (`effective_review_state`).
+    State,
+    /// `ci:pass`, `fail`, `running`, `none` or `hidden`: what the CI column
+    /// shows.
+    Ci,
 }
 
 impl From<prmarmot_core::search::Qualifier> for FilterQualifier {
@@ -1175,6 +1182,8 @@ impl From<prmarmot_core::search::Qualifier> for FilterQualifier {
             Qualifier::Author => Self::Author,
             Qualifier::Repo => Self::Repo,
             Qualifier::Is => Self::Is,
+            Qualifier::State => Self::State,
+            Qualifier::Ci => Self::Ci,
         }
     }
 }
@@ -1186,6 +1195,8 @@ impl From<FilterQualifier> for prmarmot_core::search::Qualifier {
             FilterQualifier::Author => Self::Author,
             FilterQualifier::Repo => Self::Repo,
             FilterQualifier::Is => Self::Is,
+            FilterQualifier::State => Self::State,
+            FilterQualifier::Ci => Self::Ci,
         }
     }
 }

@@ -373,6 +373,41 @@ fn the_search_grammar_is_the_same_one_the_desktop_uses() {
     assert_eq!(matching("repo:widgets").len(), 0);
     assert_eq!(matching("").len(), 18);
 
+    // Every PR has one review state and one CI state, so each set of
+    // values splits the board.
+    let states = ["approved", "changes", "commented", "waiting", "none"]
+        .map(|value| matching(&format!("state:{value}")).len());
+    assert_eq!(states.iter().sum::<usize>(), 18, "{states:?}");
+    let cis = ["pass", "fail", "running", "none", "hidden"]
+        .map(|value| matching(&format!("ci:{value}")).len());
+    assert_eq!(cis.iter().sum::<usize>(), 18, "{cis:?}");
+    assert!(matching("review:approved").is_empty(), "not a qualifier");
+    // The Approved quick filter counts what `state:approved` shows.
+    let approved = board
+        .rows
+        .iter()
+        .filter(|row| {
+            prmarmot_ffi::effective_review_state((*row).clone())
+                == prmarmot_ffi::ReviewState::Approved
+        })
+        .count();
+    assert_eq!(approved, states[0]);
+    assert_eq!(prmarmot_ffi::approved_toggle_label(), "Approved");
+    assert!(prmarmot_ffi::approved_toggle_text(false, 2).starts_with("Show only approved PRs"));
+    let drafts = board.rows.iter().filter(|row| row.draft).count();
+    assert_eq!(matching("is:draft").len(), drafts);
+    let conflicts = board.rows.iter().filter(|row| row.conflict).count();
+    assert_eq!(matching("is:conflict").len(), conflicts);
+    let chips = prmarmot_ffi::take_filter_chips("state:approved ci:fail".into(), true);
+    assert_eq!(
+        chips
+            .chips
+            .iter()
+            .map(|chip| chip.qualifier)
+            .collect::<Vec<_>>(),
+        [FilterQualifier::State, FilterQualifier::Ci]
+    );
+
     // Chips round-trip: what the field shows plus what is left means the same.
     let chips = prmarmot_ffi::take_filter_chips("label:\"help wanted\" spare".into(), true);
     assert_eq!(chips.chips.len(), 1);
