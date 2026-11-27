@@ -338,7 +338,7 @@ values in the code. New features get the next free number in their area.
   - **Agents** adds or removes the `is:agent` chip (F-search-3), as if typed, and counts the loaded PRs a coding
     agent or bot opened. _since v0.15.1_
   - **Approved** adds or removes the `state:approved` chip (F-search-10), as if typed, and counts the loaded PRs
-    whose review state is approved, your own approvals included. _unreleased_
+    whose review state is approved, your own approvals included. _since v0.22.0_
 - **F-search-9** A PR counts as agent-authored when GitHub says its author is a `Bot` account (Copilot, Claude,
   Dependabot and the like), or when its author matches `agent_authors` in config.toml: whole logins or `*`
   patterns (`copilot*`, `*[bot]`), ignoring case, for a person's account that an agent opens PRs from. The CLI's
@@ -354,11 +354,11 @@ values in the code. New features get the next free number in their area.
   - Details shows "Your review: approved" (or "changes requested") in All open too, on PRs you approved or asked
     changes on, so a match the Review column does not show is explained. The Review column is unchanged.
 
-  _unreleased_
+  _since v0.22.0_
 - **F-search-11** `ci:pass`, `ci:fail`, `ci:running`, `ci:none`, and `ci:hidden` keep PRs whose CI column says
   that; each PR has one, so several `ci:` chips keep PRs matching any one of them. `is:draft` keeps drafts and
   `is:conflict` the PRs GitHub reports a merge conflict on (not ones whose mergeability GitHub has not worked out
-  yet); like every `is:` term they must all match. Checked on the loaded PRs, in every view. _unreleased_
+  yet); like every `is:` term they must all match. Checked on the loaded PRs, in every view. _since v0.22.0_
 
 ## Change tracking
 
